@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS collection_runs (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     source ENUM('meta', 'tiktok') NOT NULL,
     status ENUM('running', 'completed', 'failed') NOT NULL,
-    cursor TEXT,
+    next_cursor TEXT,
     items_collected INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
     started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
