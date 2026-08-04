@@ -1,4 +1,4 @@
-import { Bookmark, CalendarDays, Download, ExternalLink, Globe2, Layers3, X } from "lucide-react";
+import { Bookmark, CalendarDays, Download, ExternalLink, Globe2, ImageOff, Layers3, X } from "lucide-react";
 import { useEffect } from "react";
 import type { AdCreative } from "../shared/types";
 
@@ -21,10 +21,12 @@ export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
       <section className="creative-modal" role="dialog" aria-modal="true" aria-label={`Креатив ${ad.advertiser}`}>
         <button className="modal-close" onClick={onClose} aria-label="Закрыть"><X size={20} /></button>
         <div className={`modal-media ${ad.source}`}>
-          {ad.mediaType === "video" ? <video controls poster={ad.thumbnailUrl} src={ad.mediaUrl} /> : <img src={ad.mediaUrl || ad.thumbnailUrl} alt={ad.headline} />}
+          {ad.mediaUrl
+            ? ad.mediaType === "video" ? <video controls poster={ad.thumbnailUrl} src={ad.mediaUrl} /> : <img src={ad.mediaUrl || ad.thumbnailUrl} alt={ad.headline} />
+            : <div className="modal-media-placeholder"><ImageOff size={36} /><strong>Креатив доступен в оригинале Meta</strong></div>}
           <div className="modal-media-actions">
             {ad.sourceUrl && <a className="round-action" href={ad.sourceUrl} target="_blank" rel="noreferrer" title="Открыть оригинал"><ExternalLink size={18} /></a>}
-            {ad.mediaType === "video" && <a className="round-action" href={ad.mediaUrl} download target="_blank" rel="noreferrer" title="Скачать видео"><Download size={18} /></a>}
+            {ad.mediaType === "video" && ad.mediaUrl && <a className="round-action" href={ad.mediaUrl} download target="_blank" rel="noreferrer" title="Скачать видео"><Download size={18} /></a>}
           </div>
         </div>
         <div className="modal-details">
@@ -36,6 +38,7 @@ export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
             <span><Layers3 size={16} /><small>Площадки</small><strong>{ad.platforms.join(", ")}</strong></span>
           </div>
           <div className="modal-copy"><h1>{ad.headline}</h1><p>{ad.body}</p></div>
+          {ad.appUrl && <p className="modal-display-url">Сайт в объявлении: <strong>{ad.appUrl}</strong></p>}
           <div className="modal-bottom">
             {ad.landingUrl ? <a className="button primary grow" href={ad.landingUrl} target="_blank" rel="noreferrer">{ad.cta}<ExternalLink size={16} /></a> : <span className="button disabled grow">Ссылка не предоставлена</span>}
             {ad.sourceUrl && <a className="button ghost" href={ad.sourceUrl} target="_blank" rel="noreferrer">Оригинал</a>}

@@ -1,4 +1,4 @@
-import { Bookmark, ExternalLink, Images, Play, TrendingUp } from "lucide-react";
+import { Bookmark, ExternalLink, ImageOff, Images, Play, TrendingUp } from "lucide-react";
 import type { AdCreative } from "../shared/types";
 
 interface AdCardProps {
@@ -14,7 +14,9 @@ const formatDate = (value: string) => new Intl.DateTimeFormat("ru-RU", { day: "n
 export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
   const media = (
     <div className="card-media">
-      <img src={ad.thumbnailUrl || ad.mediaUrl} alt={`Креатив ${ad.advertiser}`} loading="lazy" />
+      {ad.thumbnailUrl || ad.mediaUrl
+        ? <img src={ad.thumbnailUrl || ad.mediaUrl} alt={`Креатив ${ad.advertiser}`} loading="lazy" />
+        : <div className="media-placeholder"><ImageOff size={28} /><span>Креатив доступен в Meta</span></div>}
       <span className="media-shade" />
       {ad.mediaType === "video" && <span className="play-button"><Play size={18} fill="currentColor" /></span>}
       {ad.mediaType === "carousel" && <span className="media-type"><Images size={14} /> {ad.carousel?.length ?? 2}</span>}
@@ -44,6 +46,7 @@ export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
       {media}
       <div className="card-content">
         <div className="platforms">{ad.platforms.map((platform) => <span key={platform}>{platform}</span>)}</div>
+        {ad.appUrl && <small className="display-url">{ad.appUrl}</small>}
         <h3>{ad.headline}</h3>
         {!compact && <p>{ad.body}</p>}
         <div className="card-cta"><span>{ad.cta}</span><ExternalLink size={15} /></div>
