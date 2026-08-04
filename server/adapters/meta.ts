@@ -76,10 +76,23 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
     };
   });
 
+  // Meta has already applied these filters. Applying them again locally can
+  // incorrectly discard fuzzy matches returned by the provider (for example,
+  // a search term that is present in data not included in the requested fields).
+  const {
+    search: _search,
+    searchMode: _searchMode,
+    country: _country,
+    dateFrom: _dateFrom,
+    dateTo: _dateTo,
+    ...localFilters
+  } = filters;
+  const items = filterAds(mapped, localFilters);
+
   return {
-    items: filterAds(mapped, filters),
+    items,
     nextCursor: payload.paging?.cursors?.after ?? null,
-    total: mapped.length,
+    total: items.length,
     mode: "live",
     limitations: ["Meta Ad Library API отдаёт ссылку на snapshot, но не прямой URL медиафайла; оригинал открывается в библиотеке Meta."],
   };
