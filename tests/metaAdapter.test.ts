@@ -61,6 +61,7 @@ describe("fetchMetaAds", () => {
       language: "en",
       mediaUrl: "",
       thumbnailUrl: "",
+      mediaInfoUrl: "/api/meta/media/123",
       sourceUrl: "https://www.facebook.com/ads/library/?id=123",
     });
     expect(JSON.stringify(result)).not.toContain("access_token");

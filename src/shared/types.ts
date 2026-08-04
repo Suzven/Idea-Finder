@@ -12,6 +12,7 @@ export interface AdCreative {
   mediaType: MediaType;
   mediaUrl: string;
   thumbnailUrl: string;
+  mediaInfoUrl?: string;
   carousel?: string[];
   headline: string;
   body: string;

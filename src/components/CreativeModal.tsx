@@ -1,5 +1,6 @@
 import { Bookmark, CalendarDays, Download, ExternalLink, Globe2, ImageOff, Layers3, X } from "lucide-react";
 import { useEffect } from "react";
+import { useResolvedAdMedia } from "../hooks/useResolvedAdMedia";
 import type { AdCreative } from "../shared/types";
 
 interface CreativeModalProps {
@@ -9,6 +10,8 @@ interface CreativeModalProps {
 }
 
 export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
+  const { ad: resolvedAd, loading: mediaLoading, error: mediaError } = useResolvedAdMedia(ad);
+  ad = resolvedAd;
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", close);
@@ -23,7 +26,7 @@ export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
         <div className={`modal-media ${ad.source}`}>
           {ad.mediaUrl
             ? ad.mediaType === "video" ? <video controls poster={ad.thumbnailUrl} src={ad.mediaUrl} /> : <img src={ad.mediaUrl || ad.thumbnailUrl} alt={ad.headline} />
-            : <div className="modal-media-placeholder"><ImageOff size={36} /><strong>Креатив доступен в оригинале Meta</strong></div>}
+            : <div className="modal-media-placeholder"><ImageOff size={36} /><strong>{mediaLoading ? "Загружаем креатив из Meta…" : mediaError ? "Не удалось извлечь креатив из snapshot" : "Креатив доступен в оригинале Meta"}</strong></div>}
           <div className="modal-media-actions">
             {ad.sourceUrl && <a className="round-action" href={ad.sourceUrl} target="_blank" rel="noreferrer" title="Открыть оригинал"><ExternalLink size={18} /></a>}
             {ad.mediaType === "video" && ad.mediaUrl && <a className="round-action" href={ad.mediaUrl} download target="_blank" rel="noreferrer" title="Скачать видео"><Download size={18} /></a>}

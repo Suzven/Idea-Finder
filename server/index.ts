@@ -12,6 +12,7 @@ import { demoAds } from "./data/demoAds.js";
 import { addFavorite, closeDatabase, getFavoriteIds, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
+import { getMetaMedia, streamMetaMedia } from "./services/metaSnapshot.js";
 import type { AdFilters, AdSource, AdsResponse } from "../src/shared/types.js";
 
 const app = express();
@@ -102,6 +103,23 @@ app.delete("/api/favorites/:adId", async (request, response, next) => {
   try {
     await removeFavorite(getClientId(request), request.params.adId);
     response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/meta/media/:adId", async (request, response, next) => {
+  try {
+    response.json(await getMetaMedia(request.params.adId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/meta/media/:adId/:variant", async (request, response, next) => {
+  try {
+    const variant = z.enum(["content", "thumbnail"]).parse(request.params.variant);
+    await streamMetaMedia(request.params.adId, variant, request, response);
   } catch (error) {
     next(error);
   }

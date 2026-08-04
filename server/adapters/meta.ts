@@ -2,6 +2,7 @@ import type { AdCreative, AdFilters, AdsResponse } from "../../src/shared/types.
 import { config } from "../config.js";
 import { AppError } from "../errors.js";
 import { filterAds } from "../services/filterAds.js";
+import { registerMetaSnapshot } from "../services/metaSnapshot.js";
 
 interface MetaAd {
   id: string;
@@ -127,6 +128,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
       mediaType: filters.mediaType === "video" ? "video" : "image",
       mediaUrl: "",
       thumbnailUrl: "",
+      mediaInfoUrl: registerMetaSnapshot(ad.id, ad.ad_snapshot_url),
       headline: ad.ad_creative_link_titles?.[0] ?? "Объявление Meta",
       body: ad.ad_creative_bodies?.[0] ?? ad.ad_creative_link_descriptions?.[0] ?? "Откройте оригинал объявления для просмотра креатива.",
       cta: "Открыть объявление",
@@ -164,6 +166,6 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
     nextCursor: payload.paging?.cursors?.after ?? null,
     total: items.length,
     mode: "live",
-    limitations: ["Meta Ad Library API отдаёт креатив внутри snapshot, но не возвращает прямой URL медиафайла в структурированных данных. Домен берётся из отображаемой подписи и может отличаться от конечного URL перехода."],
+    limitations: ["Медиа извлекается из snapshot Meta по запросу и кешируется на сервере. Некоторые удалённые или ограниченные объявления могут не отдавать креатив. Домен берётся из отображаемой подписи и может отличаться от конечного URL перехода."],
   };
 }

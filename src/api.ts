@@ -1,5 +1,11 @@
 import type { AdCreative, AdFilters, AdSource, AdsResponse } from "./shared/types";
 
+export interface ResolvedAdMedia {
+  mediaType: "image" | "video";
+  mediaUrl: string;
+  thumbnailUrl: string;
+}
+
 const clientIdKey = "spyservice-client-id";
 
 function getClientId(): string {
@@ -42,4 +48,8 @@ export async function setFavorite(ad: AdCreative, value: boolean): Promise<void>
     method: value ? "POST" : "DELETE",
     body: value ? JSON.stringify({ source: ad.source }) : undefined,
   });
+}
+
+export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {
+  return request<ResolvedAdMedia>(mediaInfoUrl);
 }
