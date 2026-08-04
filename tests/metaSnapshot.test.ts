@@ -1,37 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMetaSnapshotRequestCandidates, extractMetaMediaFromHtml } from "../server/services/metaSnapshot.js";
-
-describe("buildMetaSnapshotRequestCandidates", () => {
-  it("falls back from the official snapshot URL to no-script and public library requests", () => {
-    const candidates = buildMetaSnapshotRequestCandidates(
-      "123",
-      "https://www.facebook.com/ads/archive/render_ad/?id=123&access_token=snapshot-token",
-      "snapshot-token",
-    );
-
-    expect(candidates.map(({ strategy }) => strategy)).toEqual([
-      "ad_snapshot_url",
-      "ad_snapshot_url_noscript",
-      "public_ad_library",
-    ]);
-    expect(new URL(candidates[1].url).searchParams.get("_fb_noscript")).toBe("1");
-    expect(new URL(candidates[2].url).searchParams.get("id")).toBe("123");
-  });
-
-  it("tries the current server token when the snapshot URL contains another token", () => {
-    const candidates = buildMetaSnapshotRequestCandidates(
-      "123",
-      "https://www.facebook.com/ads/archive/render_ad/?id=123&access_token=old-token",
-      "current-token",
-    );
-
-    expect(candidates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ strategy: "current_token_noscript" }),
-    ]));
-    const currentTokenCandidate = candidates.find(({ strategy }) => strategy === "current_token_noscript");
-    expect(new URL(currentTokenCandidate!.url).searchParams.get("access_token")).toBe("current-token");
-  });
-});
+import { extractMetaMediaFromHtml } from "../server/services/metaSnapshot.js";
 
 describe("extractMetaMediaFromHtml", () => {
   it("prefers an HD video and returns its creative thumbnail", () => {

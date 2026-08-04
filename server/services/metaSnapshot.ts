@@ -1,6 +1,8 @@
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
+import { existsSync } from "node:fs";
 import type { Request, Response } from "express";
+import { chromium, type Browser } from "playwright";
 import { config } from "../config.js";
 import { AppError } from "../errors.js";
 import { IntegrationLogger } from "./integrationLogger.js";
@@ -33,7 +35,6 @@ export interface MetaMediaParseAttempt {
 }
 
 const MAX_PAGE_BYTES = 5 * 1024 * 1024;
-const META_DEMO_AD_QUERY_ID = "32740921038887979";
 const META_DEMO_AD_QUERY_NAME = "AdLibraryV3DemoAdContentQuery";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const REGISTRATION_TTL_MS = 60 * 60 * 1000;
@@ -42,6 +43,7 @@ const registeredAds = new Map<string, { snapshotUrl?: string; expiresAt: number 
 const mediaCache = new Map<string, { value: Promise<ExtractedMetaMedia>; expiresAt: number }>();
 const waiters: Array<() => void> = [];
 let activeSnapshots = 0;
+let browserPromise: Promise<Browser> | undefined;
 
 function isMetaMediaHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -289,48 +291,6 @@ export function registerMetaAd(adId: string, snapshotUrl?: string): string | und
   return `/api/meta/media/${encodeURIComponent(adId)}`;
 }
 
-interface SnapshotRequestCandidate {
-  strategy: "ad_snapshot_url" | "ad_snapshot_url_noscript" | "current_token_noscript" | "public_ad_library";
-  url: string;
-}
-
-export function buildMetaSnapshotRequestCandidates(
-  adId: string,
-  snapshotUrl?: string,
-  accessToken = config.metaAccessToken,
-): SnapshotRequestCandidate[] {
-  const candidates: SnapshotRequestCandidate[] = [];
-  const seen = new Set<string>();
-  const add = (strategy: SnapshotRequestCandidate["strategy"], url: URL) => {
-    const value = url.toString();
-    if (seen.has(value)) return;
-    seen.add(value);
-    candidates.push({ strategy, url: value });
-  };
-
-  const validatedSnapshotUrl = validateSnapshotUrl(adId, snapshotUrl);
-  if (validatedSnapshotUrl) {
-    const snapshot = new URL(validatedSnapshotUrl);
-    add("ad_snapshot_url", snapshot);
-    const noScriptSnapshot = new URL(snapshot);
-    noScriptSnapshot.searchParams.set("_fb_noscript", "1");
-    add("ad_snapshot_url_noscript", noScriptSnapshot);
-  }
-
-  if (accessToken && (!validatedSnapshotUrl || new URL(validatedSnapshotUrl).searchParams.get("access_token") !== accessToken)) {
-    const currentTokenSnapshot = new URL("https://www.facebook.com/ads/archive/render_ad/");
-    currentTokenSnapshot.searchParams.set("id", adId);
-    currentTokenSnapshot.searchParams.set("access_token", accessToken);
-    currentTokenSnapshot.searchParams.set("_fb_noscript", "1");
-    add("current_token_noscript", currentTokenSnapshot);
-  }
-
-  const publicPage = new URL("https://www.facebook.com/ads/library/");
-  publicPage.searchParams.set("id", adId);
-  add("public_ad_library", publicPage);
-  return candidates;
-}
-
 async function acquireSnapshotSlot(): Promise<void> {
   if (activeSnapshots < 3) {
     activeSnapshots += 1;
@@ -345,126 +305,32 @@ function releaseSnapshotSlot(): void {
   waiters.shift()?.();
 }
 
-async function readLimitedText(response: globalThis.Response): Promise<string> {
-  const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_PAGE_BYTES) throw new AppError(502, "META_PAGE_TOO_LARGE", "Страница Meta слишком большая для обработки.");
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_PAGE_BYTES) {
-      await reader.cancel();
-      throw new AppError(502, "META_PAGE_TOO_LARGE", "Страница Meta слишком большая для обработки.");
-    }
-    chunks.push(value);
+async function getMetaBrowser(): Promise<Browser> {
+  if (browserPromise) return browserPromise;
+  const executablePath = [
+    config.metaChromiumExecutablePath,
+    chromium.executablePath(),
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  ].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+  if (!executablePath) {
+    throw new AppError(
+      503,
+      "META_CHROMIUM_NOT_INSTALLED",
+      "Для загрузки креативов Meta не найден Chromium.",
+      "Выполните `pnpm exec playwright install chromium` или задайте META_CHROMIUM_EXECUTABLE_PATH.",
+    );
   }
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(body);
-}
-
-function extractPageSessionCookies(headers: Headers): string | undefined {
-  const values = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [];
-  const cookies = values
-    .map((value) => value.split(";", 1)[0]?.trim())
-    .filter((value): value is string => Boolean(value));
-  return cookies.length > 0 ? cookies.join("; ") : undefined;
-}
-
-function extractLsdToken(html: string): string | undefined {
-  return html.match(/["']LSD["']\s*,\s*\[\]\s*,\s*\{["']token["']\s*:\s*["']([^"']+)["']/)?.[1];
-}
-
-async function fetchMetaDemoAdQuery(
-  adId: string,
-  pageUrl: string,
-  pageResponse: globalThis.Response,
-  pageHtml: string,
-): Promise<ExtractedMetaMedia | undefined> {
-  if (!/AdLibraryV3DemoAd\.react|AdLibraryV3DemoAdContentQuery/i.test(pageHtml)) return undefined;
-  const graphqlUrl = "https://www.facebook.com/api/graphql/";
-  const lsd = extractLsdToken(pageHtml);
-  const cookie = extractPageSessionCookies(pageResponse.headers);
-  const pageAccessToken = new URL(pageUrl).searchParams.get("access_token") ?? config.metaAccessToken;
-  const body = new URLSearchParams({
-    fb_api_caller_class: "RelayModern",
-    fb_api_req_friendly_name: META_DEMO_AD_QUERY_NAME,
-    variables: JSON.stringify({ adID: adId }),
-    server_timestamps: "true",
-    doc_id: META_DEMO_AD_QUERY_ID,
-    ...(lsd ? { lsd } : {}),
-    ...(pageAccessToken ? { access_token: pageAccessToken } : {}),
+  browserPromise = chromium.launch({ headless: true, executablePath }).then((browser) => {
+    browser.once("disconnected", () => { browserPromise = undefined; });
+    return browser;
+  }).catch((error) => {
+    browserPromise = undefined;
+    throw error;
   });
-  const headers = {
-    Accept: "*/*",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Content-Type": "application/x-www-form-urlencoded",
-    Origin: "https://www.facebook.com",
-    Referer: pageUrl,
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "X-FB-Friendly-Name": META_DEMO_AD_QUERY_NAME,
-    ...(lsd ? { "X-FB-LSD": lsd } : {}),
-    ...(cookie ? { Cookie: cookie } : {}),
-  };
-  const logger = await IntegrationLogger.start({
-    provider: "meta",
-    operation: "ad_snapshot_graphql_content",
-    method: "POST",
-    url: graphqlUrl,
-    headers,
-    body,
-  });
-  let response: globalThis.Response | undefined;
-  let responseBody: string | undefined;
-  const parseAttempts: MetaMediaParseAttempt[] = [{
-    stage: "graphql_request",
-    queryName: META_DEMO_AD_QUERY_NAME,
-    queryId: META_DEMO_AD_QUERY_ID,
-    adId,
-    hasLsd: Boolean(lsd),
-    hasSessionCookies: Boolean(cookie),
-    hasAccessToken: Boolean(pageAccessToken),
-  }];
-  try {
-    response = await fetch(graphqlUrl, {
-      method: "POST",
-      headers,
-      body,
-      redirect: "follow",
-      signal: AbortSignal.timeout(12_000),
-    });
-    responseBody = await readLimitedText(response);
-    parseAttempts.push({
-      stage: "graphql_response",
-      status: response.status,
-      contentType: response.headers.get("content-type"),
-      bodyLength: responseBody.length,
-      hasErrors: /["']errors["']\s*:/.test(responseBody),
-    });
-    if (!response.ok) throw new AppError(502, "META_GRAPHQL_FAILED", `Meta не отдала данные креатива (GraphQL HTTP ${response.status}).`);
-    const media = extractMetaMediaFromHtml(responseBody, adId, parseAttempts);
-    if (!media) throw new AppError(404, "META_GRAPHQL_MEDIA_NOT_FOUND", "GraphQL-ответ Meta не содержит доступного изображения или видео.");
-    await logger.success({
-      responseStatus: response.status,
-      responseHeaders: response.headers,
-      responseBody,
-      parseAttempts,
-    });
-    return media;
-  } catch (error) {
-    await logger.error(error, {
-      responseStatus: response?.status,
-      responseHeaders: response?.headers,
-      responseBody,
-      parseAttempts,
-    });
-    return undefined;
-  }
+  return browserPromise;
 }
 
 async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
@@ -473,101 +339,81 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
     registeredAds.delete(adId);
     throw new AppError(404, "META_AD_NOT_REGISTERED", "Объявление больше не зарегистрировано. Запустите поиск ещё раз.");
   }
+  if (!registration.snapshotUrl) {
+    throw new AppError(404, "META_SNAPSHOT_URL_MISSING", "Meta не вернула ad_snapshot_url для этого объявления.");
+  }
 
   await acquireSnapshotSlot();
-  const requestHeaders = {
-    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
-    Pragma: "no-cache",
-    Referer: "https://www.facebook.com/ads/library/",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-  };
-  const candidates = buildMetaSnapshotRequestCandidates(adId, registration.snapshotUrl);
-  let lastError: unknown;
-  let tokenError: AppError | undefined;
+  const pageLogger = await IntegrationLogger.start({
+    provider: "meta",
+    operation: "ad_snapshot_browser_page",
+    method: "GET",
+    url: registration.snapshotUrl,
+    body: { adId },
+  });
+  let context: Awaited<ReturnType<Browser["newContext"]>> | undefined;
+  let pageStatus: number | undefined;
+  let pageHeaders: Record<string, string> | undefined;
+  let pageHtml: string | undefined;
+  let pageLogFinished = false;
+  let graphqlLogger: IntegrationLogger | undefined;
+  let graphqlStatus: number | undefined;
+  let graphqlHeaders: Record<string, string> | undefined;
+  let graphqlBody: string | undefined;
+  const parseAttempts: MetaMediaParseAttempt[] = [{ stage: "browser_snapshot_start", adId }];
   try {
-    for (const [index, candidate] of candidates.entries()) {
-      const logger = await IntegrationLogger.start({
-        provider: "meta",
-        operation: "ad_library_preview_page",
-        method: "GET",
-        url: candidate.url,
-        headers: requestHeaders,
-        body: { adId, attempt: index + 1, totalAttempts: candidates.length, strategy: candidate.strategy },
-      });
-      let response: globalThis.Response | undefined;
-      let html: string | undefined;
-      const parseAttempts: MetaMediaParseAttempt[] = [{
-        stage: "snapshot_request",
-        attempt: index + 1,
-        totalAttempts: candidates.length,
-        strategy: candidate.strategy,
-      }];
-      try {
-        response = await fetch(candidate.url, {
-          headers: requestHeaders,
-          redirect: "follow",
-          signal: AbortSignal.timeout(12_000),
-        });
-        html = await readLimitedText(response);
-        parseAttempts.push({
-          stage: "snapshot_response",
-          status: response.status,
-          contentType: response.headers.get("content-type"),
-          proxyStatus: response.headers.get("proxy-status"),
-          finalUrl: response.url,
-          bodyLength: html.length,
-        });
-        if (/session has expired|error validating access token|invalid oauth access token/i.test(html)) {
-          throw new AppError(
-            401,
-            "META_TOKEN_EXPIRED",
-            "Токен Meta истёк, был отозван или больше не действителен.",
-            "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
-          );
-        }
-        if (!response.ok) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала страницу объявления (HTTP ${response.status}, попытка: ${candidate.strategy}).`);
-        const media = extractMetaMediaFromHtml(html, adId, parseAttempts)
-          ?? await fetchMetaDemoAdQuery(adId, candidate.url, response, html);
-        if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", `В ответе Meta не найдено изображение или видео (попытка: ${candidate.strategy}).`);
-        await logger.success({
-          responseStatus: response.status,
-          responseHeaders: response.headers,
-          responseBody: html,
-          parseAttempts,
-        });
-        return media;
-      } catch (error) {
-        lastError = error;
-        if (error instanceof AppError && error.code === "META_TOKEN_EXPIRED") tokenError = error;
-        parseAttempts.push({
-          stage: "snapshot_attempt_failed",
-          strategy: candidate.strategy,
-          willRetry: index < candidates.length - 1,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        await logger.error(error, {
-          responseStatus: response?.status,
-          responseHeaders: response?.headers,
-          responseBody: html,
-          parseAttempts,
-        });
-      }
+    const browser = await getMetaBrowser();
+    context = await browser.newContext({ locale: "ru-RU" });
+    const page = await context.newPage();
+    const graphqlResponsePromise = page.waitForResponse((response) => {
+      const requestBody = response.request().postData() ?? "";
+      return response.url().includes("/api/graphql/")
+        && requestBody.includes(META_DEMO_AD_QUERY_NAME)
+        && requestBody.includes(adId);
+    }, { timeout: 30_000 });
+    const [pageResponse, graphqlResponse] = await Promise.all([
+      page.goto(registration.snapshotUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }),
+      graphqlResponsePromise,
+    ]);
+    if (!pageResponse) throw new AppError(502, "META_AD_PAGE_FAILED", "Chromium не получил ответ страницы Meta.");
+    pageStatus = pageResponse.status();
+    pageHeaders = pageResponse.headers();
+    pageHtml = await page.content();
+    parseAttempts.push({ stage: "browser_snapshot_response", status: pageStatus, bodyLength: pageHtml.length });
+    if (!pageResponse.ok()) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала snapshot-страницу (HTTP ${pageStatus}).`);
+    await pageLogger.success({ responseStatus: pageStatus, responseHeaders: pageHeaders, responseBody: pageHtml, parseAttempts });
+    pageLogFinished = true;
+
+    const graphqlRequest = graphqlResponse.request();
+    graphqlStatus = graphqlResponse.status();
+    graphqlHeaders = graphqlResponse.headers();
+    graphqlBody = await graphqlResponse.text();
+    if (Buffer.byteLength(graphqlBody) > MAX_PAGE_BYTES) {
+      throw new AppError(502, "META_PAGE_TOO_LARGE", "GraphQL-ответ Meta слишком большой для обработки.");
     }
-    if (tokenError) throw tokenError;
-    if (lastError instanceof AppError && lastError.code === "META_MEDIA_NOT_FOUND") throw lastError;
-    throw new AppError(
-      502,
-      "META_AD_PAGE_FAILED",
-      "Meta не отдала страницу объявления ни одним из доступных способов.",
-      "Откройте Логи → Meta и проверьте отдельные попытки ad_snapshot_url, no-script и public_ad_library.",
-    );
+    graphqlLogger = await IntegrationLogger.start({
+      provider: "meta",
+      operation: "ad_snapshot_graphql_content",
+      method: graphqlRequest.method(),
+      url: graphqlRequest.url(),
+      headers: await graphqlRequest.allHeaders(),
+      body: graphqlRequest.postData(),
+    });
+    parseAttempts.push({ stage: "browser_graphql_response", status: graphqlStatus, bodyLength: graphqlBody.length });
+    const media = extractMetaMediaFromHtml(graphqlBody, adId, parseAttempts);
+    if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", "Рабочий GraphQL-ответ Meta не содержит изображения или видео.");
+    await graphqlLogger.success({ responseStatus: graphqlStatus, responseHeaders: graphqlHeaders, responseBody: graphqlBody, parseAttempts });
+    return media;
+  } catch (error) {
+    if (!pageLogFinished) {
+      await pageLogger.error(error, { responseStatus: pageStatus, responseHeaders: pageHeaders, responseBody: pageHtml, parseAttempts });
+    }
+    if (graphqlLogger) {
+      await graphqlLogger.error(error, { responseStatus: graphqlStatus, responseHeaders: graphqlHeaders, responseBody: graphqlBody, parseAttempts });
+    }
+    throw error;
   } finally {
+    await context?.close().catch(() => undefined);
     releaseSnapshotSlot();
   }
 }

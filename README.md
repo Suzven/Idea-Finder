@@ -23,6 +23,7 @@
 ```bash
 corepack enable
 pnpm install
+pnpm exec playwright install chromium
 cp .env.example .env
 pnpm dev
 ```
@@ -46,6 +47,8 @@ pnpm build
 - `docs/DEPLOY_HESTIA.md` — пошаговое production-развёртывание с объяснением роли каждого компонента.
 
 Никакой API-секрет не попадает в React bundle: внешние запросы выполняются только Express-сервером.
+
+Превью Meta загружаются из официального `ad_snapshot_url` через headless Chromium: сервер перехватывает настоящий JSON-запрос страницы и получает креатив, постер видео, аватар рекламодателя и `link_url` кнопки. Если Chromium установлен отдельно, укажите полный путь в `META_CHROMIUM_EXECUTABLE_PATH`.
 
 ## Интеграционные логи
 

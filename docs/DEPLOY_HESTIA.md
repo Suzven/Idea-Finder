@@ -29,6 +29,7 @@ sudo -u HESTIA_USER git clone YOUR_REPOSITORY_URL /home/HESTIA_USER/web/DOMAIN/n
 cd /home/HESTIA_USER/web/DOMAIN/nodeapp
 sudo -u HESTIA_USER corepack enable
 sudo -u HESTIA_USER pnpm install --frozen-lockfile
+sudo -u HESTIA_USER pnpm exec playwright install chromium
 sudo -u HESTIA_USER pnpm build
 sudo -u HESTIA_USER cp .env.example .env
 sudo -u HESTIA_USER chmod 600 .env
@@ -130,6 +131,7 @@ sudo systemctl is-active spyservice
 cd /home/HESTIA_USER/web/DOMAIN/nodeapp
 sudo -u HESTIA_USER git pull --ff-only
 sudo -u HESTIA_USER pnpm install --frozen-lockfile
+sudo -u HESTIA_USER pnpm exec playwright install chromium
 sudo -u HESTIA_USER pnpm build
 sudo systemctl restart spyservice
 curl --fail http://127.0.0.1:4100/api/health

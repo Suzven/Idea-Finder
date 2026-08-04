@@ -15,6 +15,7 @@ export const config = {
   },
   metaAccessToken: process.env.META_ACCESS_TOKEN,
   metaGraphVersion: process.env.META_GRAPH_VERSION ?? "v26.0",
+  metaChromiumExecutablePath: process.env.META_CHROMIUM_EXECUTABLE_PATH,
   tiktokAccessToken: process.env.TIKTOK_ACCESS_TOKEN,
   trustProxy: process.env.TRUST_PROXY === "true",
 };
