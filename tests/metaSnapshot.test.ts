@@ -138,4 +138,31 @@ describe("extractMetaMediaFromHtml", () => {
       thumbnailUrl: "https://scontent.xx.fbcdn.net/video-poster.jpg",
     });
   });
+
+  it("extracts media, avatar and landing URL from the demo-ad GraphQL response", () => {
+    const response = JSON.stringify({
+      data: {
+        ad_library_main: {
+          demo_ad_archive_result: {
+            demo_ad_archive: {
+              ad_archive_id: "333",
+              snapshot: {
+                page_profile_picture_url: "https://scontent.xx.fbcdn.net/page.jpg",
+                link_url: "https://shop.example/product",
+                images: [{ original_image_url: "https://scontent.xx.fbcdn.net/creative.jpg" }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(extractMetaMediaFromHtml(response, "333")).toEqual({
+      mediaType: "image",
+      mediaUrl: "https://scontent.xx.fbcdn.net/creative.jpg",
+      thumbnailUrl: "https://scontent.xx.fbcdn.net/creative.jpg",
+      advertiserAvatar: "https://scontent.xx.fbcdn.net/page.jpg",
+      landingUrl: "https://shop.example/product",
+    });
+  });
 });

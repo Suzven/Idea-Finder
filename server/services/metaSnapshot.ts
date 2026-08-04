@@ -33,6 +33,8 @@ export interface MetaMediaParseAttempt {
 }
 
 const MAX_PAGE_BYTES = 5 * 1024 * 1024;
+const META_DEMO_AD_QUERY_ID = "32740921038887979";
+const META_DEMO_AD_QUERY_NAME = "AdLibraryV3DemoAdContentQuery";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const REGISTRATION_TTL_MS = 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
@@ -148,6 +150,10 @@ function extractLandingUrl(source: string, diagnostics: MetaMediaParseAttempt[])
       const isLinkShim = /https?:\/\/(?:l|lm)\.facebook\.com\/l\.php/i.test(rawUrl);
       candidates.push({ url, score: (attribute === "data-lynx-uri" ? 1_100 : 1_000) + (isLinkShim ? 100 : 0), attribute });
     }
+  }
+  for (const match of source.matchAll(/["']link_url["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/gi)) {
+    const url = decodeLandingUrl(match[1]);
+    if (url) candidates.push({ url, score: 950, attribute: "link_url" });
   }
   candidates.sort((a, b) => b.score - a.score);
   diagnostics.push({ stage: "landing_url", candidates: candidates.length, selected: candidates[0] ?? null });
@@ -362,6 +368,105 @@ async function readLimitedText(response: globalThis.Response): Promise<string> {
   return new TextDecoder().decode(body);
 }
 
+function extractPageSessionCookies(headers: Headers): string | undefined {
+  const values = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [];
+  const cookies = values
+    .map((value) => value.split(";", 1)[0]?.trim())
+    .filter((value): value is string => Boolean(value));
+  return cookies.length > 0 ? cookies.join("; ") : undefined;
+}
+
+function extractLsdToken(html: string): string | undefined {
+  return html.match(/["']LSD["']\s*,\s*\[\]\s*,\s*\{["']token["']\s*:\s*["']([^"']+)["']/)?.[1];
+}
+
+async function fetchMetaDemoAdQuery(
+  adId: string,
+  pageUrl: string,
+  pageResponse: globalThis.Response,
+  pageHtml: string,
+): Promise<ExtractedMetaMedia | undefined> {
+  if (!/AdLibraryV3DemoAd\.react|AdLibraryV3DemoAdContentQuery/i.test(pageHtml)) return undefined;
+  const graphqlUrl = "https://www.facebook.com/api/graphql/";
+  const lsd = extractLsdToken(pageHtml);
+  const cookie = extractPageSessionCookies(pageResponse.headers);
+  const pageAccessToken = new URL(pageUrl).searchParams.get("access_token") ?? config.metaAccessToken;
+  const body = new URLSearchParams({
+    fb_api_caller_class: "RelayModern",
+    fb_api_req_friendly_name: META_DEMO_AD_QUERY_NAME,
+    variables: JSON.stringify({ adID: adId }),
+    server_timestamps: "true",
+    doc_id: META_DEMO_AD_QUERY_ID,
+    ...(lsd ? { lsd } : {}),
+    ...(pageAccessToken ? { access_token: pageAccessToken } : {}),
+  });
+  const headers = {
+    Accept: "*/*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "Content-Type": "application/x-www-form-urlencoded",
+    Origin: "https://www.facebook.com",
+    Referer: pageUrl,
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "X-FB-Friendly-Name": META_DEMO_AD_QUERY_NAME,
+    ...(lsd ? { "X-FB-LSD": lsd } : {}),
+    ...(cookie ? { Cookie: cookie } : {}),
+  };
+  const logger = await IntegrationLogger.start({
+    provider: "meta",
+    operation: "ad_snapshot_graphql_content",
+    method: "POST",
+    url: graphqlUrl,
+    headers,
+    body,
+  });
+  let response: globalThis.Response | undefined;
+  let responseBody: string | undefined;
+  const parseAttempts: MetaMediaParseAttempt[] = [{
+    stage: "graphql_request",
+    queryName: META_DEMO_AD_QUERY_NAME,
+    queryId: META_DEMO_AD_QUERY_ID,
+    adId,
+    hasLsd: Boolean(lsd),
+    hasSessionCookies: Boolean(cookie),
+    hasAccessToken: Boolean(pageAccessToken),
+  }];
+  try {
+    response = await fetch(graphqlUrl, {
+      method: "POST",
+      headers,
+      body,
+      redirect: "follow",
+      signal: AbortSignal.timeout(12_000),
+    });
+    responseBody = await readLimitedText(response);
+    parseAttempts.push({
+      stage: "graphql_response",
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      bodyLength: responseBody.length,
+      hasErrors: /["']errors["']\s*:/.test(responseBody),
+    });
+    if (!response.ok) throw new AppError(502, "META_GRAPHQL_FAILED", `Meta не отдала данные креатива (GraphQL HTTP ${response.status}).`);
+    const media = extractMetaMediaFromHtml(responseBody, adId, parseAttempts);
+    if (!media) throw new AppError(404, "META_GRAPHQL_MEDIA_NOT_FOUND", "GraphQL-ответ Meta не содержит доступного изображения или видео.");
+    await logger.success({
+      responseStatus: response.status,
+      responseHeaders: response.headers,
+      responseBody,
+      parseAttempts,
+    });
+    return media;
+  } catch (error) {
+    await logger.error(error, {
+      responseStatus: response?.status,
+      responseHeaders: response?.headers,
+      responseBody,
+      parseAttempts,
+    });
+    return undefined;
+  }
+}
+
 async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
   const registration = registeredAds.get(adId);
   if (!registration || registration.expiresAt <= Date.now()) {
@@ -427,7 +532,8 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
           );
         }
         if (!response.ok) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала страницу объявления (HTTP ${response.status}, попытка: ${candidate.strategy}).`);
-        const media = extractMetaMediaFromHtml(html, adId, parseAttempts);
+        const media = extractMetaMediaFromHtml(html, adId, parseAttempts)
+          ?? await fetchMetaDemoAdQuery(adId, candidate.url, response, html);
         if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", `В ответе Meta не найдено изображение или видео (попытка: ${candidate.strategy}).`);
         await logger.success({
           responseStatus: response.status,
