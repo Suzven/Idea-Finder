@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { Request, Response } from "express";
+import { config } from "../config.js";
 import { AppError } from "../errors.js";
 import { IntegrationLogger } from "./integrationLogger.js";
 
@@ -35,7 +36,7 @@ const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const REGISTRATION_TTL_MS = 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
-const registeredAds = new Map<string, { url: string; expiresAt: number }>();
+const registeredAds = new Map<string, { snapshotUrl?: string; expiresAt: number }>();
 const mediaCache = new Map<string, { value: Promise<ExtractedMetaMedia>; expiresAt: number }>();
 const waiters: Array<() => void> = [];
 let activeSnapshots = 0;
@@ -277,11 +278,51 @@ function validateSnapshotUrl(adId: string, snapshotUrl: string | undefined): str
 export function registerMetaAd(adId: string, snapshotUrl?: string): string | undefined {
   if (!/^\d+$/.test(adId)) return undefined;
   const validatedSnapshotUrl = validateSnapshotUrl(adId, snapshotUrl);
-  const pageUrl = new URL("https://www.facebook.com/ads/library/");
-  pageUrl.searchParams.set("id", adId);
-  registeredAds.set(adId, { url: validatedSnapshotUrl ?? pageUrl.toString(), expiresAt: Date.now() + REGISTRATION_TTL_MS });
+  registeredAds.set(adId, { snapshotUrl: validatedSnapshotUrl, expiresAt: Date.now() + REGISTRATION_TTL_MS });
   pruneMaps();
   return `/api/meta/media/${encodeURIComponent(adId)}`;
+}
+
+interface SnapshotRequestCandidate {
+  strategy: "ad_snapshot_url" | "ad_snapshot_url_noscript" | "current_token_noscript" | "public_ad_library";
+  url: string;
+}
+
+export function buildMetaSnapshotRequestCandidates(
+  adId: string,
+  snapshotUrl?: string,
+  accessToken = config.metaAccessToken,
+): SnapshotRequestCandidate[] {
+  const candidates: SnapshotRequestCandidate[] = [];
+  const seen = new Set<string>();
+  const add = (strategy: SnapshotRequestCandidate["strategy"], url: URL) => {
+    const value = url.toString();
+    if (seen.has(value)) return;
+    seen.add(value);
+    candidates.push({ strategy, url: value });
+  };
+
+  const validatedSnapshotUrl = validateSnapshotUrl(adId, snapshotUrl);
+  if (validatedSnapshotUrl) {
+    const snapshot = new URL(validatedSnapshotUrl);
+    add("ad_snapshot_url", snapshot);
+    const noScriptSnapshot = new URL(snapshot);
+    noScriptSnapshot.searchParams.set("_fb_noscript", "1");
+    add("ad_snapshot_url_noscript", noScriptSnapshot);
+  }
+
+  if (accessToken && (!validatedSnapshotUrl || new URL(validatedSnapshotUrl).searchParams.get("access_token") !== accessToken)) {
+    const currentTokenSnapshot = new URL("https://www.facebook.com/ads/archive/render_ad/");
+    currentTokenSnapshot.searchParams.set("id", adId);
+    currentTokenSnapshot.searchParams.set("access_token", accessToken);
+    currentTokenSnapshot.searchParams.set("_fb_noscript", "1");
+    add("current_token_noscript", currentTokenSnapshot);
+  }
+
+  const publicPage = new URL("https://www.facebook.com/ads/library/");
+  publicPage.searchParams.set("id", adId);
+  add("public_ad_library", publicPage);
+  return candidates;
 }
 
 async function acquireSnapshotSlot(): Promise<void> {
@@ -330,53 +371,96 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
 
   await acquireSnapshotSlot();
   const requestHeaders = {
-    Accept: "text/html,application/xhtml+xml",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+    Referer: "https://www.facebook.com/ads/library/",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
   };
-  const logger = await IntegrationLogger.start({
-    provider: "meta",
-    operation: "ad_library_preview_page",
-    method: "GET",
-    url: registration.url,
-    headers: requestHeaders,
-  });
-  let response: globalThis.Response | undefined;
-  let html: string | undefined;
-  const parseAttempts: MetaMediaParseAttempt[] = [];
+  const candidates = buildMetaSnapshotRequestCandidates(adId, registration.snapshotUrl);
+  let lastError: unknown;
+  let tokenError: AppError | undefined;
   try {
-    response = await fetch(registration.url, {
-      headers: requestHeaders,
-      redirect: "follow",
-      signal: AbortSignal.timeout(15_000),
-    });
-    html = await readLimitedText(response);
-    if (/session has expired|error validating access token|invalid oauth access token/i.test(html)) {
-      throw new AppError(
-        401,
-        "META_TOKEN_EXPIRED",
-        "Токен Meta истёк, был отозван или больше не действителен.",
-        "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
-      );
+    for (const [index, candidate] of candidates.entries()) {
+      const logger = await IntegrationLogger.start({
+        provider: "meta",
+        operation: "ad_library_preview_page",
+        method: "GET",
+        url: candidate.url,
+        headers: requestHeaders,
+        body: { adId, attempt: index + 1, totalAttempts: candidates.length, strategy: candidate.strategy },
+      });
+      let response: globalThis.Response | undefined;
+      let html: string | undefined;
+      const parseAttempts: MetaMediaParseAttempt[] = [{
+        stage: "snapshot_request",
+        attempt: index + 1,
+        totalAttempts: candidates.length,
+        strategy: candidate.strategy,
+      }];
+      try {
+        response = await fetch(candidate.url, {
+          headers: requestHeaders,
+          redirect: "follow",
+          signal: AbortSignal.timeout(12_000),
+        });
+        html = await readLimitedText(response);
+        parseAttempts.push({
+          stage: "snapshot_response",
+          status: response.status,
+          contentType: response.headers.get("content-type"),
+          proxyStatus: response.headers.get("proxy-status"),
+          finalUrl: response.url,
+          bodyLength: html.length,
+        });
+        if (/session has expired|error validating access token|invalid oauth access token/i.test(html)) {
+          throw new AppError(
+            401,
+            "META_TOKEN_EXPIRED",
+            "Токен Meta истёк, был отозван или больше не действителен.",
+            "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
+          );
+        }
+        if (!response.ok) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала страницу объявления (HTTP ${response.status}, попытка: ${candidate.strategy}).`);
+        const media = extractMetaMediaFromHtml(html, adId, parseAttempts);
+        if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", `В ответе Meta не найдено изображение или видео (попытка: ${candidate.strategy}).`);
+        await logger.success({
+          responseStatus: response.status,
+          responseHeaders: response.headers,
+          responseBody: html,
+          parseAttempts,
+        });
+        return media;
+      } catch (error) {
+        lastError = error;
+        if (error instanceof AppError && error.code === "META_TOKEN_EXPIRED") tokenError = error;
+        parseAttempts.push({
+          stage: "snapshot_attempt_failed",
+          strategy: candidate.strategy,
+          willRetry: index < candidates.length - 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await logger.error(error, {
+          responseStatus: response?.status,
+          responseHeaders: response?.headers,
+          responseBody: html,
+          parseAttempts,
+        });
+      }
     }
-    if (!response.ok) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала страницу объявления (HTTP ${response.status}).`);
-    const media = extractMetaMediaFromHtml(html, adId, parseAttempts);
-    if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", "На странице объявления не найдено доступное изображение или видео.");
-    await logger.success({
-      responseStatus: response.status,
-      responseHeaders: response.headers,
-      responseBody: html,
-      parseAttempts,
-    });
-    return media;
-  } catch (error) {
-    await logger.error(error, {
-      responseStatus: response?.status,
-      responseHeaders: response?.headers,
-      responseBody: html,
-      parseAttempts,
-    });
-    throw error;
+    if (tokenError) throw tokenError;
+    if (lastError instanceof AppError && lastError.code === "META_MEDIA_NOT_FOUND") throw lastError;
+    throw new AppError(
+      502,
+      "META_AD_PAGE_FAILED",
+      "Meta не отдала страницу объявления ни одним из доступных способов.",
+      "Откройте Логи → Meta и проверьте отдельные попытки ad_snapshot_url, no-script и public_ad_library.",
+    );
   } finally {
     releaseSnapshotSlot();
   }
