@@ -250,7 +250,7 @@ body.modal-open { overflow: hidden; }
 }
 
 @media (max-width: 1280px) {
-  .ads-grid.columns-5 { --columns: 4; }
+  .ads-grid.columns-5 { --columns: 3; }
   .filter-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .filter-field.wide { grid-column: span 2; }
 }
