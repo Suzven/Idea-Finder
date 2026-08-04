@@ -9,7 +9,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, closeDatabase, getFavoriteIds, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteIds, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -152,7 +152,13 @@ const server = app.listen(config.port, "0.0.0.0", () => {
   console.log(`SpyService API: http://localhost:${config.port} (${config.apiMode})`);
 });
 
+const LOG_CLEANUP_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+void deleteExpiredIntegrationLogs(7);
+const logCleanupTimer = setInterval(() => { void deleteExpiredIntegrationLogs(7); }, LOG_CLEANUP_INTERVAL_MS);
+logCleanupTimer.unref();
+
 async function shutdown(): Promise<void> {
+  clearInterval(logCleanupTimer);
   server.close(async () => {
     await closeDatabase();
     process.exit(0);

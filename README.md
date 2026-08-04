@@ -41,7 +41,22 @@ pnpm build
 
 - `.env.example` — все переменные среды;
 - `db/migrations/001_initial.sql` — MySQL/MariaDB-схема для phpMyAdmin;
+- `db/migrations/002_integration_logs.sql` — таблица подробных логов Meta/TikTok;
 - `docs/API_ACCESS.md` — получение и подключение API-токенов;
 - `docs/DEPLOY_HESTIA.md` — пошаговое production-развёртывание с объяснением роли каждого компонента.
 
 Никакой API-секрет не попадает в React bundle: внешние запросы выполняются только Express-сервером.
+
+## Интеграционные логи
+
+После основной схемы импортируйте `db/migrations/002_integration_logs.sql`. В `integration_logs` сохраняются запрос, ответ, HTTP-метаданные, длительность, ошибка и подробные этапы разбора `parse_attempts`. Токены, Authorization и cookies маскируются.
+
+Сервис при запуске и затем раз в неделю удаляет записи старше семи дней. Последние ошибки можно посмотреть запросом:
+
+```sql
+SELECT *
+FROM integration_logs
+WHERE status = 'error'
+ORDER BY created_at DESC
+LIMIT 100;
+```

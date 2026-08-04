@@ -1,6 +1,7 @@
 import type { AdCreative, AdFilters, AdsResponse } from "../../src/shared/types.js";
 import { config } from "../config.js";
 import { filterAds } from "../services/filterAds.js";
+import { IntegrationLogger } from "../services/integrationLogger.js";
 
 interface TikTokAdDto {
   ad?: {
@@ -53,52 +54,97 @@ export async function fetchTikTokAds(filters: Partial<AdFilters>, cursor: string
     ...(cursor ? { search_id: cursor } : {}),
   };
 
-  const response = await fetch(`https://open.tiktokapis.com/v2/research/adlib/ad/query/?fields=${encodeURIComponent(fields)}`, {
+  const requestUrl = `https://open.tiktokapis.com/v2/research/adlib/ad/query/?fields=${encodeURIComponent(fields)}`;
+  const requestHeaders = { Authorization: `Bearer ${config.tiktokAccessToken}`, "Content-Type": "application/json" };
+  const logger = await IntegrationLogger.start({
+    provider: "tiktok",
+    operation: "adlib_query",
     method: "POST",
-    headers: { Authorization: `Bearer ${config.tiktokAccessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    url: requestUrl,
+    headers: requestHeaders,
+    body,
   });
-  const payload = await response.json() as TikTokResponse;
-  if (!response.ok || (payload.error?.code && payload.error.code !== "ok")) {
-    throw new Error(payload.error?.message ?? `TikTok API: HTTP ${response.status}`);
-  }
+  let response: globalThis.Response | undefined;
+  let rawResponse: unknown;
+  const parseAttempts: unknown[] = [];
+  try {
+    response = await fetch(requestUrl, { method: "POST", headers: requestHeaders, body: JSON.stringify(body) });
+    rawResponse = typeof response.text === "function" ? await response.text() : JSON.stringify(await response.json());
+    const payload = JSON.parse(String(rawResponse)) as TikTokResponse;
+    parseAttempts.push({
+      stage: "provider_payload",
+      adsReceived: payload.data?.ads?.length ?? 0,
+      hasMore: payload.data?.has_more ?? false,
+      hasSearchId: Boolean(payload.data?.search_id),
+      providerError: payload.error ?? null,
+    });
+    if (!response.ok || (payload.error?.code && payload.error.code !== "ok")) {
+      throw new Error(payload.error?.message ?? `TikTok API: HTTP ${response.status}`);
+    }
 
-  const mapped: AdCreative[] = (payload.data?.ads ?? []).map((item, index) => {
-    const ad = item.ad ?? {};
-    const advertiser = item.advertiser ?? {};
-    const id = String(ad.id ?? `${Date.now()}-${index}`);
-    const video = ad.videos?.find((candidate) => candidate.url)?.url;
-    const image = ad.image_urls?.[0];
-    const startedAt = ad.first_shown_date ? `${ad.first_shown_date.slice(0, 4)}-${ad.first_shown_date.slice(4, 6)}-${ad.first_shown_date.slice(6, 8)}T00:00:00Z` : new Date().toISOString();
-    const endedAt = ad.last_shown_date ? `${ad.last_shown_date.slice(0, 4)}-${ad.last_shown_date.slice(4, 6)}-${ad.last_shown_date.slice(6, 8)}T00:00:00Z` : undefined;
-    return {
-      id: `tiktok-${id}`,
-      source: "tiktok",
-      advertiser: advertiser.business_name ?? `Advertiser ${advertiser.business_id ?? id}`,
-      country: filters.country ?? "EU",
-      countryName: filters.country ?? "Европейская экономическая зона",
-      platforms: ["TikTok"],
-      mediaType: video ? "video" : "image",
-      mediaUrl: video ?? image ?? "",
-      thumbnailUrl: image ?? "",
-      headline: advertiser.business_name ?? "TikTok Ad",
-      body: advertiser.paid_for_by ?? advertiser.paid_by ?? "Публичное рекламное объявление TikTok.",
-      cta: "Открыть",
-      sourceUrl: "https://library.tiktok.com/ads/",
-      startedAt,
-      endedAt,
-      daysActive: Math.max(1, Math.ceil(((endedAt ? Date.parse(endedAt) : Date.now()) - Date.parse(startedAt)) / 86_400_000)),
-      reach: parseReach(ad.reach?.unique_users_seen),
-      savedCount: 0,
-      language: "",
+    const mapped: AdCreative[] = (payload.data?.ads ?? []).map((item, index) => {
+      const ad = item.ad ?? {};
+      const advertiser = item.advertiser ?? {};
+      const id = String(ad.id ?? `${Date.now()}-${index}`);
+      const video = ad.videos?.find((candidate) => candidate.url)?.url;
+      const image = ad.image_urls?.[0];
+      const startedAt = ad.first_shown_date ? `${ad.first_shown_date.slice(0, 4)}-${ad.first_shown_date.slice(4, 6)}-${ad.first_shown_date.slice(6, 8)}T00:00:00Z` : new Date().toISOString();
+      const endedAt = ad.last_shown_date ? `${ad.last_shown_date.slice(0, 4)}-${ad.last_shown_date.slice(4, 6)}-${ad.last_shown_date.slice(6, 8)}T00:00:00Z` : undefined;
+      const normalized: AdCreative = {
+        id: `tiktok-${id}`,
+        source: "tiktok",
+        advertiser: advertiser.business_name ?? `Advertiser ${advertiser.business_id ?? id}`,
+        country: filters.country ?? "EU",
+        countryName: filters.country ?? "Европейская экономическая зона",
+        platforms: ["TikTok"],
+        mediaType: video ? "video" : "image",
+        mediaUrl: video ?? image ?? "",
+        thumbnailUrl: image ?? "",
+        headline: advertiser.business_name ?? "TikTok Ad",
+        body: advertiser.paid_for_by ?? advertiser.paid_by ?? "Публичное рекламное объявление TikTok.",
+        cta: "Открыть",
+        sourceUrl: "https://library.tiktok.com/ads/",
+        startedAt,
+        endedAt,
+        daysActive: Math.max(1, Math.ceil(((endedAt ? Date.parse(endedAt) : Date.now()) - Date.parse(startedAt)) / 86_400_000)),
+        reach: parseReach(ad.reach?.unique_users_seen),
+        savedCount: 0,
+        language: "",
+      };
+      parseAttempts.push({
+        stage: "normalize_card",
+        externalId: id,
+        inputs: {
+          hasVideo: Boolean(video),
+          hasImage: Boolean(image),
+          hasAdvertiserName: Boolean(advertiser.business_name),
+          rawReach: ad.reach?.unique_users_seen ?? null,
+          firstShownDate: ad.first_shown_date ?? null,
+          lastShownDate: ad.last_shown_date ?? null,
+        },
+        output: normalized,
+      });
+      return normalized;
+    });
+
+    const items = filterAds(mapped, filters);
+    parseAttempts.push({ stage: "local_filters", before: mapped.length, after: items.length, filters });
+    const result: AdsResponse = {
+      items,
+      nextCursor: payload.data?.has_more ? payload.data.search_id ?? null : null,
+      total: mapped.length,
+      mode: "live",
+      limitations: ["TikTok Commercial Content API на старте охватывает рекламные данные ЕЭЗ и требует одобренный research.adlib.basic доступ."],
     };
-  });
-
-  return {
-    items: filterAds(mapped, filters),
-    nextCursor: payload.data?.has_more ? payload.data.search_id ?? null : null,
-    total: mapped.length,
-    mode: "live",
-    limitations: ["TikTok Commercial Content API на старте охватывает рекламные данные ЕЭЗ и требует одобренный research.adlib.basic доступ."],
-  };
+    await logger.success({ responseStatus: response.status, responseHeaders: response.headers, responseBody: rawResponse, parseAttempts });
+    return result;
+  } catch (error) {
+    await logger.error(error, {
+      responseStatus: response?.status,
+      responseHeaders: response?.headers,
+      responseBody: rawResponse,
+      parseAttempts,
+    });
+    throw error;
+  }
 }

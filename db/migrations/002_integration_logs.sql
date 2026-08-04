@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS integration_logs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    trace_id CHAR(36) NOT NULL,
+    provider ENUM('meta', 'tiktok') NOT NULL,
+    operation VARCHAR(80) NOT NULL,
+    status ENUM('started', 'success', 'error') NOT NULL DEFAULT 'started',
+    request_method VARCHAR(10) NOT NULL,
+    request_url TEXT NOT NULL,
+    request_headers JSON NULL,
+    request_body LONGTEXT NULL,
+    response_status SMALLINT UNSIGNED NULL,
+    response_headers JSON NULL,
+    response_body LONGTEXT NULL,
+    parse_attempts JSON NULL,
+    error_message TEXT NULL,
+    duration_ms INT UNSIGNED NULL,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    completed_at TIMESTAMP(3) NULL DEFAULT NULL,
+    KEY integration_logs_created_idx (created_at),
+    KEY integration_logs_provider_operation_idx (provider, operation, created_at),
+    KEY integration_logs_status_idx (status, created_at),
+    UNIQUE KEY integration_logs_trace_unique (trace_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

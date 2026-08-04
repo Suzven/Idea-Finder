@@ -57,4 +57,21 @@ describe("extractMetaMediaFromHtml", () => {
       advertiserAvatar: "https://scontent.xx.fbcdn.net/page_s60x60.jpg",
     });
   });
+
+  it("records detailed candidate diagnostics for preview troubleshooting", () => {
+    const diagnostics: Array<{ stage: string; [key: string]: unknown }> = [];
+    const result = extractMetaMediaFromHtml(
+      '<img src="https://attacker.example/tracker.jpg"><img width="1080" height="1080" src="https://scontent.xx.fbcdn.net/creative.jpg">',
+      undefined,
+      diagnostics,
+    );
+
+    expect(result?.mediaUrl).toBe("https://scontent.xx.fbcdn.net/creative.jpg");
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "target_ad", targetFound: true }),
+      expect.objectContaining({ stage: "candidate_rejected", reason: "invalid_or_non_meta_url" }),
+      expect.objectContaining({ stage: "candidate_accepted", kind: "image" }),
+      expect.objectContaining({ stage: "candidate_selection", imageCandidates: 1 }),
+    ]));
+  });
 });

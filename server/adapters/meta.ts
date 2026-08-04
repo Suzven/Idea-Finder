@@ -2,6 +2,7 @@ import type { AdCreative, AdFilters, AdsResponse } from "../../src/shared/types.
 import { config } from "../config.js";
 import { AppError } from "../errors.js";
 import { filterAds } from "../services/filterAds.js";
+import { IntegrationLogger } from "../services/integrationLogger.js";
 import { registerMetaAd } from "../services/metaSnapshot.js";
 
 interface MetaAd {
@@ -98,73 +99,119 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
   }
   if (cursor) params.set("after", cursor);
 
-  const response = await fetch(`https://graph.facebook.com/${config.metaGraphVersion}/ads_archive?${params}`);
-  const payload = await response.json() as MetaResponse;
-  if (isInvalidAccessToken(payload.error)) {
-    throw new AppError(
-      401,
-      "META_TOKEN_EXPIRED",
-      "Токен Meta истёк, был отозван или больше не действителен.",
-      "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
-    );
-  }
-  if (!response.ok || payload.error) throw new Error(payload.error?.message ?? `Meta API: HTTP ${response.status}`);
-
-  const mapped: AdCreative[] = (payload.data ?? []).map((ad) => {
-    const startedAt = ad.ad_delivery_start_time ?? ad.ad_creation_time ?? new Date().toISOString();
-    const endedAt = ad.ad_delivery_stop_time;
-    const daysActive = Math.max(1, Math.ceil(((endedAt ? Date.parse(endedAt) : Date.now()) - Date.parse(startedAt)) / 86_400_000));
-    const displayWebsite = ad.ad_creative_link_captions?.[0]?.trim();
-    const landingUrl = firstUrl([ad.ad_creative_bodies, ad.ad_creative_link_descriptions])
-      ?? normalizeWebsite(displayWebsite);
-    return {
-      id: `meta-${ad.id}`,
-      source: "meta",
-      advertiser: ad.page_name ?? `Страница ${ad.page_id ?? ad.id}`,
-      country: filters.country ?? "ALL",
-      countryName: filters.country ?? "Все страны",
-      platforms: (ad.publisher_platforms ?? ["Facebook"]).map((value) => value.replaceAll("_", " ")),
-      mediaType: filters.mediaType === "video" ? "video" : "image",
-      mediaUrl: "",
-      thumbnailUrl: "",
-      mediaInfoUrl: registerMetaAd(ad.id),
-      headline: ad.ad_creative_link_titles?.[0] ?? "Объявление Meta",
-      body: ad.ad_creative_bodies?.[0] ?? ad.ad_creative_link_descriptions?.[0] ?? "Откройте оригинал объявления для просмотра креатива.",
-      cta: "Открыть объявление",
-      landingUrl,
-      appUrl: displayWebsite,
-      // ad_snapshot_url contains the access token, so it must never reach the browser.
-      sourceUrl: `https://www.facebook.com/ads/library/?id=${encodeURIComponent(ad.id)}`,
-      startedAt,
-      endedAt,
-      daysActive,
-      reach: parseReach(ad),
-      savedCount: 0,
-      language: ad.languages?.[0] ?? "",
-    };
+  const requestUrl = `https://graph.facebook.com/${config.metaGraphVersion}/ads_archive?${params}`;
+  const logger = await IntegrationLogger.start({
+    provider: "meta",
+    operation: "ads_archive_query",
+    method: "GET",
+    url: requestUrl,
+    body: { queryParameters: Object.fromEntries(params.entries()) },
   });
+  let response: globalThis.Response | undefined;
+  let rawResponse: unknown;
+  const parseAttempts: unknown[] = [];
+  try {
+    response = await fetch(requestUrl);
+    rawResponse = typeof response.text === "function" ? await response.text() : JSON.stringify(await response.json());
+    const payload = JSON.parse(String(rawResponse)) as MetaResponse;
+    parseAttempts.push({
+      stage: "provider_payload",
+      dataIsArray: Array.isArray(payload.data),
+      adsReceived: payload.data?.length ?? 0,
+      hasPagingCursor: Boolean(payload.paging?.cursors?.after),
+      providerError: payload.error ?? null,
+    });
+    if (isInvalidAccessToken(payload.error)) {
+      throw new AppError(
+        401,
+        "META_TOKEN_EXPIRED",
+        "Токен Meta истёк, был отозван или больше не действителен.",
+        "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
+      );
+    }
+    if (!response.ok || payload.error) throw new Error(payload.error?.message ?? `Meta API: HTTP ${response.status}`);
 
-  // Meta has already applied these filters. Applying them again locally can
-  // incorrectly discard fuzzy matches returned by the provider (for example,
-  // a search term that is present in data not included in the requested fields).
-  const {
-    search: _search,
-    searchMode: _searchMode,
-    country: _country,
-    dateFrom: _dateFrom,
-    dateTo: _dateTo,
-    language: _language,
-    mediaType: _mediaType,
-    platform: _platform,
-    ...localFilters
-  } = filters;
-  const items = filterAds(mapped, localFilters);
+    const mapped: AdCreative[] = (payload.data ?? []).map((ad) => {
+      const startedAt = ad.ad_delivery_start_time ?? ad.ad_creation_time ?? new Date().toISOString();
+      const endedAt = ad.ad_delivery_stop_time;
+      const daysActive = Math.max(1, Math.ceil(((endedAt ? Date.parse(endedAt) : Date.now()) - Date.parse(startedAt)) / 86_400_000));
+      const displayWebsite = ad.ad_creative_link_captions?.[0]?.trim();
+      const landingUrl = firstUrl([ad.ad_creative_bodies, ad.ad_creative_link_descriptions])
+        ?? normalizeWebsite(displayWebsite);
+      const normalized: AdCreative = {
+        id: `meta-${ad.id}`,
+        source: "meta",
+        advertiser: ad.page_name ?? `Страница ${ad.page_id ?? ad.id}`,
+        country: filters.country ?? "ALL",
+        countryName: filters.country ?? "Все страны",
+        platforms: (ad.publisher_platforms ?? ["Facebook"]).map((value) => value.replaceAll("_", " ")),
+        mediaType: filters.mediaType === "video" ? "video" : "image",
+        mediaUrl: "",
+        thumbnailUrl: "",
+        mediaInfoUrl: registerMetaAd(ad.id),
+        headline: ad.ad_creative_link_titles?.[0] ?? "Объявление Meta",
+        body: ad.ad_creative_bodies?.[0] ?? ad.ad_creative_link_descriptions?.[0] ?? "Откройте оригинал объявления для просмотра креатива.",
+        cta: "Открыть объявление",
+        landingUrl,
+        appUrl: displayWebsite,
+        // ad_snapshot_url contains the access token, so it must never reach the browser.
+        sourceUrl: `https://www.facebook.com/ads/library/?id=${encodeURIComponent(ad.id)}`,
+        startedAt,
+        endedAt,
+        daysActive,
+        reach: parseReach(ad),
+        savedCount: 0,
+        language: ad.languages?.[0] ?? "",
+      };
+      parseAttempts.push({
+        stage: "normalize_card",
+        externalId: ad.id,
+        inputs: {
+          hasPageName: Boolean(ad.page_name),
+          bodyCount: ad.ad_creative_bodies?.length ?? 0,
+          titleCount: ad.ad_creative_link_titles?.length ?? 0,
+          captionCount: ad.ad_creative_link_captions?.length ?? 0,
+          platforms: ad.publisher_platforms ?? [],
+          rawReach: ad.eu_total_reach ?? ad.impressions ?? ad.estimated_audience_size ?? null,
+        },
+        output: normalized,
+      });
+      return normalized;
+    });
 
-  return {
-    items,
-    nextCursor: payload.paging?.cursors?.after ?? null,
-    total: items.length,
-    mode: "live",
-    limitations: ["Медиа и аватар рекламной страницы извлекаются из публичной страницы объявления Meta и кешируются на сервере. Некоторые удалённые или ограниченные объявления могут не отдавать креатив. Домен берётся из отображаемой подписи и может отличаться от конечного URL перехода."],
-  };
+    // Meta has already applied these filters. Applying them again locally can
+    // incorrectly discard fuzzy matches returned by the provider (for example,
+    // a search term that is present in data not included in the requested fields).
+    const {
+      search: _search,
+      searchMode: _searchMode,
+      country: _country,
+      dateFrom: _dateFrom,
+      dateTo: _dateTo,
+      language: _language,
+      mediaType: _mediaType,
+      platform: _platform,
+      ...localFilters
+    } = filters;
+    const items = filterAds(mapped, localFilters);
+    parseAttempts.push({ stage: "local_filters", before: mapped.length, after: items.length, filters: localFilters });
+
+    const result: AdsResponse = {
+      items,
+      nextCursor: payload.paging?.cursors?.after ?? null,
+      total: items.length,
+      mode: "live",
+      limitations: ["Медиа и аватар рекламной страницы извлекаются из публичной страницы объявления Meta и кешируются на сервере. Некоторые удалённые или ограниченные объявления могут не отдавать креатив. Домен берётся из отображаемой подписи и может отличаться от конечного URL перехода."],
+    };
+    await logger.success({ responseStatus: response.status, responseHeaders: response.headers, responseBody: rawResponse, parseAttempts });
+    return result;
+  } catch (error) {
+    await logger.error(error, {
+      responseStatus: response?.status,
+      responseHeaders: response?.headers,
+      responseBody: rawResponse,
+      parseAttempts,
+    });
+    throw error;
+  }
 }

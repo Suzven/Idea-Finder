@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type { Request, Response } from "express";
 import { AppError } from "../errors.js";
+import { IntegrationLogger } from "./integrationLogger.js";
 
 export interface MetaMedia {
   mediaType: "image" | "video";
@@ -21,6 +22,11 @@ interface Candidate {
   kind: "image" | "video";
   url: string;
   score: number;
+}
+
+export interface MetaMediaParseAttempt {
+  stage: string;
+  [key: string]: unknown;
 }
 
 const MAX_PAGE_BYTES = 5 * 1024 * 1024;
@@ -107,18 +113,39 @@ function targetAdSource(html: string, adId?: string): string {
   return source.slice(targetIndex, targetIndex + 500_000);
 }
 
-export function extractMetaMediaFromHtml(html: string, adId?: string): ExtractedMetaMedia | undefined {
+export function extractMetaMediaFromHtml(
+  html: string,
+  adId?: string,
+  diagnostics: MetaMediaParseAttempt[] = [],
+): ExtractedMetaMedia | undefined {
   const source = targetAdSource(html, adId);
+  diagnostics.push({
+    stage: "target_ad",
+    adId: adId ?? null,
+    htmlLength: html.length,
+    targetFound: Boolean(source),
+    targetLength: source.length,
+  });
   if (!source) return undefined;
   const candidates: Candidate[] = [];
   const seen = new Set<string>();
   const add = (kind: Candidate["kind"], rawUrl: string, score: number, position = 0) => {
     const url = decodeUrl(rawUrl);
-    if (!url || seen.has(`${kind}:${url}`)) return;
+    if (!url) {
+      diagnostics.push({ stage: "candidate_rejected", kind, reason: "invalid_or_non_meta_url", rawUrl });
+      return;
+    }
+    if (seen.has(`${kind}:${url}`)) {
+      diagnostics.push({ stage: "candidate_rejected", kind, reason: "duplicate", url });
+      return;
+    }
     seen.add(`${kind}:${url}`);
     const context = source.slice(Math.max(0, position - 250), position + 600);
     const smallAssetPenalty = /(?:emoji|profile|avatar|p\d+x\d+|s\d+x\d+)/i.test(url) ? 350 : 0;
-    candidates.push({ kind, url, score: score + dimensionsScore(context) - smallAssetPenalty });
+    const dimensionBonus = dimensionsScore(context);
+    const finalScore = score + dimensionBonus - smallAssetPenalty;
+    candidates.push({ kind, url, score: finalScore });
+    diagnostics.push({ stage: "candidate_accepted", kind, url, baseScore: score, dimensionBonus, smallAssetPenalty, finalScore });
   };
 
   const avatarMatch = source.match(/["']page_profile_picture_url["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/i);
@@ -144,6 +171,14 @@ export function extractMetaMediaFromHtml(html: string, adId?: string): Extracted
 
   const videos = candidates.filter((candidate) => candidate.kind === "video").sort((a, b) => b.score - a.score);
   const images = candidates.filter((candidate) => candidate.kind === "image").sort((a, b) => b.score - a.score);
+  diagnostics.push({
+    stage: "candidate_selection",
+    videoCandidates: videos.length,
+    imageCandidates: images.length,
+    selectedVideo: videos[0] ?? null,
+    selectedImage: images[0] ?? null,
+    advertiserAvatar: advertiserAvatar ?? null,
+  });
   if (videos[0]) return { mediaType: "video", mediaUrl: videos[0].url, thumbnailUrl: images[0]?.url, ...(advertiserAvatar ? { advertiserAvatar } : {}) };
   if (images[0]) return { mediaType: "image", mediaUrl: images[0].url, thumbnailUrl: images[0].url, ...(advertiserAvatar ? { advertiserAvatar } : {}) };
   return undefined;
@@ -211,17 +246,28 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
   }
 
   await acquireSnapshotSlot();
+  const requestHeaders = {
+    Accept: "text/html,application/xhtml+xml",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+  };
+  const logger = await IntegrationLogger.start({
+    provider: "meta",
+    operation: "ad_library_preview_page",
+    method: "GET",
+    url: registration.url,
+    headers: requestHeaders,
+  });
+  let response: globalThis.Response | undefined;
+  let html: string | undefined;
+  const parseAttempts: MetaMediaParseAttempt[] = [];
   try {
-    const response = await fetch(registration.url, {
-      headers: {
-        Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
-      },
+    response = await fetch(registration.url, {
+      headers: requestHeaders,
       redirect: "follow",
       signal: AbortSignal.timeout(15_000),
     });
-    const html = await readLimitedText(response);
+    html = await readLimitedText(response);
     if (/session has expired|error validating access token|invalid oauth access token/i.test(html)) {
       throw new AppError(
         401,
@@ -231,9 +277,23 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
       );
     }
     if (!response.ok) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала страницу объявления (HTTP ${response.status}).`);
-    const media = extractMetaMediaFromHtml(html, adId);
+    const media = extractMetaMediaFromHtml(html, adId, parseAttempts);
     if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", "На странице объявления не найдено доступное изображение или видео.");
+    await logger.success({
+      responseStatus: response.status,
+      responseHeaders: response.headers,
+      responseBody: html,
+      parseAttempts,
+    });
     return media;
+  } catch (error) {
+    await logger.error(error, {
+      responseStatus: response?.status,
+      responseHeaders: response?.headers,
+      responseBody: html,
+      parseAttempts,
+    });
+    throw error;
   } finally {
     releaseSnapshotSlot();
   }
@@ -271,24 +331,54 @@ export async function streamMetaMedia(adId: string, variant: "content" | "thumbn
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   let upstream: globalThis.Response;
+  const requestHeaders = {
+    ...(request.header("range") ? { Range: request.header("range") as string } : {}),
+    Referer: "https://www.facebook.com/",
+    "User-Agent": request.header("user-agent") ?? "Mozilla/5.0",
+  };
+  const logger = await IntegrationLogger.start({
+    provider: "meta",
+    operation: `preview_media_${variant}`,
+    method: "GET",
+    url: remoteUrl,
+    headers: requestHeaders,
+  });
   try {
     upstream = await fetch(remoteUrl, {
-      headers: {
-        ...(request.header("range") ? { Range: request.header("range") as string } : {}),
-        Referer: "https://www.facebook.com/",
-        "User-Agent": request.header("user-agent") ?? "Mozilla/5.0",
-      },
+      headers: requestHeaders,
       redirect: "follow",
       signal: controller.signal,
     });
+  } catch (error) {
+    await logger.error(error);
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
   const contentType = upstream.headers.get("content-type") ?? "";
   const expectedType = variant !== "content" || media.mediaType === "image" ? "image/" : "video/";
   if (!upstream.ok || !contentType.toLowerCase().startsWith(expectedType)) {
-    throw new AppError(502, "META_MEDIA_FETCH_FAILED", `Медиафайл Meta временно недоступен (HTTP ${upstream.status}).`);
+    const error = new AppError(502, "META_MEDIA_FETCH_FAILED", `Медиафайл Meta временно недоступен (HTTP ${upstream.status}).`);
+    await logger.error(error, {
+      responseStatus: upstream.status,
+      responseHeaders: upstream.headers,
+      responseBody: { streamed: false, contentType, expectedType },
+      parseAttempts: [{ stage: "validate_media_response", contentType, expectedType, valid: false }],
+    });
+    throw error;
   }
+
+  await logger.success({
+    responseStatus: upstream.status,
+    responseHeaders: upstream.headers,
+    responseBody: {
+      streamed: true,
+      contentType,
+      contentLength: upstream.headers.get("content-length"),
+      note: "Бинарное тело передано клиенту потоком и намеренно не копируется в БД.",
+    },
+    parseAttempts: [{ stage: "validate_media_response", contentType, expectedType, valid: true }],
+  });
 
   response.status(upstream.status);
   for (const header of ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"]) {
