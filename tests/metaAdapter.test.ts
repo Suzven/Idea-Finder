@@ -65,4 +65,26 @@ describe("fetchMetaAds", () => {
     });
     expect(JSON.stringify(result)).not.toContain("access_token");
   });
+
+  it("returns a safe actionable error when the Meta token has expired", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: {
+          message: "Error validating access token: Session has expired.",
+          type: "OAuthException",
+          code: 190,
+          error_subcode: 463,
+        },
+      }),
+    }));
+
+    await expect(fetchMetaAds({ country: "DE" }, undefined, 1)).rejects.toMatchObject({
+      status: 401,
+      code: "META_TOKEN_EXPIRED",
+      message: "Токен Meta истёк, был отозван или больше не действителен.",
+      action: expect.stringContaining("META_ACCESS_TOKEN"),
+    });
+  });
 });

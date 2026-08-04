@@ -21,8 +21,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Ошибка сети" })) as { error?: string };
-    throw new Error(payload.error ?? `HTTP ${response.status}`);
+    const payload = await response.json().catch(() => ({ error: "Ошибка сети" })) as { error?: string; action?: string };
+    const message = [payload.error, payload.action].filter(Boolean).join(" ");
+    throw new Error(message || `HTTP ${response.status}`);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }

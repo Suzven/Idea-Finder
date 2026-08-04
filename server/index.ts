@@ -10,6 +10,7 @@ import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
 import { addFavorite, closeDatabase, getFavoriteIds, healthcheckDatabase, removeFavorite } from "./db.js";
+import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import type { AdFilters, AdSource, AdsResponse } from "../src/shared/types.js";
 
@@ -118,6 +119,14 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
     ? "Некорректные параметры запроса"
     : error instanceof Error ? error.message : "Неизвестная ошибка";
   console.error(error);
+  if (error instanceof AppError) {
+    response.status(error.status).json({
+      error: message,
+      code: error.code,
+      ...(error.action ? { action: error.action } : {}),
+    });
+    return;
+  }
   response.status(error instanceof z.ZodError ? 400 : 502).json({ error: message });
 });
 

@@ -1,5 +1,6 @@
 import type { AdCreative, AdFilters, AdsResponse } from "../../src/shared/types.js";
 import { config } from "../config.js";
+import { AppError } from "../errors.js";
 import { filterAds } from "../services/filterAds.js";
 
 interface MetaAd {
@@ -24,7 +25,18 @@ interface MetaAd {
 interface MetaResponse {
   data?: MetaAd[];
   paging?: { cursors?: { after?: string }; next?: string };
-  error?: { message?: string };
+  error?: {
+    message?: string;
+    type?: string;
+    code?: number;
+    error_subcode?: number;
+  };
+}
+
+function isInvalidAccessToken(error: MetaResponse["error"]): boolean {
+  if (!error) return false;
+  return error.code === 190
+    || /session has expired|error validating access token|invalid oauth access token/i.test(error.message ?? "");
 }
 
 function normalizeWebsite(value?: string): string | undefined {
@@ -88,6 +100,14 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
 
   const response = await fetch(`https://graph.facebook.com/${config.metaGraphVersion}/ads_archive?${params}`);
   const payload = await response.json() as MetaResponse;
+  if (isInvalidAccessToken(payload.error)) {
+    throw new AppError(
+      401,
+      "META_TOKEN_EXPIRED",
+      "Токен Meta истёк, был отозван или больше не действителен.",
+      "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
+    );
+  }
   if (!response.ok || payload.error) throw new Error(payload.error?.message ?? `Meta API: HTTP ${response.status}`);
 
   const mapped: AdCreative[] = (payload.data ?? []).map((ad) => {
