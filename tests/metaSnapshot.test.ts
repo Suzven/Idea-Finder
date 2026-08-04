@@ -74,4 +74,36 @@ describe("extractMetaMediaFromHtml", () => {
       expect.objectContaining({ stage: "candidate_selection", imageCandidates: 1 }),
     ]));
   });
+
+  it("extracts creative, page avatar and unwrapped destination from rendered ad_snapshot_url DOM", () => {
+    const html = `
+      <div>ID Библиотеки: 1006049118713192</div>
+      <img alt="Romantic&amp;Love" class="_8nqq img"
+        src="https://scontent-iev1-1.xx.fbcdn.net/avatar.jpg?stp=dst-jpg_s60x60_tt6&amp;asset=avatar">
+      <a target="_blank" href="https://l.facebook.com/l.php?u=https%3A%2F%2Fshop.example%2Foffer%3Fx%3D1&amp;h=signature">
+        <img alt="" src="https://scontent-iev1-1.xx.fbcdn.net/creative.jpg?stp=dst-jpg_s600x600_tt6&amp;asset=creative">
+      </a>`;
+
+    expect(extractMetaMediaFromHtml(html, "1006049118713192")).toEqual({
+      mediaType: "image",
+      mediaUrl: "https://scontent-iev1-1.xx.fbcdn.net/creative.jpg?stp=dst-jpg_s600x600_tt6&asset=creative",
+      thumbnailUrl: "https://scontent-iev1-1.xx.fbcdn.net/creative.jpg?stp=dst-jpg_s600x600_tt6&asset=creative",
+      advertiserAvatar: "https://scontent-iev1-1.xx.fbcdn.net/avatar.jpg?stp=dst-jpg_s60x60_tt6&asset=avatar",
+      landingUrl: "https://shop.example/offer?x=1",
+    });
+  });
+
+  it("extracts video source and poster from rendered snapshot markup", () => {
+    const html = `
+      <div>ID Библиотеки: 222</div>
+      <video poster="https://scontent.xx.fbcdn.net/video-poster.jpg">
+        <source src="https://video.xx.fbcdn.net/creative.mp4" type="video/mp4">
+      </video>`;
+
+    expect(extractMetaMediaFromHtml(html, "222")).toEqual({
+      mediaType: "video",
+      mediaUrl: "https://video.xx.fbcdn.net/creative.mp4",
+      thumbnailUrl: "https://scontent.xx.fbcdn.net/video-poster.jpg",
+    });
+  });
 });

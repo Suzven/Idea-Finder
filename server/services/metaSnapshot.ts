@@ -9,6 +9,7 @@ export interface MetaMedia {
   mediaUrl: string;
   thumbnailUrl: string;
   advertiserAvatar: string;
+  landingUrl?: string;
 }
 
 interface ExtractedMetaMedia {
@@ -16,6 +17,7 @@ interface ExtractedMetaMedia {
   mediaUrl: string;
   thumbnailUrl?: string;
   advertiserAvatar?: string;
+  landingUrl?: string;
 }
 
 interface Candidate {
@@ -103,9 +105,62 @@ function dimensionsScore(context: string): number {
   return Math.min(180, Math.round(Math.log2(width * height) * 8));
 }
 
+function smallAssetPenalty(url: string): number {
+  if (/(?:emoji|profile|avatar)/i.test(url)) return 350;
+  const dimensions = url.match(/(?:^|[_?&])(?:p|s|dst-jpg_s)(\d+)x(\d+)/i);
+  if (!dimensions) return 0;
+  return Number(dimensions[1]) <= 160 || Number(dimensions[2]) <= 160 ? 350 : 0;
+}
+
+function attributeValue(attributes: string, name: string): string | undefined {
+  return attributes.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']*)["']`, "i"))?.[1];
+}
+
+function decodeLandingUrl(rawValue: string): string | undefined {
+  const decoded = decodeHtml(rawValue.trim()).replaceAll("\\/", "/");
+  try {
+    const parsed = new URL(decoded);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return undefined;
+    if (["l.facebook.com", "lm.facebook.com"].includes(parsed.hostname.toLowerCase()) && parsed.pathname === "/l.php") {
+      const destination = parsed.searchParams.get("u");
+      if (!destination) return undefined;
+      const unwrapped = new URL(destination);
+      return ["https:", "http:"].includes(unwrapped.protocol) ? unwrapped.toString() : undefined;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host === "facebook.com" || host.endsWith(".facebook.com") || isMetaMediaHost(host) || host.endsWith(".fbcdn.net")) return undefined;
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function extractLandingUrl(source: string, diagnostics: MetaMediaParseAttempt[]): string | undefined {
+  const candidates: Array<{ url: string; score: number; attribute: string }> = [];
+  for (const match of source.matchAll(/<a\b([^>]*)>/gi)) {
+    const attributes = match[1];
+    for (const attribute of ["data-lynx-uri", "href"] as const) {
+      const rawUrl = attributeValue(attributes, attribute);
+      if (!rawUrl) continue;
+      const url = decodeLandingUrl(rawUrl);
+      if (!url) continue;
+      const isLinkShim = /https?:\/\/(?:l|lm)\.facebook\.com\/l\.php/i.test(rawUrl);
+      candidates.push({ url, score: (attribute === "data-lynx-uri" ? 1_100 : 1_000) + (isLinkShim ? 100 : 0), attribute });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  diagnostics.push({ stage: "landing_url", candidates: candidates.length, selected: candidates[0] ?? null });
+  return candidates[0]?.url;
+}
+
 function targetAdSource(html: string, adId?: string): string {
   const source = decodeHtml(html);
   if (!adId) return source;
+  const renderedIdPatterns = [
+    new RegExp(`ID\\s+Библиотеки:\\s*${adId}(?:\\D|$)`, "i"),
+    new RegExp(`["']entity_id["']\\s*:\\s*["']${adId}["']`, "i"),
+  ];
+  if (renderedIdPatterns.some((pattern) => pattern.test(source))) return source;
   const deeplinkIndex = source.indexOf('"deeplink_ad_archive_result"');
   const marker = `"ad_archive_id":"${adId}"`;
   const targetIndex = source.indexOf(marker, Math.max(0, deeplinkIndex));
@@ -141,15 +196,16 @@ export function extractMetaMediaFromHtml(
     }
     seen.add(`${kind}:${url}`);
     const context = source.slice(Math.max(0, position - 250), position + 600);
-    const smallAssetPenalty = /(?:emoji|profile|avatar|p\d+x\d+|s\d+x\d+)/i.test(url) ? 350 : 0;
+    const assetPenalty = smallAssetPenalty(url);
     const dimensionBonus = dimensionsScore(context);
-    const finalScore = score + dimensionBonus - smallAssetPenalty;
+    const finalScore = score + dimensionBonus - assetPenalty;
     candidates.push({ kind, url, score: finalScore });
-    diagnostics.push({ stage: "candidate_accepted", kind, url, baseScore: score, dimensionBonus, smallAssetPenalty, finalScore });
+    diagnostics.push({ stage: "candidate_accepted", kind, url, baseScore: score, dimensionBonus, smallAssetPenalty: assetPenalty, finalScore });
   };
 
   const avatarMatch = source.match(/["']page_profile_picture_url["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/i);
-  const advertiserAvatar = avatarMatch ? decodeUrl(avatarMatch[1]) : undefined;
+  let advertiserAvatar = avatarMatch ? decodeUrl(avatarMatch[1]) : undefined;
+  const landingUrl = extractLandingUrl(source, diagnostics);
   const fieldPattern = /["'](playable_url_quality_hd|playable_url|video_hd_url|video_sd_url|watermarked_video_hd_url|watermarked_video_sd_url|video_preview_image_url|original_image_url|resized_image_url|image_url|image_uri|thumbnail_url)["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/gi;
   for (const match of source.matchAll(fieldPattern)) {
     const field = match[1].toLowerCase();
@@ -161,11 +217,22 @@ export function extractMetaMediaFromHtml(
   for (const match of source.matchAll(tagPattern)) {
     const kind = match[1].toLowerCase() === "img" ? "image" : "video";
     const attributes = match[2];
-    const rawUrl = attributes.match(/(?:src|data-src)\s*=\s*["']([^"']+)["']/i)?.[1];
-    if (rawUrl) add(kind, rawUrl, kind === "video" ? 850 : 500, match.index);
+    const rawUrl = attributeValue(attributes, "src") ?? attributeValue(attributes, "data-src");
+    const alt = decodeHtml(attributeValue(attributes, "alt") ?? "").trim();
+    const className = attributeValue(attributes, "class") ?? "";
+    const isAvatar = kind === "image" && Boolean(rawUrl) && (
+      /(?:^|\s)_8nqq(?:\s|$)/.test(className)
+      || (Boolean(alt) && /(?:s|p|dst-jpg_s)\d{2,3}x\d{2,3}/i.test(rawUrl ?? ""))
+    );
+    if (isAvatar && rawUrl) {
+      advertiserAvatar = decodeUrl(rawUrl) ?? advertiserAvatar;
+      diagnostics.push({ stage: "rendered_avatar", alt, url: advertiserAvatar ?? null, matchedBy: /_8nqq/.test(className) ? "class" : "alt_and_size" });
+    } else if (rawUrl) {
+      add(kind, rawUrl, kind === "video" ? 1_200 : 1_100, match.index);
+    }
     if (kind === "video") {
-      const poster = attributes.match(/poster\s*=\s*["']([^"']+)["']/i)?.[1];
-      if (poster) add("image", poster, 850, match.index);
+      const poster = attributeValue(attributes, "poster");
+      if (poster) add("image", poster, 1_150, match.index);
     }
   }
 
@@ -178,9 +245,11 @@ export function extractMetaMediaFromHtml(
     selectedVideo: videos[0] ?? null,
     selectedImage: images[0] ?? null,
     advertiserAvatar: advertiserAvatar ?? null,
+    landingUrl: landingUrl ?? null,
   });
-  if (videos[0]) return { mediaType: "video", mediaUrl: videos[0].url, thumbnailUrl: images[0]?.url, ...(advertiserAvatar ? { advertiserAvatar } : {}) };
-  if (images[0]) return { mediaType: "image", mediaUrl: images[0].url, thumbnailUrl: images[0].url, ...(advertiserAvatar ? { advertiserAvatar } : {}) };
+  const optionalFields = { ...(advertiserAvatar ? { advertiserAvatar } : {}), ...(landingUrl ? { landingUrl } : {}) };
+  if (videos[0]) return { mediaType: "video", mediaUrl: videos[0].url, thumbnailUrl: images[0]?.url, ...optionalFields };
+  if (images[0]) return { mediaType: "image", mediaUrl: images[0].url, thumbnailUrl: images[0].url, ...optionalFields };
   return undefined;
 }
 
@@ -192,11 +261,25 @@ function pruneMaps(): void {
   while (mediaCache.size > MAX_ENTRIES) mediaCache.delete(mediaCache.keys().next().value as string);
 }
 
-export function registerMetaAd(adId: string): string | undefined {
+function validateSnapshotUrl(adId: string, snapshotUrl: string | undefined): string | undefined {
+  if (!snapshotUrl) return undefined;
+  try {
+    const parsed = new URL(snapshotUrl);
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== "https:" || (host !== "facebook.com" && !host.endsWith(".facebook.com"))) return undefined;
+    if (!/^\/ads\/archive\/render_ad\/?$/i.test(parsed.pathname) || parsed.searchParams.get("id") !== adId) return undefined;
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+export function registerMetaAd(adId: string, snapshotUrl?: string): string | undefined {
   if (!/^\d+$/.test(adId)) return undefined;
+  const validatedSnapshotUrl = validateSnapshotUrl(adId, snapshotUrl);
   const pageUrl = new URL("https://www.facebook.com/ads/library/");
   pageUrl.searchParams.set("id", adId);
-  registeredAds.set(adId, { url: pageUrl.toString(), expiresAt: Date.now() + REGISTRATION_TTL_MS });
+  registeredAds.set(adId, { url: validatedSnapshotUrl ?? pageUrl.toString(), expiresAt: Date.now() + REGISTRATION_TTL_MS });
   pruneMaps();
   return `/api/meta/media/${encodeURIComponent(adId)}`;
 }
@@ -320,6 +403,7 @@ export async function getMetaMedia(adId: string): Promise<MetaMedia> {
     mediaUrl: `/api/meta/media/${encodeURIComponent(adId)}/content`,
     thumbnailUrl: media.thumbnailUrl ? `/api/meta/media/${encodeURIComponent(adId)}/thumbnail` : "",
     advertiserAvatar: media.advertiserAvatar ? `/api/meta/media/${encodeURIComponent(adId)}/avatar` : "",
+    ...(media.landingUrl ? { landingUrl: media.landingUrl } : {}),
   };
 }
 

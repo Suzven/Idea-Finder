@@ -5,6 +5,7 @@ export interface ResolvedAdMedia {
   mediaUrl: string;
   thumbnailUrl: string;
   advertiserAvatar: string;
+  landingUrl?: string;
 }
 
 const clientIdKey = "spyservice-client-id";

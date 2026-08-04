@@ -151,7 +151,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
         mediaType: filters.mediaType === "video" ? "video" : "image",
         mediaUrl: "",
         thumbnailUrl: "",
-        mediaInfoUrl: registerMetaAd(ad.id),
+        mediaInfoUrl: registerMetaAd(ad.id, ad.ad_snapshot_url),
         headline: ad.ad_creative_link_titles?.[0] ?? "Объявление Meta",
         body: ad.ad_creative_bodies?.[0] ?? ad.ad_creative_link_descriptions?.[0] ?? "Откройте оригинал объявления для просмотра креатива.",
         cta: "Открыть объявление",
