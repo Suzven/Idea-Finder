@@ -1,0 +1,22 @@
+[Unit]
+Description=SpyService web application
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=HESTIA_USER
+Group=HESTIA_USER
+WorkingDirectory=/home/HESTIA_USER/web/DOMAIN/nodeapp
+EnvironmentFile=/home/HESTIA_USER/web/DOMAIN/nodeapp/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist-server/server/index.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/HESTIA_USER/web/DOMAIN/nodeapp
+
+[Install]
+WantedBy=multi-user.target
