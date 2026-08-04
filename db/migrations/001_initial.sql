@@ -1,61 +1,48 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS favorites (
     client_id VARCHAR(100) NOT NULL,
     ad_id VARCHAR(160) NOT NULL,
-    source VARCHAR(20) NOT NULL CHECK (source IN ('meta', 'tiktok')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (client_id, ad_id)
-);
-
-CREATE INDEX IF NOT EXISTS favorites_client_created_idx
-    ON favorites (client_id, created_at DESC);
+    source ENUM('meta', 'tiktok') NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (client_id, ad_id),
+    KEY favorites_client_created_idx (client_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS collected_ads (
     id VARCHAR(160) PRIMARY KEY,
-    source VARCHAR(20) NOT NULL CHECK (source IN ('meta', 'tiktok')),
+    source ENUM('meta', 'tiktok') NOT NULL,
     external_id VARCHAR(128) NOT NULL,
     advertiser_name TEXT NOT NULL,
     country_code VARCHAR(3),
     media_type VARCHAR(20),
-    started_at TIMESTAMPTZ,
-    ended_at TIMESTAMPTZ,
-    normalized_payload JSONB NOT NULL,
-    source_payload JSONB,
-    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (source, external_id)
-);
-
-CREATE INDEX IF NOT EXISTS collected_ads_source_started_idx
-    ON collected_ads (source, started_at DESC);
-CREATE INDEX IF NOT EXISTS collected_ads_country_idx
-    ON collected_ads (country_code);
-CREATE INDEX IF NOT EXISTS collected_ads_payload_gin_idx
-    ON collected_ads USING GIN (normalized_payload);
+    started_at DATETIME,
+    ended_at DATETIME,
+    normalized_payload JSON NOT NULL,
+    source_payload JSON,
+    collected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY collected_ads_source_external_unique (source, external_id),
+    KEY collected_ads_source_started_idx (source, started_at),
+    KEY collected_ads_country_idx (country_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS saved_searches (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     client_id VARCHAR(100) NOT NULL,
     name VARCHAR(120) NOT NULL,
-    source VARCHAR(20) NOT NULL CHECK (source IN ('meta', 'tiktok')),
-    filters JSONB NOT NULL DEFAULT '{}'::JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS saved_searches_client_idx
-    ON saved_searches (client_id, updated_at DESC);
+    source ENUM('meta', 'tiktok') NOT NULL,
+    filters JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY saved_searches_client_idx (client_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS collection_runs (
-    id BIGSERIAL PRIMARY KEY,
-    source VARCHAR(20) NOT NULL CHECK (source IN ('meta', 'tiktok')),
-    status VARCHAR(20) NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    source ENUM('meta', 'tiktok') NOT NULL,
+    status ENUM('running', 'completed', 'failed') NOT NULL,
     cursor TEXT,
     items_collected INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
-    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    finished_at TIMESTAMPTZ
-);
-
-COMMIT;
+    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP NULL DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

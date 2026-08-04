@@ -11,10 +11,10 @@
 - карточки Meta с advertiser, датой, географией, плейсментами, текстом, CTA и landing URL;
 - вертикальные TikTok-карточки с видео-превью;
 - полноэкранный просмотр, открытие оригинала и скачивание прямого видео;
-- избранное в PostgreSQL или в памяти без БД;
+- избранное в MySQL/MariaDB или в памяти без БД;
 - реальные адаптеры Meta Ad Library и TikTok Commercial Content API;
 - demo-режим, в котором интерфейс запускается без внешних токенов;
-- SQL-схема и production-конфигурация для Ubuntu/HestiaCP.
+- SQL-схема для импорта через phpMyAdmin и production-конфигурация для Ubuntu/HestiaCP.
 
 ## Локальный запуск
 
@@ -40,7 +40,7 @@ pnpm build
 ## Конфигурация
 
 - `.env.example` — все переменные среды;
-- `db/migrations/001_initial.sql` — PostgreSQL;
+- `db/migrations/001_initial.sql` — MySQL/MariaDB-схема для phpMyAdmin;
 - `docs/API_ACCESS.md` — получение и подключение API-токенов;
 - `docs/DEPLOY_HESTIA.md` — пошаговое production-развёртывание с объяснением роли каждого компонента.
 

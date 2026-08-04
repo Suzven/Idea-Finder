@@ -10,8 +10,8 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist-server/server/index.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run tests",
+    "test:watch": "vitest tests"
   },
   "engines": {
     "node": ">=22"
@@ -23,7 +23,7 @@
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "lucide-react": "^1.28.0",
-    "pg": "^8.22.0",
+    "mysql2": "^3.23.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "zod": "^4.4.3"
@@ -32,7 +32,6 @@
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
-    "@types/pg": "^8.20.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",

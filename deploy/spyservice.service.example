@@ -1,6 +1,6 @@
 [Unit]
 Description=SpyService web application
-After=network.target postgresql.service
+After=network.target mariadb.service mysql.service
 
 [Service]
 Type=simple

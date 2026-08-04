@@ -1,6 +1,6 @@
 # Развёртывание SpyService на Ubuntu с HestiaCP
 
-Ниже используется схема: интернет → Nginx/HestiaCP → `127.0.0.1:4100` → Node.js/Express → PostgreSQL. Nginx принимает HTTPS и домен, Node.js обслуживает API и собранный React, PostgreSQL хранит заметки и оставляет основу для кеша собранных объявлений.
+Ниже используется схема: интернет → Nginx/HestiaCP → `127.0.0.1:4100` → Node.js/Express → MySQL/MariaDB. Nginx принимает HTTPS и домен, Node.js обслуживает API и собранный React, а база из HestiaCP хранит заметки и оставляет основу для кеша собранных объявлений.
 
 Подставьте свои значения вместо `HESTIA_USER` и `DOMAIN`.
 
@@ -8,7 +8,7 @@
 
 - Node.js 22 или новее (актуальную LTS-ветку предпочтительнее ставить системно, чтобы путь `/usr/bin/node` был стабилен для systemd).
 - Corepack/pnpm для точной установки lock-файла.
-- PostgreSQL 14 или новее либо отдельный управляемый PostgreSQL.
+- MySQL 8 или MariaDB 10.6+, уже подключённая к HestiaCP и phpMyAdmin.
 - Домен, уже добавленный в HestiaCP, с включённым Let's Encrypt SSL.
 
 Проверка:
@@ -16,10 +16,10 @@
 ```bash
 node --version
 corepack --version
-psql --version
+mysql --version
 ```
 
-`Node.js` исполняет серверный JavaScript. `pnpm` ставит зависимости, зафиксированные в `pnpm-lock.yaml`. `systemd` держит процесс запущенным и автоматически восстанавливает его после сбоя или перезагрузки. `Nginx` завершает TLS и проксирует запросы к закрытому локальному порту приложения.
+`Node.js` исполняет серверный JavaScript. `pnpm` ставит зависимости, зафиксированные в `pnpm-lock.yaml`. `systemd` держит процесс запущенным и автоматически восстанавливает его после сбоя или перезагрузки. `Nginx` завершает TLS и проксирует запросы к закрытому локальному порту приложения. MySQL/MariaDB хранит данные, а phpMyAdmin является только графической панелью для работы с этой базой.
 
 ## 2. Загрузка и сборка
 
@@ -36,26 +36,17 @@ sudo -u HESTIA_USER chmod 600 .env
 
 Сборка создаёт `dist/` с браузерными файлами и `dist-server/` с сервером. В production не нужен Vite: Express раздаёт готовый `index.html`, CSS и JavaScript из `dist/`.
 
-## 3. PostgreSQL
+## 3. MySQL/MariaDB через HestiaCP и phpMyAdmin
 
-Создайте БД и отдельного пользователя. Не используйте суперпользователя приложения.
+В HestiaCP откройте `DB → Add Database`. Укажите короткое имя базы и пользователя, сгенерируйте длинный пароль и сохраните значения. Hestia может автоматически добавить к имени базы и логину префикс пользователя, например `admin_spyservice` — в `.env` нужно записывать именно полные имена, показанные панелью.
 
-```bash
-sudo -u postgres psql
-```
+После создания нажмите кнопку phpMyAdmin, выберите созданную базу слева, откройте вкладку `Import`, выберите файл `db/migrations/001_initial.sql` и нажмите `Import/Go`. В базе появятся таблицы `favorites`, `collected_ads`, `saved_searches` и `collection_runs`.
 
-```sql
-CREATE ROLE spyservice LOGIN PASSWORD 'LONG_RANDOM_PASSWORD';
-CREATE DATABASE spyservice OWNER spyservice;
-\q
-```
-
-Примените схему:
+Если удобнее импортировать через SSH:
 
 ```bash
-PGPASSWORD='LONG_RANDOM_PASSWORD' psql \
-  --host=127.0.0.1 --username=spyservice --dbname=spyservice \
-  --file=db/migrations/001_initial.sql
+mysql --host=127.0.0.1 --user=FULL_DATABASE_USER --password FULL_DATABASE_NAME \
+  < db/migrations/001_initial.sql
 ```
 
 В `.env`:
@@ -65,13 +56,17 @@ NODE_ENV=production
 PORT=4100
 TRUST_PROXY=true
 API_MODE=auto
-DATABASE_URL=postgresql://spyservice:URL_ENCODED_PASSWORD@127.0.0.1:5432/spyservice
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=FULL_DATABASE_NAME
+DB_USER=FULL_DATABASE_USER
+DB_PASSWORD=LONG_RANDOM_PASSWORD
 META_ACCESS_TOKEN=
 META_GRAPH_VERSION=v26.0
 TIKTOK_ACCESS_TOKEN=
 ```
 
-`TRUST_PROXY=true` сообщает Express, что реальный IP и протокол приходят от доверенного Nginx. Пароль внутри URL нужно percent-encode, если он содержит `@`, `:`, `/`, `?` или `#`.
+`TRUST_PROXY=true` сообщает Express, что реальный IP и протокол приходят от доверенного Nginx. Пароль записывается отдельным значением, поэтому его не нужно кодировать как часть URL. Не добавляйте кавычки, если они не являются частью пароля.
 
 ## 4. Systemd
 
@@ -144,12 +139,11 @@ curl --fail http://127.0.0.1:4100/api/health
 
 ## 8. Резервное копирование
 
-В резервную копию включите `.env` (зашифрованно и отдельно от репозитория) и PostgreSQL:
+В резервную копию включите `.env` (зашифрованно и отдельно от репозитория) и MySQL/MariaDB. Резервное копирование базы можно включить в настройках backup пользователя HestiaCP или выполнить вручную:
 
 ```bash
-PGPASSWORD='LONG_RANDOM_PASSWORD' pg_dump \
-  --host=127.0.0.1 --username=spyservice --format=custom \
-  --file=/home/HESTIA_USER/backups/spyservice.dump spyservice
+mysqldump --host=127.0.0.1 --user=FULL_DATABASE_USER --password \
+  FULL_DATABASE_NAME > /home/HESTIA_USER/backups/spyservice.sql
 ```
 
 Медиафайлы площадок приложение не копирует на диск: оно хранит URL и метаданные. Это сознательно уменьшает объём резервных копий и риск нарушения условий API.
