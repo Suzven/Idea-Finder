@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -53,4 +53,25 @@ export async function setFavorite(ad: AdCreative, value: boolean): Promise<void>
 
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {
   return request<ResolvedAdMedia>(mediaInfoUrl);
+}
+
+export async function fetchIntegrationLogs(filters: {
+  provider?: AdSource;
+  status?: IntegrationLogStatus;
+  search?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<IntegrationLogsResponse> {
+  const params = new URLSearchParams({
+    limit: String(filters.limit ?? 25),
+    offset: String(filters.offset ?? 0),
+  });
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.search) params.set("search", filters.search);
+  return request<IntegrationLogsResponse>(`/api/integration-logs?${params}`);
+}
+
+export async function fetchIntegrationLog(id: number): Promise<IntegrationLogDetail> {
+  return request<IntegrationLogDetail>(`/api/integration-logs/${id}`);
 }

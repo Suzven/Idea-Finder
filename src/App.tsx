@@ -4,6 +4,7 @@ import { fetchAds, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
 import { CreativeModal } from "./components/CreativeModal";
 import { FilterPanel } from "./components/FilterPanel";
+import { LogsPage } from "./components/LogsPage";
 import { Sidebar } from "./components/Sidebar";
 import { ViewSettings } from "./components/ViewSettings";
 import { EMPTY_FILTERS, type AdCreative, type AdFilters, type AdSource } from "./shared/types";
@@ -13,6 +14,7 @@ function isFiltered(filters: AdFilters): boolean {
 }
 
 export default function App() {
+  const [activeView, setActiveView] = useState<"ads" | "logs">("ads");
   const [source, setSource] = useState<AdSource>("meta");
   const [draftFilters, setDraftFilters] = useState<AdFilters>({ ...EMPTY_FILTERS });
   const [appliedFilters, setAppliedFilters] = useState<AdFilters>({ ...EMPTY_FILTERS });
@@ -52,16 +54,16 @@ export default function App() {
     }
   }, [source, appliedFilters]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (activeView === "ads") void load(); }, [activeView, load]);
 
   useEffect(() => {
-    if (!infinite || !cursor || loadingMore) return;
+    if (activeView !== "ads" || !infinite || !cursor || loadingMore) return;
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) void load(cursor, true);
     }, { rootMargin: "400px" });
     if (loaderRef.current) observer.observe(loaderRef.current);
     return () => observer.disconnect();
-  }, [cursor, infinite, load, loadingMore]);
+  }, [activeView, cursor, infinite, load, loadingMore]);
 
   const changeSource = (nextSource: AdSource) => {
     if (nextSource === source) return;
@@ -92,13 +94,13 @@ export default function App() {
     <div className="app-shell">
       <div className={`mobile-sidebar-backdrop ${mobileNavOpen ? "show" : ""}`} onClick={() => setMobileNavOpen(false)} />
       <div className={`sidebar-wrap ${mobileNavOpen ? "open" : ""}`}>
-        <Sidebar source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={setSavedOnly} />
+        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={setSavedOnly} />
       </div>
 
       <main className="main-content">
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Открыть меню"><Menu size={21} /></button>
-          <div className="breadcrumb"><span>Библиотека рекламы</span><span>/</span><strong>{source === "meta" ? "Meta Ads" : "TikTok Ads"}</strong></div>
+          <div className="breadcrumb"><span>{activeView === "logs" ? "Система" : "Библиотека рекламы"}</span><span>/</span><strong>{activeView === "logs" ? "Логи интеграций" : source === "meta" ? "Meta Ads" : "TikTok Ads"}</strong></div>
           <div className="top-actions">
             <div className="global-search"><Search size={16} /><span>Быстрый поиск</span><kbd>⌘ K</kbd></div>
             <button aria-label="Уведомления"><Bell size={19} /><i /></button>
@@ -106,7 +108,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="page-wrap">
+        {activeView === "logs" ? <LogsPage /> : <div className="page-wrap">
           <section className="page-intro">
             <div>
               <span className="eyebrow"><Sparkles size={13} /> AD INTELLIGENCE</span>
@@ -145,7 +147,7 @@ export default function App() {
               {!infinite && cursor && <button className="button ghost" onClick={() => void load(cursor, true)}>Показать ещё</button>}
             </div>
           </section>
-        </div>
+        </div>}
       </main>
 
       {selectedAd && <CreativeModal ad={selectedAd} onClose={() => setSelectedAd(null)} onFavorite={(ad) => void toggleFavorite(ad)} />}

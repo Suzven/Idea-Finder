@@ -9,7 +9,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteIds, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -55,6 +55,33 @@ function shouldUseLive(source: AdSource): boolean {
 
 app.get("/api/health", async (_request, response) => {
   response.json({ status: "ok", apiMode: config.apiMode, database: await healthcheckDatabase() });
+});
+
+const logQuerySchema = z.object({
+  provider: z.enum(["meta", "tiktok"]).optional(),
+  status: z.enum(["started", "success", "error"]).optional(),
+  search: z.string().trim().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+app.get("/api/integration-logs", async (request, response, next) => {
+  try {
+    response.json(await getIntegrationLogs(logQuerySchema.parse(request.query)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/integration-logs/:id", async (request, response, next) => {
+  try {
+    const id = z.coerce.number().int().positive().parse(request.params.id);
+    const log = await getIntegrationLogById(id);
+    if (!log) throw new AppError(404, "INTEGRATION_LOG_NOT_FOUND", "Лог не найден или база данных не подключена.");
+    response.json(log);
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/ads", async (request, response, next) => {

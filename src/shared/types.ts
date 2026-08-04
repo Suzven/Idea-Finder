@@ -37,6 +37,45 @@ export interface AdsResponse {
   limitations?: string[];
 }
 
+export type IntegrationLogStatus = "started" | "success" | "error";
+
+export interface IntegrationLogSummary {
+  id: number;
+  traceId: string;
+  provider: AdSource;
+  operation: string;
+  status: IntegrationLogStatus;
+  requestMethod: string;
+  requestUrl: string;
+  responseStatus: number | null;
+  responsePreview: string | null;
+  parseAttemptsCount: number;
+  errorMessage: string | null;
+  durationMs: number | null;
+  createdAt: string;
+}
+
+export interface IntegrationLogDetail extends IntegrationLogSummary {
+  requestHeaders: string | null;
+  requestBody: string | null;
+  responseHeaders: string | null;
+  responseBody: string | null;
+  parseAttempts: string | null;
+  completedAt: string | null;
+}
+
+export interface IntegrationLogsResponse {
+  items: IntegrationLogSummary[];
+  total: number;
+  databaseEnabled: boolean;
+  stats: {
+    success: number;
+    errors: number;
+    inProgress: number;
+    averageDurationMs: number;
+  };
+}
+
 export interface AdFilters {
   search: string;
   searchMode: "all" | "exact" | "media";
