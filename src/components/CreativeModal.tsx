@@ -33,7 +33,7 @@ export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
           </div>
         </div>
         <div className="modal-details">
-          <div className="modal-brand"><span className="avatar large">{ad.advertiser.slice(0, 1)}</span><div><span className="eyebrow">{ad.source === "meta" ? "META AD" : "TIKTOK AD"}</span><h2>{ad.advertiser}</h2></div></div>
+          <div className="modal-brand"><span className="avatar large">{ad.advertiserAvatar ? <img src={ad.advertiserAvatar} alt="" /> : ad.advertiser.slice(0, 1)}</span><div><span className="eyebrow">{ad.source === "meta" ? "META AD" : "TIKTOK AD"}</span><h2>{ad.advertiser}</h2></div></div>
           <button className={`save-wide ${ad.isFavorite ? "saved" : ""}`} onClick={() => onFavorite(ad)}><Bookmark size={17} fill={ad.isFavorite ? "currentColor" : "none"} />{ad.isFavorite ? "Сохранено" : "В заметки"}</button>
           <div className="detail-metrics">
             <span><CalendarDays size={16} /><small>Запущено</small><strong>{new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(ad.startedAt))}</strong></span>

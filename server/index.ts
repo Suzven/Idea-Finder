@@ -118,7 +118,7 @@ app.get("/api/meta/media/:adId", async (request, response, next) => {
 
 app.get("/api/meta/media/:adId/:variant", async (request, response, next) => {
   try {
-    const variant = z.enum(["content", "thumbnail"]).parse(request.params.variant);
+    const variant = z.enum(["content", "thumbnail", "avatar"]).parse(request.params.variant);
     await streamMetaMedia(request.params.adId, variant, request, response);
   } catch (error) {
     next(error);

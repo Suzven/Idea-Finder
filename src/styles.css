@@ -132,6 +132,7 @@ body.modal-open { overflow: hidden; }
 .card-header { display: flex; align-items: center; justify-content: space-between; height: 64px; padding: 0 15px; }
 .card-advertiser { display: flex; align-items: center; min-width: 0; gap: 8px; }
 .avatar { display: grid; place-items: center; flex: 0 0 auto; width: 35px; height: 35px; color: #fff; border-radius: 10px; background: linear-gradient(145deg, #775de5, #42adc7); font-family: "Plus Jakarta Sans", "Manrope", sans-serif; font-size: 12px; font-weight: 800; }
+.avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .avatar.large { width: 54px; height: 54px; border-radius: 15px; font-size: 17px; }
 .card-advertiser > span:last-child { min-width: 0; }
 .card-advertiser strong, .card-advertiser small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

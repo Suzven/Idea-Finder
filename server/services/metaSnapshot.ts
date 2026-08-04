@@ -7,12 +7,14 @@ export interface MetaMedia {
   mediaType: "image" | "video";
   mediaUrl: string;
   thumbnailUrl: string;
+  advertiserAvatar: string;
 }
 
 interface ExtractedMetaMedia {
   mediaType: "image" | "video";
   mediaUrl: string;
   thumbnailUrl?: string;
+  advertiserAvatar?: string;
 }
 
 interface Candidate {
@@ -21,11 +23,11 @@ interface Candidate {
   score: number;
 }
 
-const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
+const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const REGISTRATION_TTL_MS = 60 * 60 * 1000;
 const MAX_ENTRIES = 1_000;
-const snapshotUrls = new Map<string, { url: string; expiresAt: number }>();
+const registeredAds = new Map<string, { url: string; expiresAt: number }>();
 const mediaCache = new Map<string, { value: Promise<ExtractedMetaMedia>; expiresAt: number }>();
 const waiters: Array<() => void> = [];
 let activeSnapshots = 0;
@@ -77,6 +79,7 @@ function fieldScore(field: string): number {
     playable_url: 950,
     video_sd_url: 940,
     watermarked_video_sd_url: 930,
+    video_preview_image_url: 850,
     original_image_url: 800,
     resized_image_url: 760,
     image_url: 700,
@@ -94,8 +97,19 @@ function dimensionsScore(context: string): number {
   return Math.min(180, Math.round(Math.log2(width * height) * 8));
 }
 
-export function extractMetaMediaFromHtml(html: string): ExtractedMetaMedia | undefined {
+function targetAdSource(html: string, adId?: string): string {
   const source = decodeHtml(html);
+  if (!adId) return source;
+  const deeplinkIndex = source.indexOf('"deeplink_ad_archive_result"');
+  const marker = `"ad_archive_id":"${adId}"`;
+  const targetIndex = source.indexOf(marker, Math.max(0, deeplinkIndex));
+  if (targetIndex < 0) return "";
+  return source.slice(targetIndex, targetIndex + 500_000);
+}
+
+export function extractMetaMediaFromHtml(html: string, adId?: string): ExtractedMetaMedia | undefined {
+  const source = targetAdSource(html, adId);
+  if (!source) return undefined;
   const candidates: Candidate[] = [];
   const seen = new Set<string>();
   const add = (kind: Candidate["kind"], rawUrl: string, score: number, position = 0) => {
@@ -107,10 +121,13 @@ export function extractMetaMediaFromHtml(html: string): ExtractedMetaMedia | und
     candidates.push({ kind, url, score: score + dimensionsScore(context) - smallAssetPenalty });
   };
 
-  const fieldPattern = /["'](playable_url_quality_hd|playable_url|video_hd_url|video_sd_url|watermarked_video_hd_url|watermarked_video_sd_url|original_image_url|resized_image_url|image_url|image_uri|thumbnail_url)["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/gi;
+  const avatarMatch = source.match(/["']page_profile_picture_url["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/i);
+  const advertiserAvatar = avatarMatch ? decodeUrl(avatarMatch[1]) : undefined;
+  const fieldPattern = /["'](playable_url_quality_hd|playable_url|video_hd_url|video_sd_url|watermarked_video_hd_url|watermarked_video_sd_url|video_preview_image_url|original_image_url|resized_image_url|image_url|image_uri|thumbnail_url)["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/gi;
   for (const match of source.matchAll(fieldPattern)) {
     const field = match[1].toLowerCase();
-    add(field.includes("video") || field.includes("playable") ? "video" : "image", match[2], fieldScore(field), match.index);
+    const kind = field === "video_preview_image_url" ? "image" : field.includes("video") || field.includes("playable") ? "video" : "image";
+    add(kind, match[2], fieldScore(field), match.index);
   }
 
   const tagPattern = /<(video|source|img)\b([^>]*)>/gi;
@@ -119,36 +136,34 @@ export function extractMetaMediaFromHtml(html: string): ExtractedMetaMedia | und
     const attributes = match[2];
     const rawUrl = attributes.match(/(?:src|data-src)\s*=\s*["']([^"']+)["']/i)?.[1];
     if (rawUrl) add(kind, rawUrl, kind === "video" ? 850 : 500, match.index);
+    if (kind === "video") {
+      const poster = attributes.match(/poster\s*=\s*["']([^"']+)["']/i)?.[1];
+      if (poster) add("image", poster, 850, match.index);
+    }
   }
 
   const videos = candidates.filter((candidate) => candidate.kind === "video").sort((a, b) => b.score - a.score);
   const images = candidates.filter((candidate) => candidate.kind === "image").sort((a, b) => b.score - a.score);
-  if (videos[0]) return { mediaType: "video", mediaUrl: videos[0].url, thumbnailUrl: images[0]?.url };
-  if (images[0]) return { mediaType: "image", mediaUrl: images[0].url, thumbnailUrl: images[0].url };
+  if (videos[0]) return { mediaType: "video", mediaUrl: videos[0].url, thumbnailUrl: images[0]?.url, ...(advertiserAvatar ? { advertiserAvatar } : {}) };
+  if (images[0]) return { mediaType: "image", mediaUrl: images[0].url, thumbnailUrl: images[0].url, ...(advertiserAvatar ? { advertiserAvatar } : {}) };
   return undefined;
 }
 
 function pruneMaps(): void {
   const now = Date.now();
-  for (const [id, entry] of snapshotUrls) if (entry.expiresAt <= now) snapshotUrls.delete(id);
+  for (const [id, entry] of registeredAds) if (entry.expiresAt <= now) registeredAds.delete(id);
   for (const [id, entry] of mediaCache) if (entry.expiresAt <= now) mediaCache.delete(id);
-  while (snapshotUrls.size > MAX_ENTRIES) snapshotUrls.delete(snapshotUrls.keys().next().value as string);
+  while (registeredAds.size > MAX_ENTRIES) registeredAds.delete(registeredAds.keys().next().value as string);
   while (mediaCache.size > MAX_ENTRIES) mediaCache.delete(mediaCache.keys().next().value as string);
 }
 
-export function registerMetaSnapshot(adId: string, snapshotUrl?: string): string | undefined {
-  if (!/^\d+$/.test(adId) || !snapshotUrl) return undefined;
-  try {
-    const parsed = new URL(decodeHtml(snapshotUrl));
-    if (parsed.protocol !== "https:" || parsed.hostname !== "www.facebook.com") return undefined;
-    if (!parsed.pathname.startsWith("/ads/archive/render_ad/")) return undefined;
-    if (parsed.searchParams.get("id") !== adId) return undefined;
-    snapshotUrls.set(adId, { url: parsed.toString(), expiresAt: Date.now() + REGISTRATION_TTL_MS });
-    pruneMaps();
-    return `/api/meta/media/${encodeURIComponent(adId)}`;
-  } catch {
-    return undefined;
-  }
+export function registerMetaAd(adId: string): string | undefined {
+  if (!/^\d+$/.test(adId)) return undefined;
+  const pageUrl = new URL("https://www.facebook.com/ads/library/");
+  pageUrl.searchParams.set("id", adId);
+  registeredAds.set(adId, { url: pageUrl.toString(), expiresAt: Date.now() + REGISTRATION_TTL_MS });
+  pruneMaps();
+  return `/api/meta/media/${encodeURIComponent(adId)}`;
 }
 
 async function acquireSnapshotSlot(): Promise<void> {
@@ -167,7 +182,7 @@ function releaseSnapshotSlot(): void {
 
 async function readLimitedText(response: globalThis.Response): Promise<string> {
   const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_SNAPSHOT_BYTES) throw new AppError(502, "META_SNAPSHOT_TOO_LARGE", "Snapshot Meta слишком большой для обработки.");
+  if (contentLength > MAX_PAGE_BYTES) throw new AppError(502, "META_PAGE_TOO_LARGE", "Страница Meta слишком большая для обработки.");
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -176,9 +191,9 @@ async function readLimitedText(response: globalThis.Response): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_SNAPSHOT_BYTES) {
+    if (total > MAX_PAGE_BYTES) {
       await reader.cancel();
-      throw new AppError(502, "META_SNAPSHOT_TOO_LARGE", "Snapshot Meta слишком большой для обработки.");
+      throw new AppError(502, "META_PAGE_TOO_LARGE", "Страница Meta слишком большая для обработки.");
     }
     chunks.push(value);
   }
@@ -189,10 +204,10 @@ async function readLimitedText(response: globalThis.Response): Promise<string> {
 }
 
 async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
-  const registration = snapshotUrls.get(adId);
+  const registration = registeredAds.get(adId);
   if (!registration || registration.expiresAt <= Date.now()) {
-    snapshotUrls.delete(adId);
-    throw new AppError(404, "META_SNAPSHOT_NOT_REGISTERED", "Snapshot объявления больше не доступен. Запустите поиск ещё раз.");
+    registeredAds.delete(adId);
+    throw new AppError(404, "META_AD_NOT_REGISTERED", "Объявление больше не зарегистрировано. Запустите поиск ещё раз.");
   }
 
   await acquireSnapshotSlot();
@@ -215,9 +230,9 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
         "Получите новый долгосрочный User Access Token, замените META_ACCESS_TOKEN в защищённом env-файле и перезапустите сервис.",
       );
     }
-    if (!response.ok) throw new AppError(502, "META_SNAPSHOT_FAILED", `Meta не отдала snapshot объявления (HTTP ${response.status}).`);
-    const media = extractMetaMediaFromHtml(html);
-    if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", "В snapshot объявления не найдено доступное изображение или видео.");
+    if (!response.ok) throw new AppError(502, "META_AD_PAGE_FAILED", `Meta не отдала страницу объявления (HTTP ${response.status}).`);
+    const media = extractMetaMediaFromHtml(html, adId);
+    if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", "На странице объявления не найдено доступное изображение или видео.");
     return media;
   } finally {
     releaseSnapshotSlot();
@@ -244,13 +259,14 @@ export async function getMetaMedia(adId: string): Promise<MetaMedia> {
     mediaType: media.mediaType,
     mediaUrl: `/api/meta/media/${encodeURIComponent(adId)}/content`,
     thumbnailUrl: media.thumbnailUrl ? `/api/meta/media/${encodeURIComponent(adId)}/thumbnail` : "",
+    advertiserAvatar: media.advertiserAvatar ? `/api/meta/media/${encodeURIComponent(adId)}/avatar` : "",
   };
 }
 
-export async function streamMetaMedia(adId: string, variant: "content" | "thumbnail", request: Request, response: Response): Promise<void> {
+export async function streamMetaMedia(adId: string, variant: "content" | "thumbnail" | "avatar", request: Request, response: Response): Promise<void> {
   const media = await resolveExtractedMetaMedia(adId);
-  const remoteUrl = variant === "thumbnail" ? media.thumbnailUrl : media.mediaUrl;
-  if (!remoteUrl) throw new AppError(404, "META_THUMBNAIL_NOT_FOUND", "Миниатюра видео недоступна.");
+  const remoteUrl = variant === "thumbnail" ? media.thumbnailUrl : variant === "avatar" ? media.advertiserAvatar : media.mediaUrl;
+  if (!remoteUrl) throw new AppError(404, "META_MEDIA_VARIANT_NOT_FOUND", "Запрошенный вариант медиа недоступен.");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -269,7 +285,7 @@ export async function streamMetaMedia(adId: string, variant: "content" | "thumbn
     clearTimeout(timeout);
   }
   const contentType = upstream.headers.get("content-type") ?? "";
-  const expectedType = variant === "thumbnail" || media.mediaType === "image" ? "image/" : "video/";
+  const expectedType = variant !== "content" || media.mediaType === "image" ? "image/" : "video/";
   if (!upstream.ok || !contentType.toLowerCase().startsWith(expectedType)) {
     throw new AppError(502, "META_MEDIA_FETCH_FAILED", `Медиафайл Meta временно недоступен (HTTP ${upstream.status}).`);
   }

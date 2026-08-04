@@ -34,4 +34,27 @@ describe("extractMetaMediaFromHtml", () => {
   it("ignores media URLs outside Meta CDN domains", () => {
     expect(extractMetaMediaFromHtml('<img src="https://attacker.example/tracker.jpg">')).toBeUndefined();
   });
+
+  it("selects the requested deeplink ad and extracts its page avatar", () => {
+    const html = `
+      {"ad_archive_id":"111","snapshot":{"original_image_url":"https:\\/\\/scontent.xx.fbcdn.net\\/wrong.jpg"}},
+      "deeplink_ad_archive_result":{"deeplink_ad_archive":{
+        "ad_archive_id":"222",
+        "snapshot":{
+          "page_profile_picture_url":"https:\\/\\/scontent.xx.fbcdn.net\\/page_s60x60.jpg",
+          "display_format":"VIDEO",
+          "videos":[{
+            "video_hd_url":"https:\\/\\/video.xx.fbcdn.net\\/target.mp4",
+            "video_preview_image_url":"https:\\/\\/scontent.xx.fbcdn.net\\/target-preview.jpg"
+          }]
+        }
+      }}`;
+
+    expect(extractMetaMediaFromHtml(html, "222")).toEqual({
+      mediaType: "video",
+      mediaUrl: "https://video.xx.fbcdn.net/target.mp4",
+      thumbnailUrl: "https://scontent.xx.fbcdn.net/target-preview.jpg",
+      advertiserAvatar: "https://scontent.xx.fbcdn.net/page_s60x60.jpg",
+    });
+  });
 });

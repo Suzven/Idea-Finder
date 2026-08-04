@@ -15,6 +15,7 @@ const formatDate = (value: string) => new Intl.DateTimeFormat("ru-RU", { day: "n
 export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
   const { ad: resolvedAd, loading: mediaLoading, error: mediaError } = useResolvedAdMedia(ad);
   ad = resolvedAd;
+  const avatar = <span className="avatar">{ad.advertiserAvatar ? <img src={ad.advertiserAvatar} alt="" loading="lazy" /> : ad.advertiser.slice(0, 1)}</span>;
   const media = (
     <div className="card-media">
       {ad.mediaType === "video" && ad.mediaUrl
@@ -34,7 +35,7 @@ export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
       <article className="ad-card tiktok-card" onClick={() => onOpen(ad)}>
         {media}
         <div className="tiktok-overlay">
-          <div className="card-advertiser"><span className="avatar">{ad.advertiser.slice(0, 1)}</span><span><strong>{ad.advertiser}</strong><small>{formatDate(ad.startedAt)} · {ad.country}</small></span></div>
+          <div className="card-advertiser">{avatar}<span><strong>{ad.advertiser}</strong><small>{formatDate(ad.startedAt)} · {ad.country}</small></span></div>
           {!compact && <p>{ad.headline}</p>}
         </div>
         <button className={`favorite-button ${ad.isFavorite ? "saved" : ""}`} aria-label="Сохранить объявление" onClick={(event) => { event.stopPropagation(); onFavorite(ad); }}><Bookmark size={17} fill={ad.isFavorite ? "currentColor" : "none"} /></button>
@@ -45,7 +46,7 @@ export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
   return (
     <article className="ad-card meta-card" onClick={() => onOpen(ad)}>
       <header className="card-header">
-        <div className="card-advertiser"><span className="avatar">{ad.advertiser.slice(0, 1)}</span><span><strong>{ad.advertiser}</strong><small>{formatDate(ad.startedAt)} · {ad.daysActive} дней</small></span></div>
+        <div className="card-advertiser">{avatar}<span><strong>{ad.advertiser}</strong><small>{formatDate(ad.startedAt)} · {ad.daysActive} дней</small></span></div>
         <div className="card-header-actions"><span className="country-code">{ad.country}</span><button className={ad.isFavorite ? "saved" : ""} aria-label="Сохранить объявление" onClick={(event) => { event.stopPropagation(); onFavorite(ad); }}><Bookmark size={17} fill={ad.isFavorite ? "currentColor" : "none"} /></button></div>
       </header>
       {media}
