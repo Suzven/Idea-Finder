@@ -49,6 +49,7 @@ describe("fetchMetaAds", () => {
     expect(requestUrl.searchParams.get("publisher_platforms")).toBe('["INSTAGRAM"]');
     expect(requestUrl.searchParams.get("fields")).toContain("ad_creative_link_captions");
     expect(requestUrl.searchParams.get("fields")).toContain("eu_total_reach");
+    expect(requestUrl.searchParams.get("fields")).toContain("ad_snapshot_url");
 
     expect(result.items).toHaveLength(1);
     expect(result.total).toBe(1);

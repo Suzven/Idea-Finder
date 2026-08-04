@@ -75,3 +75,7 @@ export async function fetchIntegrationLogs(filters: {
 export async function fetchIntegrationLog(id: number): Promise<IntegrationLogDetail> {
   return request<IntegrationLogDetail>(`/api/integration-logs/${id}`);
 }
+
+export async function clearIntegrationLogs(): Promise<{ ok: true; deleted: number }> {
+  return request<{ ok: true; deleted: number }>("/api/integration-logs", { method: "DELETE" });
+}

@@ -1,9 +1,9 @@
 import {
   Activity, AlertTriangle, Braces, CheckCircle2, ChevronLeft, ChevronRight,
-  Clock3, Database, RefreshCw, Search, Server, X,
+  Clock3, Database, RefreshCw, Search, Server, Trash2, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchIntegrationLog, fetchIntegrationLogs } from "../api";
+import { clearIntegrationLogs, fetchIntegrationLog, fetchIntegrationLogs } from "../api";
 import type { AdSource, IntegrationLogDetail, IntegrationLogStatus, IntegrationLogsResponse, IntegrationLogSummary } from "../shared/types";
 
 const PAGE_SIZE = 20;
@@ -115,6 +115,8 @@ export function LogsPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<IntegrationLogDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [clearConfirmationOpen, setClearConfirmationOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,6 +152,24 @@ export function LogsPage() {
     }
   };
 
+  const clearAllLogs = async () => {
+    setClearing(true);
+    setError("");
+    try {
+      await clearIntegrationLogs();
+      setSelectedId(null);
+      setDetail(null);
+      setOffset(0);
+      setClearConfirmationOpen(false);
+      await load();
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "Не удалось удалить логи");
+      setClearConfirmationOpen(false);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const successRate = useMemo(() => {
@@ -164,7 +184,10 @@ export function LogsPage() {
         <h1>Логи интеграций</h1>
         <p>Диагностика запросов, ответов и преобразования данных Meta и TikTok в одном месте.</p>
       </div>
-      <button className="button ghost refresh-logs" onClick={() => void load()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Обновить</button>
+      <div className="logs-intro-actions">
+        <button className="button danger-outline" onClick={() => setClearConfirmationOpen(true)} disabled={loading || clearing || !data?.databaseEnabled}><Trash2 size={16} />Удалить логи</button>
+        <button className="button ghost refresh-logs" onClick={() => void load()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Обновить</button>
+      </div>
     </section>
 
     <section className="log-kpis">
@@ -219,5 +242,16 @@ export function LogsPage() {
     </section>
 
     {selectedId !== null && <LogDetails log={detail} loading={detailLoading} onClose={() => { setSelectedId(null); setDetail(null); }} />}
+    {clearConfirmationOpen && <div className="clear-logs-backdrop" onClick={() => { if (!clearing) setClearConfirmationOpen(false); }}>
+      <div className="clear-logs-modal" role="dialog" aria-modal="true" aria-labelledby="clear-logs-title" onClick={(event) => event.stopPropagation()}>
+        <span className="clear-logs-icon"><Trash2 size={22} /></span>
+        <h2 id="clear-logs-title">Удалить все логи?</h2>
+        <p>Будут безвозвратно удалены все запросы, ответы и результаты парсинга Meta и TikTok из базы данных.</p>
+        <div>
+          <button className="button ghost" onClick={() => setClearConfirmationOpen(false)} disabled={clearing}>Отмена</button>
+          <button className="button danger" onClick={() => void clearAllLogs()} disabled={clearing}>{clearing ? <RefreshCw size={16} className="spin" /> : <Trash2 size={16} />}{clearing ? "Удаляем…" : "Удалить всё"}</button>
+        </div>
+      </div>
+    </div>}
   </div>;
 }

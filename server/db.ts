@@ -103,6 +103,12 @@ export async function deleteExpiredIntegrationLogs(retentionDays = 7): Promise<v
   }
 }
 
+export async function clearIntegrationLogs(): Promise<number | null> {
+  if (!pool) return null;
+  const [result] = await pool.execute<mysql.ResultSetHeader>("DELETE FROM integration_logs");
+  return result.affectedRows;
+}
+
 export interface IntegrationLogQuery {
   provider?: AdSource;
   status?: IntegrationLogStatus;

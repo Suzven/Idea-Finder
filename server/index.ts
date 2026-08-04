@@ -9,7 +9,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -68,6 +68,16 @@ const logQuerySchema = z.object({
 app.get("/api/integration-logs", async (request, response, next) => {
   try {
     response.json(await getIntegrationLogs(logQuerySchema.parse(request.query)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/integration-logs", async (_request, response, next) => {
+  try {
+    const deleted = await clearIntegrationLogs();
+    if (deleted === null) throw new AppError(503, "DATABASE_DISABLED", "База данных не подключена.");
+    response.json({ ok: true, deleted });
   } catch (error) {
     next(error);
   }

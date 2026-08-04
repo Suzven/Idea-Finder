@@ -21,6 +21,7 @@ interface MetaAd {
   eu_total_reach?: number | string;
   estimated_audience_size?: { lower_bound?: string; upper_bound?: string };
   impressions?: { lower_bound?: string; upper_bound?: string };
+  ad_snapshot_url?: string;
 }
 
 interface MetaResponse {
@@ -82,6 +83,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
       "ad_delivery_stop_time", "ad_creative_bodies", "ad_creative_link_captions",
       "ad_creative_link_titles", "ad_creative_link_descriptions",
       "publisher_platforms", "languages", "eu_total_reach", "estimated_audience_size", "impressions",
+      "ad_snapshot_url",
     ].join(","),
     limit: String(Math.min(limit, 50)),
   });
@@ -118,6 +120,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
       stage: "provider_payload",
       dataIsArray: Array.isArray(payload.data),
       adsReceived: payload.data?.length ?? 0,
+      adsWithSnapshotUrl: payload.data?.filter((ad) => Boolean(ad.ad_snapshot_url)).length ?? 0,
       hasPagingCursor: Boolean(payload.paging?.cursors?.after),
       providerError: payload.error ?? null,
     });
@@ -172,6 +175,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
           titleCount: ad.ad_creative_link_titles?.length ?? 0,
           captionCount: ad.ad_creative_link_captions?.length ?? 0,
           platforms: ad.publisher_platforms ?? [],
+          hasSnapshotUrl: Boolean(ad.ad_snapshot_url),
           rawReach: ad.eu_total_reach ?? ad.impressions ?? ad.estimated_audience_size ?? null,
         },
         output: normalized,
