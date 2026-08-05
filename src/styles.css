@@ -565,6 +565,12 @@ body.modal-open { overflow: hidden; }
 .ai-error-log summary { width: fit-content; cursor: pointer; font-size: 10.5px; font-weight: 750; user-select: none; }
 .ai-error-log pre { overflow: auto; max-height: 260px; margin: 9px 0 0; padding: 12px; color: #663a41; border: 1px solid #e7c8cd; border-radius: 9px; background: rgba(255,255,255,.72); font: 10.5px/1.55 Consolas, "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-report { margin-top: 27px; }
+.ai-report-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 12px; padding: 13px 15px; border: 1px solid #dddff0; border-radius: 13px; background: rgba(255,255,255,.9); }
+.ai-report-toolbar > div { display: flex; align-items: center; gap: 10px; min-width: 0; color: #7058d8; }
+.ai-report-toolbar > div > span { display: grid; min-width: 0; gap: 2px; }
+.ai-report-toolbar strong { overflow: hidden; color: #414b62; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ai-report-toolbar small { color: #9098aa; font-size: 9.5px; }
+.ai-report-toolbar .button { flex: 0 0 auto; }
 .ai-report-head { display: grid; grid-template-columns: 1fr auto; gap: 30px; padding: 27px; color: #fff; border-radius: 18px 18px 0 0; background: linear-gradient(135deg, #171d32, #292149 72%, #3b266e); box-shadow: 0 18px 46px rgba(25,26,53,.18); }
 .ai-report-head .eyebrow { color: #aa96ff; }
 .ai-report-head h2 { margin: 9px 0 8px; font-family: "Plus Jakarta Sans", "Manrope", sans-serif; font-size: 28px; letter-spacing: -.7px; }
@@ -626,6 +632,27 @@ body.modal-open { overflow: hidden; }
 .ai-caveats ul { margin-top: 8px; }
 .ai-caveats li { color: #8e7649; }
 .ai-caveats li::before { background: #c09542; }
+.ai-report-landings { margin-top: 18px; padding: 22px; border: 1px solid #e0e4ec; border-radius: 15px; background: #fff; box-shadow: 0 10px 30px rgba(35,43,72,.045); }
+.ai-report-landings > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+.ai-report-landings > header > div { display: flex; align-items: center; gap: 11px; }
+.ai-report-landings > header > div > span { display: grid; place-items: center; flex: 0 0 auto; width: 39px; height: 39px; color: #258ca5; border-radius: 11px; background: #e3f5f9; }
+.ai-report-landings h3 { margin: 0; color: #303a51; font-family: "Plus Jakarta Sans", "Manrope", sans-serif; font-size: 17px; }
+.ai-report-landings header p { margin: 3px 0 0; color: #9099aa; font-size: 9.5px; }
+.ai-report-landings > header > b { color: #7d879a; font-size: 10px; }
+.ai-report-landings > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.ai-report-landings article { overflow: hidden; min-width: 0; border: 1px solid #e1e5ec; border-radius: 13px; background: #f8f9fb; }
+.ai-report-landings article > header { display: flex; align-items: center; gap: 10px; padding: 13px; background: #fff; }
+.ai-report-landings article > header > span { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; color: #785ee0; border-radius: 9px; background: #eeeaff; font-size: 10px; font-weight: 800; }
+.ai-report-landings article > header > div { display: grid; min-width: 0; gap: 2px; }
+.ai-report-landings article > header strong { overflow: hidden; color: #3f4a61; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ai-report-landings article > header small { overflow: hidden; color: #969eae; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.ai-landing-shot { position: relative; display: block; overflow: hidden; height: 480px; color: #fff; background: #e9ecf2; }
+.ai-landing-shot img { display: block; width: 100%; height: auto; min-height: 100%; object-fit: cover; object-position: top center; }
+.ai-landing-shot > span { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; background: rgba(18,24,39,.82); backdrop-filter: blur(8px); font-size: 9.5px; font-weight: 750; }
+.ai-landing-missing { display: grid; place-items: center; align-content: center; height: 240px; gap: 8px; color: #9aa2b2; background: #f1f3f7; font-size: 10px; }
+.ai-report-landings article > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; background: #fff; }
+.ai-report-landings article > footer > span { overflow: hidden; min-width: 0; color: #8790a2; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ai-report-landings article > footer > a { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 6px; color: #684bd8; font-size: 10px; font-weight: 800; }
 
 @media (max-width: 1500px) {
   .ads-grid, .ads-grid.columns-4, .ads-grid.columns-5 { --columns: 3; }
@@ -740,6 +767,33 @@ body.modal-open { overflow: hidden; }
   .ai-history-list { grid-template-columns: 1fr; }
   .ai-report-head { grid-template-columns: 1fr; }
   .ai-score { min-height: 95px; }
+}
+
+@media (max-width: 720px) {
+  .ai-report-toolbar { align-items: stretch; flex-direction: column; }
+  .ai-report-toolbar .button { justify-content: center; }
+  .ai-report-landings > div { grid-template-columns: 1fr; }
+  .ai-landing-shot { height: 400px; }
+}
+
+@media print {
+  @page { size: A4 landscape; margin: 10mm; }
+  html, body { width: auto; min-width: 0; color-adjust: exact; -webkit-print-color-adjust: exact; background: #fff !important; }
+  .sidebar-wrap, .mobile-sidebar-backdrop, .topbar, .ai-intro, .ai-launch-card, .ai-history, .ai-empty, .ai-processing, .ai-error, .ai-report-toolbar { display: none !important; }
+  .main-content { margin: 0 !important; }
+  .page-wrap { width: auto !important; max-width: none !important; padding: 0 !important; }
+  .ai-report { margin: 0 !important; }
+  .ai-report-head, .ai-report-meta, .ai-insight-card, .ai-test-plan, .ai-creative-findings, .ai-caveats, .ai-report-landings { box-shadow: none !important; }
+  .ai-insights-grid { grid-template-columns: repeat(3, 1fr) !important; }
+  .ai-test-plan article, .ai-creative-findings article, .ai-insight-card { break-inside: avoid; }
+  .ai-report-landings { break-before: page; }
+  .ai-report-landings > div { display: block; }
+  .ai-report-landings article { break-before: page; border: 0; }
+  .ai-report-landings article:first-child { break-before: auto; }
+  .ai-landing-shot { display: grid; place-items: center; height: 160mm; background: #fff; }
+  .ai-landing-shot img { width: auto; max-width: 100%; height: auto; max-height: 160mm; min-height: 0; object-fit: contain; }
+  .ai-landing-shot > span { display: none; }
+  a { color: inherit; text-decoration: none; }
 }
 
 @media (max-width: 620px) {

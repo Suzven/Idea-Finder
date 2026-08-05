@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../server/config.js", () => ({ config: {} }));
 
-import { addFavorite, createCollection, deleteAIAnalysisReport, deleteCollection, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, removeFavorite, saveAIAnalysisReport, setCreativeAnalysisNotes } from "../server/db.js";
+import { addFavorite, createCollection, deleteAIAnalysisReport, deleteCollection, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, removeFavorite, saveAIAnalysisReport, setCreativeAnalysisNotes } from "../server/db.js";
 import type { AdCreative, AIAnalysisResponse } from "../src/shared/types.js";
 
 const creative: AdCreative = {
@@ -19,6 +19,7 @@ const creative: AdCreative = {
   headline: "Saved headline",
   body: "Saved body",
   cta: "Open",
+  landingUrl: "https://shop.example/offer",
   startedAt: "2026-08-01T00:00:00Z",
   daysActive: 5,
   savedCount: 0,
@@ -103,11 +104,26 @@ describe("favorites storage", () => {
       },
     };
 
-    const saved = await saveAIAnalysisReport(clientId, collection, result);
+    const screenshot = Buffer.from("saved landing screenshot");
+    const saved = await saveAIAnalysisReport(clientId, collection, result, [{
+      adId: creative.id,
+      advertiser: creative.advertiser,
+      headline: creative.headline,
+      cta: creative.cta,
+      landingUrl: creative.landingUrl!,
+      screenshot,
+      screenshotMime: "image/jpeg",
+    }]);
     expect(saved.name).toContain("Shoes_");
     expect(await getAIAnalysisReports(clientId)).toHaveLength(1);
-    expect((await getAIAnalysisReport(clientId, saved.id))?.result.analysis.opportunityScore).toBe(77);
+    const opened = await getAIAnalysisReport(clientId, saved.id);
+    expect(opened?.result.analysis.opportunityScore).toBe(77);
+    expect(opened?.result.landings?.[0].landingUrl).toBe(creative.landingUrl);
+    const token = opened?.result.landings?.[0].screenshotUrl?.split("/").at(-1);
+    expect(token).toBeTruthy();
+    expect((await getAIAnalysisLandingScreenshot(token!))?.buffer).toEqual(screenshot);
     expect(await deleteAIAnalysisReport(clientId, saved.id)).toBe(true);
+    expect(await getAIAnalysisLandingScreenshot(token!)).toBeNull();
     expect(await getAIAnalysisReports(clientId)).toEqual([]);
   });
 });

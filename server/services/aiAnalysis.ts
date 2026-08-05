@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import type { Page, Route } from "playwright";
-import type { AdCreative, AIAnalysisResponse, CreativeCollection, NicheAnalysis } from "../../src/shared/types.js";
+import type { AdCreative, AIAnalysisResponse, AIAnalysisLanding, CreativeCollection, NicheAnalysis } from "../../src/shared/types.js";
 import { config } from "../config.js";
 import { AppError } from "../errors.js";
 import { getMetaBrowser, getMetaMedia, registerMetaAd } from "./metaSnapshot.js";
@@ -22,8 +22,19 @@ interface PreparedCreative {
   analysisNote?: string;
   creativeImage?: string;
   landingImage?: string;
+  landingScreenshot?: Buffer;
   landingUrl?: string;
   warning?: string;
+}
+
+export interface AIAnalysisLandingAsset extends AIAnalysisLanding {
+  screenshot?: Buffer;
+  screenshotMime?: string;
+}
+
+export interface PreparedAIAnalysis {
+  response: AIAnalysisResponse;
+  landingAssets: AIAnalysisLandingAsset[];
 }
 
 interface OpenAIResponse {
@@ -178,7 +189,7 @@ async function scrollLanding(page: Page): Promise<void> {
   });
 }
 
-async function renderLanding(rawUrl: string): Promise<string> {
+async function renderLanding(rawUrl: string): Promise<{ image: string; buffer: Buffer; finalUrl: string }> {
   await assertPublicHttpUrl(rawUrl);
   const browser = await getMetaBrowser();
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "ru-RU" });
@@ -190,7 +201,7 @@ async function renderLanding(rawUrl: string): Promise<string> {
     await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
     await scrollLanding(page);
     const buffer = await page.screenshot({ type: "jpeg", quality: 48, fullPage: true });
-    return dataUrl(buffer);
+    return { image: dataUrl(buffer), buffer, finalUrl: page.url() };
   } finally {
     await context.close().catch(() => undefined);
   }
@@ -228,16 +239,29 @@ async function prepareCreative(item: StoredCreative): Promise<PreparedCreative> 
   }
 
   let landingImage: string | undefined;
+  let landingScreenshot: Buffer | undefined;
+  let landingUrl = ad.landingUrl;
   if (ad.landingUrl) {
     try {
-      landingImage = await renderLanding(ad.landingUrl);
+      const rendered = await renderLanding(ad.landingUrl);
+      landingImage = rendered.image;
+      landingScreenshot = rendered.buffer;
+      landingUrl = rendered.finalUrl;
     } catch (error) {
       warnings.push(`Лендинг: ${error instanceof Error ? error.message : "скриншот недоступен"}`);
     }
   } else {
     warnings.push("У объявления не найден CTA-лендинг");
   }
-  return { ad, analysisNote: item.analysisNote, creativeImage, landingImage, landingUrl: ad.landingUrl, warning: warnings.join("; ") || undefined };
+  return {
+    ad,
+    analysisNote: item.analysisNote,
+    creativeImage,
+    landingImage,
+    landingUrl,
+    warning: warnings.join("; ") || undefined,
+    ...(landingScreenshot ? { landingScreenshot } : {}),
+  };
 }
 
 export function buildAnalysisPrompt(collection: CreativeCollection, creatives: PreparedCreative[]): string {
@@ -445,19 +469,34 @@ export async function analyzeCollection(options: {
   clientId: string;
   collection: CreativeCollection;
   items: StoredCreative[];
-}): Promise<AIAnalysisResponse> {
+}): Promise<PreparedAIAnalysis> {
   const selected = options.items.slice(0, MAX_CREATIVES);
   const prepared: PreparedCreative[] = [];
   for (const item of selected) prepared.push(await prepareCreative(item));
   const warnings = prepared.flatMap((item) => item.warning ? [`${item.ad.advertiser}: ${item.warning}`] : []);
   if (options.items.length > MAX_CREATIVES) warnings.push(`Для контроля стоимости проанализированы первые ${MAX_CREATIVES} из ${options.items.length} креативов.`);
   const analysis = await requestOpenAI(options.apiKey, options.clientId, options.collection, prepared);
+  const landingAssets: AIAnalysisLandingAsset[] = prepared
+    .filter((item): item is PreparedCreative & { landingUrl: string } => Boolean(item.landingUrl))
+    .map((item) => ({
+      adId: item.ad.id,
+      advertiser: item.ad.advertiser,
+      headline: item.ad.headline,
+      cta: item.ad.cta,
+      landingUrl: item.landingUrl,
+      screenshot: item.landingScreenshot,
+      screenshotMime: item.landingScreenshot ? "image/jpeg" : undefined,
+    }));
   return {
-    collection: options.collection,
-    analysis,
-    model: OPENAI_MODEL,
-    analyzedCount: prepared.length,
-    totalCount: options.items.length,
-    warnings,
+    response: {
+      collection: options.collection,
+      analysis,
+      model: OPENAI_MODEL,
+      analyzedCount: prepared.length,
+      totalCount: options.items.length,
+      warnings,
+      landings: landingAssets.map(({ screenshot: _screenshot, screenshotMime: _mime, ...landing }) => landing),
+    },
+    landingAssets,
   };
 }

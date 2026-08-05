@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise";
+import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import type { AdCreative, AdSource, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
 
@@ -26,6 +27,7 @@ const memoryCollections = new Map<string, Map<string, CreativeCollection>>();
 const memoryFavoriteCollections = new Map<string, Map<string, Set<string>>>();
 const memoryCreativeNotes = new Map<string, Map<string, string>>();
 const memoryAIReports = new Map<string, Map<string, AIAnalysisReport>>();
+const memoryAILandingScreenshots = new Map<string, { reportId: string; buffer: Buffer; mimeType: string }>();
 let memoryCollectionId = 0;
 let memoryAIReportId = 0;
 
@@ -38,6 +40,16 @@ export interface StoredFavorite {
   ad: AdCreative;
   sourcePayload?: unknown;
   analysisNote?: string;
+}
+
+export interface AIAnalysisLandingAssetInput {
+  adId: string;
+  advertiser: string;
+  headline?: string;
+  cta?: string;
+  landingUrl: string;
+  screenshot?: Buffer;
+  screenshotMime?: string;
 }
 
 export interface IntegrationLogStart {
@@ -418,11 +430,22 @@ export async function saveAIAnalysisReport(
   clientId: string,
   collection: CreativeCollection,
   result: AIAnalysisResponse,
-): Promise<AIAnalysisReportSummary> {
+  landingAssets: AIAnalysisLandingAssetInput[] = [],
+): Promise<AIAnalysisReport> {
   const createdAt = new Date();
   const name = `${collection.name}_${reportTimestamp(createdAt)}`;
+  const storedResult: AIAnalysisResponse = {
+    ...result,
+    landings: landingAssets.map(({ screenshot: _screenshot, screenshotMime: _mime, ...landing }) => landing),
+  };
   if (!pool) {
     const id = String(++memoryAIReportId);
+    const landings = landingAssets.map(({ screenshot, screenshotMime, ...landing }) => {
+      if (!screenshot) return landing;
+      const token = randomUUID();
+      memoryAILandingScreenshots.set(token, { reportId: id, buffer: screenshot, mimeType: screenshotMime ?? "image/jpeg" });
+      return { ...landing, screenshotUrl: `/api/ai-analysis/landing-screenshots/${token}` };
+    });
     const report: AIAnalysisReport = {
       id,
       name,
@@ -434,38 +457,83 @@ export async function saveAIAnalysisReport(
       opportunityScore: result.analysis.opportunityScore,
       niche: result.analysis.niche,
       createdAt: createdAt.toISOString(),
-      result,
+      result: { ...storedResult, landings },
     };
     const reports = memoryAIReports.get(clientId) ?? new Map<string, AIAnalysisReport>();
     reports.set(id, report);
     memoryAIReports.set(clientId, reports);
-    const { result: _result, ...summary } = report;
-    return summary;
+    return report;
   }
-  const [insert] = await pool.execute<mysql.ResultSetHeader>(
-    `INSERT INTO ai_analysis_reports
-      (client_id, collection_id, collection_name, report_name, model, analyzed_count, total_count, opportunity_score, niche, result_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      clientId,
-      collection.id,
-      collection.name,
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [insert] = await connection.execute<mysql.ResultSetHeader>(
+      `INSERT INTO ai_analysis_reports
+        (client_id, collection_id, collection_name, report_name, model, analyzed_count, total_count, opportunity_score, niche, result_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        clientId,
+        collection.id,
+        collection.name,
+        name,
+        result.model,
+        result.analyzedCount,
+        result.totalCount,
+        result.analysis.opportunityScore,
+        result.analysis.niche,
+        JSON.stringify(storedResult),
+      ],
+    );
+    const reportId = String(insert.insertId);
+    const landings = [];
+    for (const [position, asset] of landingAssets.entries()) {
+      const token = randomUUID();
+      await connection.execute(
+        `INSERT INTO ai_analysis_report_landings
+          (report_id, position, ad_id, advertiser, headline, cta, landing_url, screenshot, screenshot_mime, access_token)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          reportId,
+          position,
+          asset.adId,
+          asset.advertiser,
+          asset.headline ?? null,
+          asset.cta ?? null,
+          asset.landingUrl,
+          asset.screenshot ?? null,
+          asset.screenshot ? (asset.screenshotMime ?? "image/jpeg") : null,
+          token,
+        ],
+      );
+      landings.push({
+        adId: asset.adId,
+        advertiser: asset.advertiser,
+        headline: asset.headline,
+        cta: asset.cta,
+        landingUrl: asset.landingUrl,
+        ...(asset.screenshot ? { screenshotUrl: `/api/ai-analysis/landing-screenshots/${token}` } : {}),
+      });
+    }
+    await connection.commit();
+    return {
+      id: reportId,
       name,
-      result.model,
-      result.analyzedCount,
-      result.totalCount,
-      result.analysis.opportunityScore,
-      result.analysis.niche,
-      JSON.stringify(result),
-    ],
-  );
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    `SELECT id, collection_id, collection_name, report_name, model, analyzed_count, total_count,
-            opportunity_score, niche, created_at
-     FROM ai_analysis_reports WHERE client_id = ? AND id = ?`,
-    [clientId, insert.insertId],
-  );
-  return mapAIReportSummary(rows[0]);
+      collectionId: collection.id,
+      collectionName: collection.name,
+      model: result.model,
+      analyzedCount: result.analyzedCount,
+      totalCount: result.totalCount,
+      opportunityScore: result.analysis.opportunityScore,
+      niche: result.analysis.niche,
+      createdAt: createdAt.toISOString(),
+      result: { ...storedResult, landings },
+    };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function getAIAnalysisReports(clientId: string): Promise<AIAnalysisReportSummary[]> {
@@ -495,11 +563,53 @@ export async function getAIAnalysisReport(clientId: string, reportId: string): P
   if (!row) return null;
   const result = parseJson(row.result_json) as AIAnalysisResponse | undefined;
   if (!result?.analysis) return null;
-  return { ...mapAIReportSummary(row), result };
+  const [landingRows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT ad_id, advertiser, headline, cta, landing_url, access_token,
+            screenshot IS NOT NULL AS has_screenshot
+     FROM ai_analysis_report_landings
+     WHERE report_id = ? ORDER BY position ASC, id ASC`,
+    [reportId],
+  );
+  const landings = landingRows.map((landing) => ({
+    adId: String(landing.ad_id),
+    advertiser: String(landing.advertiser),
+    headline: landing.headline === null ? undefined : String(landing.headline),
+    cta: landing.cta === null ? undefined : String(landing.cta),
+    landingUrl: String(landing.landing_url),
+    ...(Boolean(landing.has_screenshot) ? { screenshotUrl: `/api/ai-analysis/landing-screenshots/${String(landing.access_token)}` } : {}),
+  }));
+  return { ...mapAIReportSummary(row), result: { ...result, landings } };
+}
+
+export async function getAIAnalysisLandingScreenshot(token: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  if (!pool) {
+    const asset = memoryAILandingScreenshots.get(token);
+    return asset ? { buffer: asset.buffer, mimeType: asset.mimeType } : null;
+  }
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT screenshot, screenshot_mime
+     FROM ai_analysis_report_landings
+     WHERE access_token = ? AND screenshot IS NOT NULL`,
+    [token],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    buffer: Buffer.isBuffer(row.screenshot) ? row.screenshot : Buffer.from(row.screenshot as Uint8Array),
+    mimeType: String(row.screenshot_mime || "image/jpeg"),
+  };
 }
 
 export async function deleteAIAnalysisReport(clientId: string, reportId: string): Promise<boolean> {
-  if (!pool) return memoryAIReports.get(clientId)?.delete(reportId) ?? false;
+  if (!pool) {
+    const deleted = memoryAIReports.get(clientId)?.delete(reportId) ?? false;
+    if (deleted) {
+      for (const [token, asset] of memoryAILandingScreenshots) {
+        if (asset.reportId === reportId) memoryAILandingScreenshots.delete(token);
+      }
+    }
+    return deleted;
+  }
   const [result] = await pool.execute<mysql.ResultSetHeader>(
     "DELETE FROM ai_analysis_reports WHERE client_id = ? AND id = ?",
     [clientId, reportId],

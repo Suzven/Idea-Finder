@@ -27,3 +27,25 @@ CREATE TABLE IF NOT EXISTS ai_analysis_reports (
     KEY ai_analysis_reports_client_created_idx (client_id, created_at),
     KEY ai_analysis_reports_collection_idx (client_id, collection_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS ai_analysis_report_landings (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    report_id BIGINT UNSIGNED NOT NULL,
+    position SMALLINT UNSIGNED NOT NULL,
+    ad_id VARCHAR(160) NOT NULL,
+    advertiser VARCHAR(255) NOT NULL,
+    headline TEXT NULL,
+    cta VARCHAR(255) NULL,
+    landing_url TEXT NOT NULL,
+    screenshot LONGBLOB NULL,
+    screenshot_mime VARCHAR(80) NULL,
+    access_token CHAR(36) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY ai_analysis_landing_token_unique (access_token),
+    UNIQUE KEY ai_analysis_landing_report_ad_unique (report_id, ad_id),
+    KEY ai_analysis_landing_report_position_idx (report_id, position),
+    CONSTRAINT ai_analysis_landing_report_fk
+        FOREIGN KEY (report_id)
+        REFERENCES ai_analysis_reports (id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

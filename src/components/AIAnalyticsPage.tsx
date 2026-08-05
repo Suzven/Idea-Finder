@@ -1,4 +1,4 @@
-import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, FileText, FlaskConical, Folder, Gauge, History, Image, KeyRound, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw, Rocket, Save, ShieldAlert, Sparkles, Target, Trash2, TrendingUp } from "lucide-react";
+import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, ExternalLink, FileDown, FileText, FlaskConical, Folder, Gauge, History, Image, KeyRound, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw, Rocket, Save, ShieldAlert, Sparkles, Target, Trash2, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { analyzeCreativeCollection, ApiRequestError, deleteAIAnalysisReport, fetchAIAnalysisCreatives, fetchAIAnalysisReport, fetchAIAnalysisReports, fetchCollections, saveCreativeAnalysisNotes } from "../api";
@@ -78,6 +78,7 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   const [noteDraft, setNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
   const [noteMessage, setNoteMessage] = useState("");
+  const [exportingPdf, setExportingPdf] = useState(false);
   const keyConfigured = useMemo(() => hasOpenAIKey(), [settingsRevision]);
   const selected = collections.find((collection) => collection.id === selectedId);
   const videoCreatives = creativeNotes.filter((item) => item.ad.mediaType === "video");
@@ -198,6 +199,22 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
     }
   };
 
+  const exportPdf = async () => {
+    setExportingPdf(true);
+    const images = [...document.querySelectorAll<HTMLImageElement>("#ai-report-print .ai-landing-shot img")];
+    await Promise.race([
+      Promise.all(images.map((image) => image.decode().catch(() => undefined))),
+      new Promise((resolve) => window.setTimeout(resolve, 10_000)),
+    ]);
+    const previousTitle = document.title;
+    const reportName = reports.find((report) => report.id === activeReportId)?.name
+      ?? `${result?.collection.name ?? "AI_Аналитика"}_${new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-")}`;
+    document.title = reportName;
+    window.print();
+    window.setTimeout(() => { document.title = previousTitle; }, 500);
+    setExportingPdf(false);
+  };
+
   return <div className="page-wrap ai-page">
     <section className="page-intro ai-intro"><div><span className="eyebrow"><BrainCircuit size={14} /> AI INTELLIGENCE</span><h1>AI Аналитика</h1><p>Сравнивайте сохранённые креативы, их статистику и CTA-лендинги. AI найдёт устойчивые паттерны, оценит перспективность ниши и соберёт план тестов.</p></div><div className={`ai-key-state ${keyConfigured ? "ready" : "missing"}`}>{keyConfigured ? <CheckCircle2 size={18} /> : <KeyRound size={18} />}<span><small>OpenAI API</small><strong>{keyConfigured ? "Ключ подключён" : "Ключ не добавлен"}</strong></span><button onClick={onOpenSettings}>{keyConfigured ? "Изменить" : "Настроить"}</button></div></section>
 
@@ -259,7 +276,8 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
       {/ключ|OpenAI/i.test(error.message) && error.code === "OPENAI_KEY_INVALID" ? <button className="button ghost" onClick={onOpenSettings}>Открыть настройки</button> : <button className="button ghost" onClick={() => void analyze()}><RefreshCw size={15} />Повторить</button>}
     </div>}
 
-    {result && !analyzing && <section className="ai-report">
+    {result && !analyzing && <section className="ai-report" id="ai-report-print">
+      <div className="ai-report-toolbar"><div><FileText size={17} /><span><strong>{reports.find((report) => report.id === activeReportId)?.name ?? "Текущий AI-отчёт"}</strong><small>PDF включает выводы, таблицы, разбор креативов и сохранённые скриншоты лендингов.</small></span></div><button className="button primary" disabled={exportingPdf} onClick={() => void exportPdf()}>{exportingPdf ? <LoaderCircle className="spin" size={16} /> : <FileDown size={16} />}{exportingPdf ? "Готовим PDF…" : "Выгрузить в PDF"}</button></div>
       <header className="ai-report-head"><div><span className="eyebrow"><TrendingUp size={13} /> NICHE REPORT</span><h2>{result.analysis.niche}</h2><p>{result.analysis.executiveSummary}</p></div><div className={`ai-score ${result.analysis.opportunityScore >= 70 ? "strong" : result.analysis.opportunityScore >= 45 ? "medium" : "weak"}`}><span><strong>{result.analysis.opportunityScore}</strong><small>/100</small></span><em>Потенциал ниши</em></div></header>
       <div className="ai-report-meta"><span><BrainCircuit size={15} />{result.model}</span><span><Image size={15} />Проанализировано {result.analyzedCount} из {result.totalCount}</span><span><Gauge size={15} />Уверенность: {confidenceLabel(result.analysis.confidence)}</span></div>
 
@@ -275,6 +293,8 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
       <section className="ai-test-plan"><header><span><FlaskConical size={20} /></span><div><h3>План рекламных тестов</h3><p>Гипотезы в порядке приоритета</p></div></header><div>{result.analysis.testPlan.map((test, index) => <article key={`${test.hypothesis}-${index}`}><b className={test.priority}>{test.priority === "high" ? "Высокий" : test.priority === "medium" ? "Средний" : "Низкий"}</b><span>{String(index + 1).padStart(2, "0")}</span><div><h4>{test.hypothesis}</h4><p><strong>Креатив:</strong> {test.creativeAngle}</p><p><strong>Оффер:</strong> {test.offer}</p></div></article>)}</div></section>
 
       <section className="ai-creative-findings"><header><h3>Разбор креативов</h3><span>{result.analysis.creativeFindings.length} объявлений</span></header><div>{result.analysis.creativeFindings.map((finding) => <article key={finding.adId}><div><span>{finding.advertiser.slice(0, 1).toUpperCase()}</span><div><h4>{finding.advertiser}</h4><small>{finding.adId}</small></div></div><p>{finding.verdict}</p><section><div><strong>Что подтверждают данные</strong><ul>{finding.evidence.map((item) => <li key={item}>{item}</li>)}</ul></div><div><strong>Как усилить</strong><ul>{finding.improvements.map((item) => <li key={item}>{item}</li>)}</ul></div></section></article>)}</div></section>
+
+      {Boolean(result.landings?.length) && <section className="ai-report-landings"><header><div><span><Rocket size={20} /></span><div><h3>Лендинги из рекламных связок</h3><p>Сохранённые при анализе версии страниц. Нажмите на скриншот, чтобы открыть его целиком.</p></div></div><b>{result.landings?.length} страниц</b></header><div>{result.landings?.map((landing, index) => <article key={`${landing.adId}-${index}`}><header><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{landing.advertiser}</strong><small>{landing.headline || landing.adId}</small></div></header>{landing.screenshotUrl ? <a className="ai-landing-shot" href={landing.screenshotUrl} target="_blank" rel="noreferrer"><img src={landing.screenshotUrl} alt={`Лендинг ${landing.advertiser}`} /><span>Открыть полный скриншот <ExternalLink size={14} /></span></a> : <div className="ai-landing-missing"><Image size={25} /><span>Скриншот страницы получить не удалось</span></div>}<footer><span title={landing.landingUrl}>{new URL(landing.landingUrl).hostname.replace(/^www\./, "")}</span><a href={landing.landingUrl} target="_blank" rel="noreferrer">{landing.cta || "Открыть лендинг"}<ExternalLink size={14} /></a></footer></article>)}</div></section>}
 
       {(result.warnings.length > 0 || result.analysis.caveats.length > 0) && <div className="ai-caveats"><AlertTriangle size={20} /><div><strong>Ограничения анализа</strong><ul>{[...result.warnings, ...result.analysis.caveats].map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div></div>}
     </section>}

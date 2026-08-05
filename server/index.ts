@@ -10,7 +10,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, setCreativeAnalysisNotes } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, setCreativeAnalysisNotes } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -325,8 +325,9 @@ app.post("/api/ai-analysis", async (request, response, next) => {
       job.status = "running";
       job.updatedAt = Date.now();
       try {
-        job.result = await analyzeCollection({ apiKey, clientId, collection, items });
-        await saveAIAnalysisReport(clientId, collection, job.result);
+        const prepared = await analyzeCollection({ apiKey, clientId, collection, items });
+        const report = await saveAIAnalysisReport(clientId, collection, prepared.response, prepared.landingAssets);
+        job.result = report.result;
         job.status = "completed";
       } catch (error) {
         job.status = "failed";
@@ -394,6 +395,22 @@ app.delete("/api/ai-analysis/reports/:reportId", async (request, response, next)
       throw new AppError(404, "AI_REPORT_NOT_FOUND", "Сохранённый AI-отчёт не найден.");
     }
     response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai-analysis/landing-screenshots/:token", async (request, response, next) => {
+  try {
+    const token = z.string().uuid().parse(request.params.token);
+    const screenshot = await getAIAnalysisLandingScreenshot(token);
+    if (!screenshot) throw new AppError(404, "AI_LANDING_SCREENSHOT_NOT_FOUND", "Скриншот лендинга не найден.");
+    response.set({
+      "Content-Type": screenshot.mimeType,
+      "Content-Length": String(screenshot.buffer.length),
+      "Cache-Control": "private, max-age=86400, immutable",
+    });
+    response.send(screenshot.buffer);
   } catch (error) {
     next(error);
   }

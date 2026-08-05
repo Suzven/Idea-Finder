@@ -76,6 +76,15 @@ export interface NicheAnalysis {
   caveats: string[];
 }
 
+export interface AIAnalysisLanding {
+  adId: string;
+  advertiser: string;
+  headline?: string;
+  cta?: string;
+  landingUrl: string;
+  screenshotUrl?: string;
+}
+
 export interface AIAnalysisResponse {
   collection: CreativeCollection;
   analysis: NicheAnalysis;
@@ -83,6 +92,7 @@ export interface AIAnalysisResponse {
   analyzedCount: number;
   totalCount: number;
   warnings: string[];
+  landings?: AIAnalysisLanding[];
 }
 
 export interface AICreativeNoteItem {
