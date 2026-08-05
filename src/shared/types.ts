@@ -85,6 +85,28 @@ export interface AIAnalysisResponse {
   warnings: string[];
 }
 
+export interface AICreativeNoteItem {
+  ad: AdCreative;
+  note: string;
+}
+
+export interface AIAnalysisReportSummary {
+  id: string;
+  name: string;
+  collectionId?: string;
+  collectionName: string;
+  model: string;
+  analyzedCount: number;
+  totalCount: number;
+  opportunityScore: number;
+  niche: string;
+  createdAt: string;
+}
+
+export interface AIAnalysisReport extends AIAnalysisReportSummary {
+  result: AIAnalysisResponse;
+}
+
 export type AIAnalysisJobState = "queued" | "running" | "completed" | "failed";
 
 export interface AIAnalysisJobError {

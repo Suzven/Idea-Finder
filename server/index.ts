@@ -10,7 +10,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteCollection, deleteExpiredIntegrationLogs, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, setCreativeAnalysisNotes } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -213,6 +213,11 @@ const favoriteSchema = z.object({
 const favoriteQuerySchema = z.object({ collectionId: collectionIdSchema.optional() });
 const createCollectionSchema = z.object({ name: z.string().trim().min(1).max(120) });
 const analyzeCollectionSchema = z.object({ collectionId: collectionIdSchema });
+const aiNoteSchema = z.object({
+  collectionId: collectionIdSchema,
+  adIds: z.array(z.string().min(1).max(160)).min(1).max(100),
+  note: z.string().trim().max(1000),
+});
 
 function snapshotUrlFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -321,6 +326,7 @@ app.post("/api/ai-analysis", async (request, response, next) => {
       job.updatedAt = Date.now();
       try {
         job.result = await analyzeCollection({ apiKey, clientId, collection, items });
+        await saveAIAnalysisReport(clientId, collection, job.result);
         job.status = "completed";
       } catch (error) {
         job.status = "failed";
@@ -335,7 +341,65 @@ app.post("/api/ai-analysis", async (request, response, next) => {
   }
 });
 
-app.get("/api/ai-analysis/:jobId", (request, response, next) => {
+app.get("/api/ai-analysis/creatives/:collectionId", async (request, response, next) => {
+  try {
+    const collectionId = collectionIdSchema.parse(request.params.collectionId);
+    const clientId = getClientId(request);
+    const collection = (await getCollections(clientId)).find((item) => item.id === collectionId);
+    if (!collection) throw new AppError(404, "COLLECTION_NOT_FOUND", "Коллекция не найдена.");
+    const items = (await getFavoriteAds(clientId, collectionId)).map(({ ad, analysisNote }) => ({
+      ad,
+      note: analysisNote ?? "",
+    }));
+    response.json({ items });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/ai-analysis/creative-notes", async (request, response, next) => {
+  try {
+    const { collectionId, adIds, note } = aiNoteSchema.parse(request.body);
+    const updated = await setCreativeAnalysisNotes(getClientId(request), collectionId, adIds, note);
+    if (!updated) throw new AppError(404, "CREATIVES_NOT_FOUND", "Выбранные креативы не найдены в коллекции.");
+    response.json({ ok: true, updated });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai-analysis/reports", async (request, response, next) => {
+  try {
+    response.json({ items: await getAIAnalysisReports(getClientId(request)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai-analysis/reports/:reportId", async (request, response, next) => {
+  try {
+    const reportId = collectionIdSchema.parse(request.params.reportId);
+    const report = await getAIAnalysisReport(getClientId(request), reportId);
+    if (!report) throw new AppError(404, "AI_REPORT_NOT_FOUND", "Сохранённый AI-отчёт не найден.");
+    response.json(report);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/ai-analysis/reports/:reportId", async (request, response, next) => {
+  try {
+    const reportId = collectionIdSchema.parse(request.params.reportId);
+    if (!await deleteAIAnalysisReport(getClientId(request), reportId)) {
+      throw new AppError(404, "AI_REPORT_NOT_FOUND", "Сохранённый AI-отчёт не найден.");
+    }
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai-analysis/jobs/:jobId", (request, response, next) => {
   try {
     const jobId = z.string().uuid().parse(request.params.jobId);
     const job = aiAnalysisJobs.get(jobId);

@@ -1,6 +1,6 @@
 import mysql from "mysql2/promise";
 import { config } from "./config.js";
-import type { AdCreative, AdSource, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
+import type { AdCreative, AdSource, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
 
 const databaseConfig = config.database;
 const databaseConfigured = Boolean(
@@ -24,7 +24,10 @@ const memoryFavorites = new Map<string, Set<string>>();
 const memoryFavoriteAds = new Map<string, Map<string, AdCreative>>();
 const memoryCollections = new Map<string, Map<string, CreativeCollection>>();
 const memoryFavoriteCollections = new Map<string, Map<string, Set<string>>>();
+const memoryCreativeNotes = new Map<string, Map<string, string>>();
+const memoryAIReports = new Map<string, Map<string, AIAnalysisReport>>();
 let memoryCollectionId = 0;
+let memoryAIReportId = 0;
 
 export interface CollectedAdEntry {
   ad: AdCreative;
@@ -34,6 +37,7 @@ export interface CollectedAdEntry {
 export interface StoredFavorite {
   ad: AdCreative;
   sourcePayload?: unknown;
+  analysisNote?: string;
 }
 
 export interface IntegrationLogStart {
@@ -316,16 +320,17 @@ export async function getFavoriteAds(clientId: string, collectionId?: string): P
     const memberships = memoryFavoriteCollections.get(clientId);
     return [...(memoryFavoriteAds.get(clientId)?.values() ?? [])]
       .filter((ad) => !collectionId || memberships?.get(ad.id)?.has(collectionId))
-      .map((ad) => ({ ad: { ...ad, isFavorite: true } }));
+      .map((ad) => ({ ad: { ...ad, isFavorite: true }, analysisNote: memoryCreativeNotes.get(clientId)?.get(ad.id) }));
   }
   const collectionJoin = collectionId
     ? "INNER JOIN favorite_collections fc ON fc.client_id = f.client_id AND fc.ad_id = f.ad_id AND fc.collection_id = ?"
     : "";
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    `SELECT c.normalized_payload, c.source_payload
+    `SELECT c.normalized_payload, c.source_payload, n.note AS analysis_note
      FROM favorites f
      ${collectionJoin}
      INNER JOIN collected_ads c ON c.id = f.ad_id
+     LEFT JOIN creative_notes n ON n.client_id = f.client_id AND n.ad_id = f.ad_id
      WHERE f.client_id = ?
      ORDER BY f.created_at DESC`,
     collectionId ? [collectionId, clientId] : [clientId],
@@ -333,8 +338,173 @@ export async function getFavoriteAds(clientId: string, collectionId?: string): P
   return rows.flatMap((row) => {
     const ad = parseJson(row.normalized_payload) as AdCreative | undefined;
     if (!ad?.id || !ad.source) return [];
-    return [{ ad: { ...ad, isFavorite: true }, sourcePayload: parseJson(row.source_payload) }];
+    return [{
+      ad: { ...ad, isFavorite: true },
+      sourcePayload: parseJson(row.source_payload),
+      analysisNote: row.analysis_note === null || row.analysis_note === undefined ? undefined : String(row.analysis_note),
+    }];
   });
+}
+
+export async function setCreativeAnalysisNotes(
+  clientId: string,
+  collectionId: string,
+  adIds: string[],
+  note: string,
+): Promise<number> {
+  const uniqueIds = [...new Set(adIds)];
+  if (!pool) {
+    const memberships = memoryFavoriteCollections.get(clientId);
+    const notes = memoryCreativeNotes.get(clientId) ?? new Map<string, string>();
+    let updated = 0;
+    for (const adId of uniqueIds) {
+      if (!memberships?.get(adId)?.has(collectionId)) continue;
+      if (note) notes.set(adId, note);
+      else notes.delete(adId);
+      updated += 1;
+    }
+    memoryCreativeNotes.set(clientId, notes);
+    return updated;
+  }
+
+  if (!uniqueIds.length) return 0;
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT ad_id FROM favorite_collections
+     WHERE client_id = ? AND collection_id = ? AND ad_id IN (${placeholders})`,
+    [clientId, collectionId, ...uniqueIds],
+  );
+  const allowedIds = rows.map((row) => String(row.ad_id));
+  if (!allowedIds.length) return 0;
+  if (!note) {
+    const deletePlaceholders = allowedIds.map(() => "?").join(", ");
+    await pool.execute<mysql.ResultSetHeader>(
+      `DELETE FROM creative_notes WHERE client_id = ? AND ad_id IN (${deletePlaceholders})`,
+      [clientId, ...allowedIds],
+    );
+    return allowedIds.length;
+  }
+  for (const adId of allowedIds) {
+    await pool.execute(
+      `INSERT INTO creative_notes (client_id, ad_id, note)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE note = VALUES(note), updated_at = CURRENT_TIMESTAMP`,
+      [clientId, adId, note],
+    );
+  }
+  return allowedIds.length;
+}
+
+function reportTimestamp(date: Date): string {
+  return date.toISOString().replace("T", "_").replace(/:/g, "-").slice(0, 19);
+}
+
+function mapAIReportSummary(row: mysql.RowDataPacket): AIAnalysisReportSummary {
+  return {
+    id: String(row.id),
+    name: String(row.report_name),
+    collectionId: row.collection_id === null || row.collection_id === undefined ? undefined : String(row.collection_id),
+    collectionName: String(row.collection_name),
+    model: String(row.model),
+    analyzedCount: Number(row.analyzed_count),
+    totalCount: Number(row.total_count),
+    opportunityScore: Number(row.opportunity_score),
+    niche: String(row.niche),
+    createdAt: toIsoString(row.created_at),
+  };
+}
+
+export async function saveAIAnalysisReport(
+  clientId: string,
+  collection: CreativeCollection,
+  result: AIAnalysisResponse,
+): Promise<AIAnalysisReportSummary> {
+  const createdAt = new Date();
+  const name = `${collection.name}_${reportTimestamp(createdAt)}`;
+  if (!pool) {
+    const id = String(++memoryAIReportId);
+    const report: AIAnalysisReport = {
+      id,
+      name,
+      collectionId: collection.id,
+      collectionName: collection.name,
+      model: result.model,
+      analyzedCount: result.analyzedCount,
+      totalCount: result.totalCount,
+      opportunityScore: result.analysis.opportunityScore,
+      niche: result.analysis.niche,
+      createdAt: createdAt.toISOString(),
+      result,
+    };
+    const reports = memoryAIReports.get(clientId) ?? new Map<string, AIAnalysisReport>();
+    reports.set(id, report);
+    memoryAIReports.set(clientId, reports);
+    const { result: _result, ...summary } = report;
+    return summary;
+  }
+  const [insert] = await pool.execute<mysql.ResultSetHeader>(
+    `INSERT INTO ai_analysis_reports
+      (client_id, collection_id, collection_name, report_name, model, analyzed_count, total_count, opportunity_score, niche, result_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      clientId,
+      collection.id,
+      collection.name,
+      name,
+      result.model,
+      result.analyzedCount,
+      result.totalCount,
+      result.analysis.opportunityScore,
+      result.analysis.niche,
+      JSON.stringify(result),
+    ],
+  );
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT id, collection_id, collection_name, report_name, model, analyzed_count, total_count,
+            opportunity_score, niche, created_at
+     FROM ai_analysis_reports WHERE client_id = ? AND id = ?`,
+    [clientId, insert.insertId],
+  );
+  return mapAIReportSummary(rows[0]);
+}
+
+export async function getAIAnalysisReports(clientId: string): Promise<AIAnalysisReportSummary[]> {
+  if (!pool) {
+    return [...(memoryAIReports.get(clientId)?.values() ?? [])]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(({ result: _result, ...summary }) => summary);
+  }
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT id, collection_id, collection_name, report_name, model, analyzed_count, total_count,
+            opportunity_score, niche, created_at
+     FROM ai_analysis_reports WHERE client_id = ? ORDER BY created_at DESC, id DESC`,
+    [clientId],
+  );
+  return rows.map(mapAIReportSummary);
+}
+
+export async function getAIAnalysisReport(clientId: string, reportId: string): Promise<AIAnalysisReport | null> {
+  if (!pool) return memoryAIReports.get(clientId)?.get(reportId) ?? null;
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT id, collection_id, collection_name, report_name, model, analyzed_count, total_count,
+            opportunity_score, niche, result_json, created_at
+     FROM ai_analysis_reports WHERE client_id = ? AND id = ?`,
+    [clientId, reportId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const result = parseJson(row.result_json) as AIAnalysisResponse | undefined;
+  if (!result?.analysis) return null;
+  return { ...mapAIReportSummary(row), result };
+}
+
+export async function deleteAIAnalysisReport(clientId: string, reportId: string): Promise<boolean> {
+  if (!pool) return memoryAIReports.get(clientId)?.delete(reportId) ?? false;
+  const [result] = await pool.execute<mysql.ResultSetHeader>(
+    "DELETE FROM ai_analysis_reports WHERE client_id = ? AND id = ?",
+    [clientId, reportId],
+  );
+  return result.affectedRows > 0;
 }
 
 export async function getCollections(clientId: string): Promise<CreativeCollection[]> {
@@ -395,6 +565,7 @@ export async function deleteCollection(clientId: string, collectionId: string): 
     for (const adId of adIds) {
       memoryFavorites.get(clientId)?.delete(adId);
       memoryFavoriteAds.get(clientId)?.delete(adId);
+      memoryCreativeNotes.get(clientId)?.delete(adId);
       memberships?.delete(adId);
     }
     collections.delete(collectionId);
@@ -494,6 +665,7 @@ export async function removeFavorite(clientId: string, adId: string): Promise<vo
   if (!pool) {
     memoryFavorites.get(clientId)?.delete(adId);
     memoryFavoriteAds.get(clientId)?.delete(adId);
+    memoryCreativeNotes.get(clientId)?.delete(adId);
     const memberships = memoryFavoriteCollections.get(clientId);
     const removedCollections = memberships?.get(adId);
     memberships?.delete(adId);

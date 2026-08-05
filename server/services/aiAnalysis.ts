@@ -8,16 +8,18 @@ import { AppError } from "../errors.js";
 import { getMetaBrowser, getMetaMedia, registerMetaAd } from "./metaSnapshot.js";
 
 const OPENAI_MODEL = "gpt-5.6";
-const MAX_CREATIVES = 8;
+const MAX_CREATIVES = 10;
 const SCREENSHOT_TIMEOUT_MS = 30_000;
 
 interface StoredCreative {
   ad: AdCreative;
   sourcePayload?: unknown;
+  analysisNote?: string;
 }
 
 interface PreparedCreative {
   ad: AdCreative;
+  analysisNote?: string;
   creativeImage?: string;
   landingImage?: string;
   landingUrl?: string;
@@ -235,11 +237,11 @@ async function prepareCreative(item: StoredCreative): Promise<PreparedCreative> 
   } else {
     warnings.push("У объявления не найден CTA-лендинг");
   }
-  return { ad, creativeImage, landingImage, landingUrl: ad.landingUrl, warning: warnings.join("; ") || undefined };
+  return { ad, analysisNote: item.analysisNote, creativeImage, landingImage, landingUrl: ad.landingUrl, warning: warnings.join("; ") || undefined };
 }
 
 export function buildAnalysisPrompt(collection: CreativeCollection, creatives: PreparedCreative[]): string {
-  const rows = creatives.map(({ ad, landingUrl }, index) => ({
+  const rows = creatives.map(({ ad, landingUrl, analysisNote }, index) => ({
     index: index + 1,
     adId: ad.id,
     advertiser: ad.advertiser,
@@ -254,12 +256,14 @@ export function buildAnalysisPrompt(collection: CreativeCollection, creatives: P
     countries: ad.countries?.length ? ad.countries : [ad.countryName || ad.country],
     platforms: ad.platforms,
     landingUrl: landingUrl ?? null,
+    userVideoDescription: analysisNote || null,
     imageOrder: `Сразу после текста объявления ${index + 1}: сначала креатив/первый кадр, затем полный скриншот лендинга (если доступен).`,
   }));
   return [
     `Проанализируй рекламную коллекцию «${collection.name}» как senior performance-маркетолог и product researcher.`,
     "Цель: оценить перспективность ниши и рекламной связки креатив → оффер → лендинг, найти повторяющиеся сигналы спроса и предложить проверяемый план тестов.",
     "Используй только переданные факты и изображения. Длительность и охват — косвенные сигналы, а не доказательство прибыли. Не выдумывай продажи, ROAS, бюджет, конверсии или демографию. Если данных мало или часть скриншотов недоступна, явно снизь confidence и укажи это в caveats.",
+    "Поле userVideoDescription — ручная заметка пользователя о содержании видео. Используй её как дополнительный контекст вместе с первым кадром, но не считай её подтверждённым фактом о результативности рекламы.",
     "Сопоставляй каждую пару изображений с объявлением по порядку. Оценивай hook, визуальный паттерн, обещание, доказательства, CTA, согласованность лендинга с объявлением, ясность оффера, friction и возможные policy/market risks.",
     "Opportunity score 0–100 должен учитывать устойчивость активности, охват (когда он есть), повторяемость паттернов между независимыми рекламодателями, качество оффера/лендинга и риски. Рекомендации должны быть конкретными и пригодными для запуска рекламных тестов.",
     `Метаданные объявлений:\n${JSON.stringify(rows, null, 2)}`,

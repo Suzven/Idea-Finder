@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -144,7 +144,7 @@ export async function analyzeCreativeCollection(collectionId: string, apiKey: st
   const startedAt = Date.now();
   while (Date.now() - startedAt < 15 * 60_000) {
     await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-    const job = await request<AIAnalysisJobResponse>(`/api/ai-analysis/${encodeURIComponent(started.jobId)}`);
+    const job = await request<AIAnalysisJobResponse>(`/api/ai-analysis/jobs/${encodeURIComponent(started.jobId)}`);
     if (job.status === "completed" && job.result) return job.result;
     if (job.status === "failed" && job.error) {
       throw new ApiRequestError(
@@ -164,6 +164,32 @@ export async function analyzeCreativeCollection(collectionId: string, apiKey: st
     "Повторите запрос позже. Фоновая задача на сервере могла продолжить выполнение.",
     started.jobId,
   );
+}
+
+export async function fetchAIAnalysisCreatives(collectionId: string): Promise<AICreativeNoteItem[]> {
+  const response = await request<{ items: AICreativeNoteItem[] }>(`/api/ai-analysis/creatives/${encodeURIComponent(collectionId)}`);
+  return response.items;
+}
+
+export async function saveCreativeAnalysisNotes(collectionId: string, adIds: string[], note: string): Promise<number> {
+  const response = await request<{ ok: true; updated: number }>("/api/ai-analysis/creative-notes", {
+    method: "PUT",
+    body: JSON.stringify({ collectionId, adIds, note }),
+  });
+  return response.updated;
+}
+
+export async function fetchAIAnalysisReports(): Promise<AIAnalysisReportSummary[]> {
+  const response = await request<{ items: AIAnalysisReportSummary[] }>("/api/ai-analysis/reports");
+  return response.items;
+}
+
+export async function fetchAIAnalysisReport(reportId: string): Promise<AIAnalysisReport> {
+  return request<AIAnalysisReport>(`/api/ai-analysis/reports/${encodeURIComponent(reportId)}`);
+}
+
+export async function deleteAIAnalysisReport(reportId: string): Promise<void> {
+  await request(`/api/ai-analysis/reports/${encodeURIComponent(reportId)}`, { method: "DELETE" });
 }
 
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {

@@ -38,12 +38,13 @@ describe("AI collection analysis", () => {
   });
 
   it("puts ad copy, delivery statistics and landing mapping into the prompt", () => {
-    const prompt = buildAnalysisPrompt(collection, [{ ad, landingUrl: ad.landingUrl }]);
+    const prompt = buildAnalysisPrompt(collection, [{ ad, landingUrl: ad.landingUrl, analysisNote: "Девушка танцует и показывает подушку" }]);
     expect(prompt).toContain("Товары для сна");
     expect(prompt).toContain("Sleep deeper tonight");
     expect(prompt).toContain("Cooling pillow with adjustable support");
     expect(prompt).toContain('"daysActive": 21');
     expect(prompt).toContain('"reachOrViews": 120000');
+    expect(prompt).toContain("Девушка танцует и показывает подушку");
     expect(prompt).toContain("сначала креатив/первый кадр");
   });
 

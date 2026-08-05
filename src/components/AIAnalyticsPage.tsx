@@ -1,9 +1,9 @@
-import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, FlaskConical, Folder, Gauge, Image, KeyRound, Lightbulb, LoaderCircle, RefreshCw, Rocket, ShieldAlert, Sparkles, Target, TrendingUp } from "lucide-react";
+import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, FileText, FlaskConical, Folder, Gauge, History, Image, KeyRound, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw, Rocket, Save, ShieldAlert, Sparkles, Target, Trash2, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { analyzeCreativeCollection, ApiRequestError, fetchCollections } from "../api";
+import { analyzeCreativeCollection, ApiRequestError, deleteAIAnalysisReport, fetchAIAnalysisCreatives, fetchAIAnalysisReport, fetchAIAnalysisReports, fetchCollections, saveCreativeAnalysisNotes } from "../api";
 import { getOpenAIKey, hasOpenAIKey } from "../openaiSettings";
-import type { AIAnalysisResponse, CreativeCollection } from "../shared/types";
+import type { AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection } from "../shared/types";
 
 interface AIAnalyticsPageProps {
   onOpenSettings: () => void;
@@ -69,8 +69,18 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   const [progressIndex, setProgressIndex] = useState(0);
   const [error, setError] = useState<AIErrorInfo | null>(null);
   const [result, setResult] = useState<AIAnalysisResponse | null>(null);
+  const [reports, setReports] = useState<AIAnalysisReportSummary[]>([]);
+  const [loadingReports, setLoadingReports] = useState(true);
+  const [activeReportId, setActiveReportId] = useState("");
+  const [creativeNotes, setCreativeNotes] = useState<AICreativeNoteItem[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(false);
+  const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
+  const [noteDraft, setNoteDraft] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteMessage, setNoteMessage] = useState("");
   const keyConfigured = useMemo(() => hasOpenAIKey(), [settingsRevision]);
   const selected = collections.find((collection) => collection.id === selectedId);
+  const videoCreatives = creativeNotes.filter((item) => item.ad.mediaType === "video");
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +94,30 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
     }).finally(() => { if (!cancelled) setLoadingCollections(false); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingReports(true);
+    fetchAIAnalysisReports()
+      .then((items) => { if (!cancelled) setReports(items); })
+      .catch((loadError) => { if (!cancelled) setError(toErrorInfo(loadError, "Не удалось загрузить сохранённые AI-отчёты")); })
+      .finally(() => { if (!cancelled) setLoadingReports(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSelectedVideoIds(new Set());
+    setNoteDraft("");
+    setNoteMessage("");
+    if (!selectedId) { setCreativeNotes([]); return () => { cancelled = true; }; }
+    setLoadingNotes(true);
+    fetchAIAnalysisCreatives(selectedId)
+      .then((items) => { if (!cancelled) setCreativeNotes(items); })
+      .catch((loadError) => { if (!cancelled) setError(toErrorInfo(loadError, "Не удалось загрузить креативы для заметок")); })
+      .finally(() => { if (!cancelled) setLoadingNotes(false); });
+    return () => { cancelled = true; };
+  }, [selectedId]);
 
   useEffect(() => {
     if (!analyzing) return;
@@ -100,11 +134,67 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
     setError(null);
     setResult(null);
     try {
-      setResult(await analyzeCreativeCollection(selectedId, apiKey));
+      const analysis = await analyzeCreativeCollection(selectedId, apiKey);
+      setResult(analysis);
+      setActiveReportId("");
+      setReports(await fetchAIAnalysisReports());
     } catch (analysisError) {
       setError(toErrorInfo(analysisError, "Не удалось выполнить AI-анализ"));
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const toggleVideo = (item: AICreativeNoteItem) => {
+    const next = new Set(selectedVideoIds);
+    if (next.has(item.ad.id)) next.delete(item.ad.id);
+    else next.add(item.ad.id);
+    setSelectedVideoIds(next);
+    setNoteMessage("");
+    if (next.size === 0) {
+      setNoteDraft("");
+    } else {
+      const selectedNotes = [...next].map((adId) => creativeNotes.find((entry) => entry.ad.id === adId)?.note ?? "");
+      setNoteDraft(selectedNotes.every((note) => note === selectedNotes[0]) ? selectedNotes[0] : "");
+    }
+  };
+
+  const saveNotes = async () => {
+    if (!selectedId || !selectedVideoIds.size) return;
+    setSavingNote(true);
+    setNoteMessage("");
+    setError(null);
+    try {
+      await saveCreativeAnalysisNotes(selectedId, [...selectedVideoIds], noteDraft.trim());
+      setCreativeNotes((items) => items.map((item) => selectedVideoIds.has(item.ad.id) ? { ...item, note: noteDraft.trim() } : item));
+      setNoteMessage(noteDraft.trim() ? `Заметка сохранена для ${selectedVideoIds.size} видео` : `Заметка удалена у ${selectedVideoIds.size} видео`);
+    } catch (saveError) {
+      setError(toErrorInfo(saveError, "Не удалось сохранить заметку"));
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const openReport = async (reportId: string) => {
+    setError(null);
+    try {
+      const report = await fetchAIAnalysisReport(reportId);
+      setResult(report.result);
+      setActiveReportId(report.id);
+    } catch (loadError) {
+      setError(toErrorInfo(loadError, "Не удалось открыть сохранённый отчёт"));
+    }
+  };
+
+  const removeReport = async (report: AIAnalysisReportSummary) => {
+    if (!window.confirm(`Удалить отчёт «${report.name}»?`)) return;
+    setError(null);
+    try {
+      await deleteAIAnalysisReport(report.id);
+      setReports((items) => items.filter((item) => item.id !== report.id));
+      if (activeReportId === report.id) { setActiveReportId(""); setResult(null); }
+    } catch (deleteError) {
+      setError(toErrorInfo(deleteError, "Не удалось удалить отчёт"));
     }
   };
 
@@ -117,7 +207,38 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
         <label><span>Коллекция для анализа</span><div className="ai-collection-select"><Folder size={17} /><select value={selectedId} disabled={loadingCollections || analyzing} onChange={(event) => setSelectedId(event.target.value)}><option value="">{loadingCollections ? "Загружаем…" : "Выберите коллекцию"}</option>{collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name} · {collection.itemCount} креативов</option>)}</select><ChevronDown size={16} /></div></label>
         <button className="button primary ai-analyze-button" disabled={!selected || selected.itemCount === 0 || analyzing} onClick={() => void analyze()}>{analyzing ? <><LoaderCircle className="spin" size={18} />Анализируем…</> : <><BrainCircuit size={18} />Проанализировать нишу</>}</button>
       </div>
-      {selected && <div className="ai-selection-summary"><span><Image size={16} /><strong>{selected.itemCount}</strong> креативов в коллекции</span><span><Gauge size={16} />За один запуск анализируется до 8 креативов</span><span><ShieldAlert size={16} />Результат — оценка сигналов, не гарантия прибыли</span></div>}
+      {selected && <div className="ai-selection-summary"><span><Image size={16} /><strong>{selected.itemCount}</strong> креативов в коллекции</span><span><Gauge size={16} />За один запуск анализируется до 10 креативов</span><span><ShieldAlert size={16} />Результат — оценка сигналов, не гарантия прибыли</span></div>}
+      {selected && <section className="ai-video-notes">
+        <header><span><MessageSquareText size={19} /></span><div><h3>Дополнительное описание видео</h3><p>Выберите одно или несколько видео и опишите важное действие в кадре. AI получит эту заметку вместе с первым кадром.</p></div></header>
+        {loadingNotes
+          ? <div className="ai-notes-loading"><LoaderCircle className="spin" size={17} />Загружаем видео…</div>
+          : videoCreatives.length
+            ? <><div className="ai-video-grid">{videoCreatives.map((item) => {
+              const selectedVideo = selectedVideoIds.has(item.ad.id);
+              return <button type="button" key={item.ad.id} className={`ai-video-item ${selectedVideo ? "selected" : ""}`} onClick={() => toggleVideo(item)}>
+                <span className="ai-video-thumb">{item.ad.thumbnailUrl ? <img src={item.ad.thumbnailUrl} alt="" loading="lazy" /> : <Image size={20} />}</span>
+                <span className="ai-video-copy"><strong>{item.ad.advertiser}</strong><small>{item.ad.headline || "Видео без заголовка"}</small>{item.note && <em>{item.note}</em>}</span>
+                <span className="ai-video-check">{selectedVideo ? <CheckCircle2 size={18} /> : <i />}</span>
+              </button>;
+            })}</div>
+            <div className="ai-note-editor">
+              <label><span>Заметка для выбранных видео ({selectedVideoIds.size})</span><textarea maxLength={1000} value={noteDraft} disabled={!selectedVideoIds.size || savingNote} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Например: девушка танцует и показывает платье крупным планом…" /></label>
+              <div><small>{noteDraft.length}/1000 · пустое поле удалит существующую заметку</small>{noteMessage && <b>{noteMessage}</b>}<button className="button ghost" disabled={!selectedVideoIds.size || savingNote} onClick={() => void saveNotes()}>{savingNote ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}Сохранить заметку</button></div>
+            </div></>
+            : <p className="ai-no-videos">В выбранной коллекции нет видеокреативов.</p>}
+      </section>}
+    </section>
+
+    <section className="ai-history">
+      <header><div><span><History size={20} /></span><div><h2>Сохранённые отчёты</h2><p>Каждый успешно завершённый анализ автоматически сохраняется в базе данных.</p></div></div><small>{reports.length} записей</small></header>
+      {loadingReports
+        ? <div className="ai-history-empty"><LoaderCircle className="spin" size={17} />Загружаем историю…</div>
+        : reports.length
+          ? <div className="ai-history-list">{reports.map((report) => <article key={report.id} className={activeReportId === report.id ? "active" : ""}>
+            <button className="ai-history-open" onClick={() => void openReport(report.id)}><FileText size={18} /><span><strong>{report.name}</strong><small>{report.niche} · {report.analyzedCount}/{report.totalCount} креативов · {new Date(report.createdAt).toLocaleString("ru-RU")}</small></span><b>{report.opportunityScore}/100</b></button>
+            <button className="ai-history-delete" aria-label="Удалить отчёт" onClick={() => void removeReport(report)}><Trash2 size={16} /></button>
+          </article>)}</div>
+          : <div className="ai-history-empty"><FileText size={20} />Здесь появится первый успешно завершённый AI-отчёт.</div>}
     </section>
 
     {!loadingCollections && !collections.length && <div className="ai-empty"><Folder size={28} /><h2>Сначала создайте коллекцию</h2><p>Сохраните несколько креативов одной ниши в отдельную коллекцию — после этого здесь появится выбор для анализа.</p></div>}
