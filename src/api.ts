@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -190,6 +190,36 @@ export async function fetchAIAnalysisReport(reportId: string): Promise<AIAnalysi
 
 export async function deleteAIAnalysisReport(reportId: string): Promise<void> {
   await request(`/api/ai-analysis/reports/${encodeURIComponent(reportId)}`, { method: "DELETE" });
+}
+
+export async function searchCompanyReviews(query: string, sources: ReviewSource[]): Promise<ReviewSearchResponse> {
+  const started = await request<ReviewSearchJobResponse>("/api/review-analysis", {
+    method: "POST",
+    body: JSON.stringify({ query, sources }),
+  });
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10 * 60_000) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+    const job = await request<ReviewSearchJobResponse>(`/api/review-analysis/jobs/${encodeURIComponent(started.jobId)}`);
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed" && job.error) {
+      throw new ApiRequestError(
+        job.error.message,
+        job.error.httpStatus,
+        job.error.code,
+        job.error.action,
+        job.error.traceId,
+        job.error.details,
+      );
+    }
+  }
+  throw new ApiRequestError(
+    "Поиск отзывов выполняется слишком долго.",
+    504,
+    "REVIEW_ANALYSIS_TIMEOUT",
+    "Повторите запрос позже: фоновая задача на сервере могла продолжить выполнение.",
+    started.jobId,
+  );
 }
 
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {

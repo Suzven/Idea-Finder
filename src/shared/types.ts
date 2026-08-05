@@ -135,6 +135,48 @@ export interface AIAnalysisJobResponse {
   error?: AIAnalysisJobError;
 }
 
+export type ReviewSource = "trustpilot" | "g2";
+export type ReviewSourceStatus = "found" | "not_found" | "blocked" | "error";
+
+export interface UserReview {
+  id: string;
+  source: ReviewSource;
+  author: string;
+  date?: string;
+  title?: string;
+  text: string;
+  rating?: number;
+  maxRating: number;
+  reviewUrl?: string;
+  page: number;
+}
+
+export interface ReviewSourceResult {
+  source: ReviewSource;
+  label: string;
+  status: ReviewSourceStatus;
+  query: string;
+  companyName?: string;
+  profileUrl?: string;
+  attemptedUrls: string[];
+  reviews: UserReview[];
+  message?: string;
+}
+
+export interface ReviewSearchResponse {
+  query: string;
+  sources: ReviewSourceResult[];
+  totalReviews: number;
+  createdAt: string;
+}
+
+export interface ReviewSearchJobResponse {
+  jobId: string;
+  status: AIAnalysisJobState;
+  result?: ReviewSearchResponse;
+  error?: AIAnalysisJobError;
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

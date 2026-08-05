@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { analyzeCreativeCollection, ApiRequestError, deleteAIAnalysisReport, fetchAIAnalysisCreatives, fetchAIAnalysisReport, fetchAIAnalysisReports, fetchCollections, saveCreativeAnalysisNotes } from "../api";
 import { getOpenAIKey, hasOpenAIKey } from "../openaiSettings";
 import type { AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection } from "../shared/types";
+import { ReviewAnalysisPanel } from "./ReviewAnalysisPanel";
 
 interface AIAnalyticsPageProps {
   onOpenSettings: () => void;
@@ -62,6 +63,7 @@ function confidenceLabel(value: AIAnalysisResponse["analysis"]["confidence"]): s
 }
 
 export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalyticsPageProps) {
+  const [activeSection, setActiveSection] = useState<"campaigns" | "reviews">("campaigns");
   const [collections, setCollections] = useState<CreativeCollection[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [loadingCollections, setLoadingCollections] = useState(true);
@@ -216,7 +218,14 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   };
 
   return <div className="page-wrap ai-page">
-    <section className="page-intro ai-intro"><div><span className="eyebrow"><BrainCircuit size={14} /> AI INTELLIGENCE</span><h1>AI Аналитика</h1><p>Сравнивайте сохранённые креативы, их статистику и CTA-лендинги. AI найдёт устойчивые паттерны, оценит перспективность ниши и соберёт план тестов.</p></div><div className={`ai-key-state ${keyConfigured ? "ready" : "missing"}`}>{keyConfigured ? <CheckCircle2 size={18} /> : <KeyRound size={18} />}<span><small>OpenAI API</small><strong>{keyConfigured ? "Ключ подключён" : "Ключ не добавлен"}</strong></span><button onClick={onOpenSettings}>{keyConfigured ? "Изменить" : "Настроить"}</button></div></section>
+    <section className="page-intro ai-intro"><div><span className="eyebrow"><BrainCircuit size={14} /> AI INTELLIGENCE</span><h1>AI Аналитика</h1><p>Исследуйте рекламные кампании и отзывы пользователей в одном рабочем пространстве.</p></div>{activeSection === "campaigns" && <div className={`ai-key-state ${keyConfigured ? "ready" : "missing"}`}>{keyConfigured ? <CheckCircle2 size={18} /> : <KeyRound size={18} />}<span><small>OpenAI API</small><strong>{keyConfigured ? "Ключ подключён" : "Ключ не добавлен"}</strong></span><button onClick={onOpenSettings}>{keyConfigured ? "Изменить" : "Настроить"}</button></div>}</section>
+
+    <nav className="ai-section-tabs" aria-label="Разделы AI Аналитики">
+      <button className={activeSection === "campaigns" ? "active" : ""} onClick={() => setActiveSection("campaigns")}><BrainCircuit size={19} /><span><strong>Анализ рекламных кампаний</strong><small>Креативы, лендинги и перспективность ниши</small></span></button>
+      <button className={activeSection === "reviews" ? "active" : ""} onClick={() => setActiveSection("reviews")}><MessageSquareText size={19} /><span><strong>Анализ отзывов пользователей</strong><small>Trustpilot, G2 и новые источники через адаптеры</small></span></button>
+    </nav>
+
+    {activeSection === "campaigns" ? <div className="ai-campaign-section">
 
     <section className="ai-launch-card">
       <div className="ai-launch-copy"><span><Sparkles size={22} /></span><div><h2>Анализ рекламной ниши</h2><p>Выберите коллекцию. Для каждого объявления будут переданы заголовки, текст, длительность, статус, охват, креатив и полный скриншот лендинга.</p></div></div>
@@ -298,5 +307,6 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
       {(result.warnings.length > 0 || result.analysis.caveats.length > 0) && <div className="ai-caveats"><AlertTriangle size={20} /><div><strong>Ограничения анализа</strong><ul>{[...result.warnings, ...result.analysis.caveats].map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div></div>}
     </section>}
+    </div> : <ReviewAnalysisPanel />}
   </div>;
 }

@@ -15,7 +15,8 @@ import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse } from "../src/shared/types.js";
+import { searchCompanyReviews } from "./services/reviewAnalysis.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -35,10 +36,33 @@ interface StoredAIAnalysisJob {
 }
 
 const aiAnalysisJobs = new Map<string, StoredAIAnalysisJob>();
+interface StoredReviewSearchJob {
+  jobId: string;
+  clientId: string;
+  query: string;
+  sources: ReviewSource[];
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  result?: ReviewSearchResponse;
+  error?: AIAnalysisJobError;
+}
+
+const reviewSearchJobs = new Map<string, StoredReviewSearchJob>();
 const AI_JOB_TTL_MS = 30 * 60_000;
 const MAX_ACTIVE_AI_JOBS = 2;
+const MAX_ACTIVE_REVIEW_JOBS = 2;
 
 function publicAIJob(job: StoredAIAnalysisJob): AIAnalysisJobResponse {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  };
+}
+
+function publicReviewJob(job: StoredReviewSearchJob): ReviewSearchJobResponse {
   return {
     jobId: job.jobId,
     status: job.status,
@@ -217,6 +241,10 @@ const aiNoteSchema = z.object({
   collectionId: collectionIdSchema,
   adIds: z.array(z.string().min(1).max(160)).min(1).max(100),
   note: z.string().trim().max(1000),
+});
+const reviewSearchSchema = z.object({
+  query: z.string().trim().min(2).max(120),
+  sources: z.array(z.enum(["trustpilot", "g2"])).min(1).max(10),
 });
 
 function snapshotUrlFromPayload(payload: unknown): string | undefined {
@@ -429,6 +457,72 @@ app.get("/api/ai-analysis/jobs/:jobId", (request, response, next) => {
   }
 });
 
+app.post("/api/review-analysis", (request, response, next) => {
+  try {
+    const parsed = reviewSearchSchema.parse(request.body);
+    const query = parsed.query.trim();
+    const sources = [...new Set(parsed.sources)] as ReviewSource[];
+    const clientId = getClientId(request);
+    const sourceKey = [...sources].sort().join(",");
+    const existing = [...reviewSearchJobs.values()].find((job) =>
+      job.clientId === clientId
+      && job.query.toLowerCase() === query.toLowerCase()
+      && [...job.sources].sort().join(",") === sourceKey
+      && (job.status === "queued" || job.status === "running"));
+    if (existing) {
+      response.status(202).json(publicReviewJob(existing));
+      return;
+    }
+    const activeCount = [...reviewSearchJobs.values()].filter((job) => job.status === "queued" || job.status === "running").length;
+    if (activeCount >= MAX_ACTIVE_REVIEW_JOBS) {
+      throw new AppError(429, "REVIEW_ANALYSIS_BUSY", "Сервер уже выполняет максимальное количество поисков отзывов.", "Дождитесь завершения текущих задач и повторите запрос.");
+    }
+
+    const now = Date.now();
+    const job: StoredReviewSearchJob = {
+      jobId: randomUUID(),
+      clientId,
+      query,
+      sources,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+    };
+    reviewSearchJobs.set(job.jobId, job);
+    response.status(202).json(publicReviewJob(job));
+
+    void (async () => {
+      job.status = "running";
+      job.updatedAt = Date.now();
+      try {
+        job.result = await searchCompanyReviews(query, sources);
+        job.status = "completed";
+      } catch (error) {
+        job.status = "failed";
+        job.error = backgroundJobError(error, job.jobId);
+        console.error(`[${job.jobId}] review analysis background job failed`, error);
+      } finally {
+        job.updatedAt = Date.now();
+      }
+    })();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/review-analysis/jobs/:jobId", (request, response, next) => {
+  try {
+    const jobId = z.string().uuid().parse(request.params.jobId);
+    const job = reviewSearchJobs.get(jobId);
+    if (!job || job.clientId !== getClientId(request)) {
+      throw new AppError(404, "REVIEW_ANALYSIS_JOB_NOT_FOUND", "Задача поиска отзывов не найдена или уже удалена.");
+    }
+    response.json(publicReviewJob(job));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete("/api/favorites/:adId", async (request, response, next) => {
   try {
     await removeFavorite(getClientId(request), request.params.adId);
@@ -497,6 +591,9 @@ const aiJobCleanupTimer = setInterval(() => {
   const cutoff = Date.now() - AI_JOB_TTL_MS;
   for (const [jobId, job] of aiAnalysisJobs) {
     if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") aiAnalysisJobs.delete(jobId);
+  }
+  for (const [jobId, job] of reviewSearchJobs) {
+    if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") reviewSearchJobs.delete(jobId);
   }
 }, 5 * 60_000);
 aiJobCleanupTimer.unref();
