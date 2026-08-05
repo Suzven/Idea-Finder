@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertPublicHttpUrl, buildAnalysisPrompt } from "../server/services/aiAnalysis";
+import { assertPublicHttpUrl, buildAnalysisPrompt, parseAnalysisOutput } from "../server/services/aiAnalysis";
 import type { AdCreative, CreativeCollection } from "../src/shared/types";
 
 const collection: CreativeCollection = {
@@ -33,6 +33,10 @@ const ad: AdCreative = {
 };
 
 describe("AI collection analysis", () => {
+  it("accepts structured JSON wrapped in a markdown fence", () => {
+    expect(parseAnalysisOutput('```json\n{"niche":"sleep"}\n```')).toEqual({ niche: "sleep" });
+  });
+
   it("puts ad copy, delivery statistics and landing mapping into the prompt", () => {
     const prompt = buildAnalysisPrompt(collection, [{ ad, landingUrl: ad.landingUrl }]);
     expect(prompt).toContain("Товары для сна");

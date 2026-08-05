@@ -25,6 +25,9 @@ interface PreparedCreative {
 }
 
 interface OpenAIResponse {
+  id?: string;
+  status?: "completed" | "incomplete" | "failed" | "cancelled" | "queued" | "in_progress";
+  incomplete_details?: { reason?: string };
   output?: Array<{
     type?: string;
     content?: Array<{ type?: string; text?: string; refusal?: string }>;
@@ -316,6 +319,31 @@ function extractOutputText(payload: OpenAIResponse): string | undefined {
   return payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
 }
 
+function extractRefusal(payload: OpenAIResponse): string | undefined {
+  return payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "refusal")?.refusal;
+}
+
+function responseDiagnostics(payload: OpenAIResponse, outputText?: string): Record<string, unknown> {
+  return {
+    responseId: payload.id,
+    status: payload.status,
+    incompleteReason: payload.incomplete_details?.reason,
+    outputTypes: payload.output?.map((item) => item.type),
+    contentTypes: payload.output?.flatMap((item) => item.content ?? []).map((item) => item.type),
+    outputTextLength: outputText?.length ?? 0,
+    outputLooksComplete: Boolean(outputText?.trim().endsWith("}")),
+  };
+}
+
+export function parseAnalysisOutput(outputText: string): NicheAnalysis {
+  const normalized = outputText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  return JSON.parse(normalized) as NicheAnalysis;
+}
+
 async function requestOpenAI(apiKey: string, clientId: string, collection: CreativeCollection, creatives: PreparedCreative[]): Promise<NicheAnalysis> {
   const content: Array<Record<string, unknown>> = [{ type: "input_text", text: buildAnalysisPrompt(collection, creatives) }];
   creatives.forEach((creative, index) => {
@@ -334,10 +362,10 @@ async function requestOpenAI(apiKey: string, clientId: string, collection: Creat
       store: false,
       safety_identifier: createHash("sha256").update(clientId).digest("hex"),
       reasoning: { effort: "medium" },
-      max_output_tokens: 6_000,
+      max_output_tokens: 16_000,
       input: [{ role: "user", content }],
       text: {
-        verbosity: "high",
+        verbosity: "medium",
         format: { type: "json_schema", name: "niche_analysis", strict: true, schema: analysisSchema },
       },
     }),
@@ -350,9 +378,38 @@ async function requestOpenAI(apiKey: string, clientId: string, collection: Creat
     throw new AppError(502, "OPENAI_API_ERROR", message);
   }
   const outputText = extractOutputText(payload);
-  if (!outputText) throw new AppError(502, "OPENAI_EMPTY_RESPONSE", "OpenAI не вернул текст аналитики.");
-  try { return JSON.parse(outputText) as NicheAnalysis; }
-  catch { throw new AppError(502, "OPENAI_INVALID_RESPONSE", "OpenAI вернул аналитику в неожиданном формате."); }
+  if (payload.status === "incomplete") {
+    console.warn("OpenAI analysis response was incomplete", responseDiagnostics(payload, outputText));
+    throw new AppError(
+      502,
+      "OPENAI_INCOMPLETE_RESPONSE",
+      "OpenAI не успел сформировать полный отчёт.",
+      "Повторите анализ. Если ошибка повторится, уменьшите количество креативов в коллекции.",
+    );
+  }
+  const refusal = extractRefusal(payload);
+  if (refusal) {
+    console.warn("OpenAI refused collection analysis", responseDiagnostics(payload, outputText));
+    throw new AppError(422, "OPENAI_REFUSAL", "OpenAI отказался анализировать содержимое одного из креативов.");
+  }
+  if (!outputText) {
+    console.warn("OpenAI analysis response contained no output text", responseDiagnostics(payload));
+    throw new AppError(502, "OPENAI_EMPTY_RESPONSE", "OpenAI не вернул текст аналитики.");
+  }
+  try {
+    return parseAnalysisOutput(outputText);
+  } catch (error) {
+    console.warn("OpenAI analysis response was not valid JSON", {
+      ...responseDiagnostics(payload, outputText),
+      parseError: error instanceof Error ? error.message : "unknown",
+    });
+    throw new AppError(
+      502,
+      "OPENAI_INVALID_RESPONSE",
+      "OpenAI вернул аналитику в неожиданном формате.",
+      "Повторите анализ. В журнале сервера сохранена безопасная диагностика ответа.",
+    );
+  }
 }
 
 export async function analyzeCollection(options: {
