@@ -85,6 +85,24 @@ export interface AIAnalysisResponse {
   warnings: string[];
 }
 
+export type AIAnalysisJobState = "queued" | "running" | "completed" | "failed";
+
+export interface AIAnalysisJobError {
+  message: string;
+  code: string;
+  httpStatus: number;
+  action?: string;
+  traceId: string;
+  details?: Record<string, unknown>;
+}
+
+export interface AIAnalysisJobResponse {
+  jobId: string;
+  status: AIAnalysisJobState;
+  result?: AIAnalysisResponse;
+  error?: AIAnalysisJobError;
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -136,11 +136,34 @@ export async function deleteCollection(collectionId: string): Promise<{ ok: true
 }
 
 export async function analyzeCreativeCollection(collectionId: string, apiKey: string): Promise<AIAnalysisResponse> {
-  return request<AIAnalysisResponse>("/api/ai-analysis", {
+  const started = await request<AIAnalysisJobResponse>("/api/ai-analysis", {
     method: "POST",
     headers: { "x-openai-api-key": apiKey },
     body: JSON.stringify({ collectionId }),
   });
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15 * 60_000) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+    const job = await request<AIAnalysisJobResponse>(`/api/ai-analysis/${encodeURIComponent(started.jobId)}`);
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed" && job.error) {
+      throw new ApiRequestError(
+        job.error.message,
+        job.error.httpStatus,
+        job.error.code,
+        job.error.action,
+        job.error.traceId,
+        job.error.details,
+      );
+    }
+  }
+  throw new ApiRequestError(
+    "AI-анализ выполняется слишком долго.",
+    504,
+    "AI_ANALYSIS_TIMEOUT",
+    "Повторите запрос позже. Фоновая задача на сервере могла продолжить выполнение.",
+    started.jobId,
+  );
 }
 
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {

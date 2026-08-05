@@ -15,13 +15,56 @@ import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" }, contentSecurityPolicy: false }));
 app.use(compression());
 app.use(express.json({ limit: "100kb" }));
+
+interface StoredAIAnalysisJob {
+  jobId: string;
+  clientId: string;
+  collectionId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  result?: AIAnalysisResponse;
+  error?: AIAnalysisJobError;
+}
+
+const aiAnalysisJobs = new Map<string, StoredAIAnalysisJob>();
+const AI_JOB_TTL_MS = 30 * 60_000;
+const MAX_ACTIVE_AI_JOBS = 2;
+
+function publicAIJob(job: StoredAIAnalysisJob): AIAnalysisJobResponse {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  };
+}
+
+function backgroundJobError(error: unknown, traceId: string): AIAnalysisJobError {
+  if (error instanceof AppError) {
+    return {
+      message: error.message,
+      code: error.code,
+      httpStatus: error.status,
+      action: error.action,
+      traceId,
+      details: error.details,
+    };
+  }
+  return {
+    message: error instanceof Error ? error.message : "Неизвестная ошибка AI-анализа.",
+    code: "AI_ANALYSIS_FAILED",
+    httpStatus: 502,
+    traceId,
+  };
+}
 
 function parseList(value: unknown): unknown {
   if (value === undefined || value === "") return undefined;
@@ -248,7 +291,58 @@ app.post("/api/ai-analysis", async (request, response, next) => {
     if (!collection) throw new AppError(404, "COLLECTION_NOT_FOUND", "Коллекция не найдена.");
     const items = await getFavoriteAds(clientId, collectionId);
     if (!items.length) throw new AppError(400, "COLLECTION_EMPTY", "В коллекции нет креативов для анализа.");
-    response.json(await analyzeCollection({ apiKey, clientId, collection, items }));
+    const existing = [...aiAnalysisJobs.values()].find((job) =>
+      job.clientId === clientId
+      && job.collectionId === collectionId
+      && (job.status === "queued" || job.status === "running"));
+    if (existing) {
+      response.status(202).json(publicAIJob(existing));
+      return;
+    }
+    const activeCount = [...aiAnalysisJobs.values()].filter((job) => job.status === "queued" || job.status === "running").length;
+    if (activeCount >= MAX_ACTIVE_AI_JOBS) {
+      throw new AppError(429, "AI_ANALYSIS_BUSY", "Сервер уже выполняет максимальное количество AI-анализов.", "Подождите завершения текущих задач и повторите запрос.");
+    }
+
+    const now = Date.now();
+    const job: StoredAIAnalysisJob = {
+      jobId: randomUUID(),
+      clientId,
+      collectionId,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+    };
+    aiAnalysisJobs.set(job.jobId, job);
+    response.status(202).json(publicAIJob(job));
+
+    void (async () => {
+      job.status = "running";
+      job.updatedAt = Date.now();
+      try {
+        job.result = await analyzeCollection({ apiKey, clientId, collection, items });
+        job.status = "completed";
+      } catch (error) {
+        job.status = "failed";
+        job.error = backgroundJobError(error, job.jobId);
+        console.error(`[${job.jobId}] AI analysis background job failed`, error);
+      } finally {
+        job.updatedAt = Date.now();
+      }
+    })();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai-analysis/:jobId", (request, response, next) => {
+  try {
+    const jobId = z.string().uuid().parse(request.params.jobId);
+    const job = aiAnalysisJobs.get(jobId);
+    if (!job || job.clientId !== getClientId(request)) {
+      throw new AppError(404, "AI_ANALYSIS_JOB_NOT_FOUND", "Задача AI-анализа не найдена или уже удалена.");
+    }
+    response.json(publicAIJob(job));
   } catch (error) {
     next(error);
   }
@@ -318,9 +412,17 @@ const LOG_CLEANUP_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 void deleteExpiredIntegrationLogs(7);
 const logCleanupTimer = setInterval(() => { void deleteExpiredIntegrationLogs(7); }, LOG_CLEANUP_INTERVAL_MS);
 logCleanupTimer.unref();
+const aiJobCleanupTimer = setInterval(() => {
+  const cutoff = Date.now() - AI_JOB_TTL_MS;
+  for (const [jobId, job] of aiAnalysisJobs) {
+    if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") aiAnalysisJobs.delete(jobId);
+  }
+}, 5 * 60_000);
+aiJobCleanupTimer.unref();
 
 async function shutdown(): Promise<void> {
   clearInterval(logCleanupTimer);
+  clearInterval(aiJobCleanupTimer);
   server.close(async () => {
     await closeDatabase();
     process.exit(0);
