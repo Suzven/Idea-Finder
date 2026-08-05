@@ -190,6 +190,25 @@ export interface ReviewProxyTestResult {
   externalIp?: string;
   elapsedMs: number;
   message: string;
+  proxy?: string;
+  browserVersion?: string;
+  userAgent?: string;
+  logs: ReviewProxyTestLog[];
+}
+
+export interface ReviewProxyTestLog {
+  stage: "browser" | "proxy" | "request" | "response" | "cleanup";
+  status: "started" | "success" | "error";
+  message: string;
+  elapsedMs: number;
+  details?: Record<string, string | number | boolean>;
+}
+
+export interface ReviewProxyTestJobResponse {
+  jobId: string;
+  status: AIAnalysisJobState;
+  result?: ReviewProxyTestResult;
+  error?: AIAnalysisJobError;
 }
 
 export interface ReviewSourceResult {

@@ -16,7 +16,7 @@ import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -49,9 +49,21 @@ interface StoredReviewSearchJob {
 }
 
 const reviewSearchJobs = new Map<string, StoredReviewSearchJob>();
+interface StoredReviewProxyTestJob {
+  jobId: string;
+  clientId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  result?: ReviewProxyTestResult;
+  error?: AIAnalysisJobError;
+}
+
+const reviewProxyTestJobs = new Map<string, StoredReviewProxyTestJob>();
 const AI_JOB_TTL_MS = 30 * 60_000;
 const MAX_ACTIVE_AI_JOBS = 2;
 const MAX_ACTIVE_REVIEW_JOBS = 2;
+const MAX_ACTIVE_PROXY_TEST_JOBS = 2;
 
 function publicAIJob(job: StoredAIAnalysisJob): AIAnalysisJobResponse {
   return {
@@ -63,6 +75,15 @@ function publicAIJob(job: StoredAIAnalysisJob): AIAnalysisJobResponse {
 }
 
 function publicReviewJob(job: StoredReviewSearchJob): ReviewSearchJobResponse {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  };
+}
+
+function publicReviewProxyTestJob(job: StoredReviewProxyTestJob): ReviewProxyTestJobResponse {
   return {
     jobId: job.jobId,
     status: job.status,
@@ -504,9 +525,58 @@ app.delete("/api/settings/review-proxy", async (request, response, next) => {
   }
 });
 
-app.post("/api/settings/review-proxy/test", async (request, response, next) => {
+app.post("/api/settings/review-proxy/test", (request, response, next) => {
   try {
-    response.json(await testReviewProxyConnection(await getReviewProxyCredentials(getClientId(request))));
+    const clientId = getClientId(request);
+    const existing = [...reviewProxyTestJobs.values()].find((job) =>
+      job.clientId === clientId && (job.status === "queued" || job.status === "running"));
+    if (existing) {
+      response.status(202).json(publicReviewProxyTestJob(existing));
+      return;
+    }
+    const activeCount = [...reviewProxyTestJobs.values()].filter((job) => job.status === "queued" || job.status === "running").length;
+    if (activeCount >= MAX_ACTIVE_PROXY_TEST_JOBS) {
+      throw new AppError(429, "REVIEW_PROXY_TEST_BUSY", "Сервер уже выполняет несколько проверок прокси.", "Дождитесь их завершения и повторите запрос.");
+    }
+    const now = Date.now();
+    const job: StoredReviewProxyTestJob = {
+      jobId: randomUUID(),
+      clientId,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+    };
+    reviewProxyTestJobs.set(job.jobId, job);
+    response.status(202).json(publicReviewProxyTestJob(job));
+
+    void (async () => {
+      job.status = "running";
+      job.updatedAt = Date.now();
+      try {
+        const proxySettings = await getReviewProxyCredentials(clientId);
+        job.result = await testReviewProxyConnection(proxySettings);
+        job.status = "completed";
+      } catch (error) {
+        job.status = "failed";
+        job.error = backgroundJobError(error, job.jobId);
+        console.error(`[${job.jobId}] review proxy test background job failed`, error);
+      } finally {
+        job.updatedAt = Date.now();
+      }
+    })();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/settings/review-proxy/test/:jobId", (request, response, next) => {
+  try {
+    const jobId = z.string().uuid().parse(request.params.jobId);
+    const job = reviewProxyTestJobs.get(jobId);
+    if (!job || job.clientId !== getClientId(request)) {
+      throw new AppError(404, "REVIEW_PROXY_TEST_JOB_NOT_FOUND", "Задача проверки прокси не найдена или уже удалена.");
+    }
+    response.json(publicReviewProxyTestJob(job));
   } catch (error) {
     next(error);
   }
@@ -650,6 +720,9 @@ const aiJobCleanupTimer = setInterval(() => {
   }
   for (const [jobId, job] of reviewSearchJobs) {
     if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") reviewSearchJobs.delete(jobId);
+  }
+  for (const [jobId, job] of reviewProxyTestJobs) {
+    if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") reviewProxyTestJobs.delete(jobId);
   }
 }, 5 * 60_000);
 aiJobCleanupTimer.unref();

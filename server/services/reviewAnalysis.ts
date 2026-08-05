@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
-import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 
@@ -328,10 +328,60 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
     throw new AppError(400, "REVIEW_PROXY_NOT_CONFIGURED", "Сначала сохраните настройки прокси.");
   }
   const startedAt = Date.now();
-  const { context } = await createContext(proxySettings);
+  const logs: ReviewProxyTestLog[] = [];
+  let context: BrowserContext | undefined;
+  let browserInfo: ReviewBrowserInfo | undefined;
+  const proxyLabel = (() => {
+    try {
+      const parsed = new URL(proxySettings.server);
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString().replace(/\/$/, "");
+    } catch {
+      return proxySettings.server.replace(/\/\/[^/@]+@/, "//");
+    }
+  })();
+  const redact = (value: string): string => {
+    let result = value;
+    for (const secret of [proxySettings.password, proxySettings.username].filter(Boolean)) {
+      result = result.replaceAll(secret as string, "***");
+    }
+    return result.replace(/\/\/[^\s/@:]+:[^\s/@]+@/g, "//***:***@");
+  };
+  const addLog = (
+    stage: ReviewProxyTestLog["stage"],
+    status: ReviewProxyTestLog["status"],
+    message: string,
+    details?: ReviewProxyTestLog["details"],
+  ) => {
+    logs.push({
+      stage,
+      status,
+      message: redact(message),
+      elapsedMs: Date.now() - startedAt,
+      ...(details ? { details } : {}),
+    });
+  };
+
+  addLog("proxy", "started", "Настройки прокси получены сервером.", {
+    proxy: proxyLabel,
+    authentication: Boolean(proxySettings.username || proxySettings.password),
+    bypass: Boolean(proxySettings.bypass),
+  });
   try {
+    addLog("browser", "started", "Запускаем изолированный контекст Chromium через прокси.");
+    const created = await createContext(proxySettings);
+    context = created.context;
+    browserInfo = created.browser;
+    addLog("browser", "success", `Chromium ${created.browser.version} запущен.`, {
+      version: created.browser.version,
+      userAgent: created.browser.userAgent,
+    });
+
     const page = await context.newPage();
-    const response = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const targetUrl = "https://api.ipify.org?format=json";
+    addLog("request", "started", "Отправляем контрольный HTTPS-запрос через прокси.", { url: targetUrl, timeoutMs: 25_000 });
+    const response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
     const raw = await page.textContent("body");
     let externalIp: string | undefined;
     try {
@@ -341,14 +391,44 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
       externalIp = raw?.trim().match(/(?:\d{1,3}\.){3}\d{1,3}|[a-f0-9:]{3,}/i)?.[0];
     }
     const ok = Boolean(response?.ok() && externalIp);
+    addLog("response", ok ? "success" : "error", ok
+      ? `Контрольный сервис подтвердил внешний IP ${externalIp}.`
+      : `Контрольный сервис не подтвердил соединение: HTTP ${response?.status() ?? "без ответа"}.`, {
+      httpStatus: response?.status() ?? 0,
+      finalUrl: page.url(),
+      responsePreview: redact((raw ?? "").replace(/\s+/g, " ").trim().slice(0, 300)),
+    });
     return {
       ok,
       ...(externalIp ? { externalIp } : {}),
       elapsedMs: Date.now() - startedAt,
       message: ok ? "Соединение через прокси установлено." : `Прокси вернула HTTP ${response?.status() ?? "без ответа"}.`,
+      proxy: proxyLabel,
+      ...(browserInfo ? { browserVersion: browserInfo.version, userAgent: browserInfo.userAgent } : {}),
+      logs,
+    };
+  } catch (error) {
+    const message = redact(error instanceof Error ? error.message : String(error));
+    addLog(context ? "request" : "browser", "error", message, {
+      errorType: error instanceof Error ? error.name : "UnknownError",
+    });
+    return {
+      ok: false,
+      elapsedMs: Date.now() - startedAt,
+      message: "Не удалось установить соединение через прокси.",
+      proxy: proxyLabel,
+      ...(browserInfo ? { browserVersion: browserInfo.version, userAgent: browserInfo.userAgent } : {}),
+      logs,
     };
   } finally {
-    await context.close();
+    if (context) {
+      try {
+        await context.close();
+        addLog("cleanup", "success", "Контекст Chromium закрыт.");
+      } catch (error) {
+        addLog("cleanup", "error", error instanceof Error ? error.message : String(error));
+      }
+    }
   }
 }
 

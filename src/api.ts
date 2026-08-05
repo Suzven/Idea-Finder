@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -238,7 +238,30 @@ export async function deleteReviewProxyConfiguration(): Promise<void> {
 }
 
 export async function testReviewProxyConfiguration(): Promise<ReviewProxyTestResult> {
-  return request<ReviewProxyTestResult>("/api/settings/review-proxy/test", { method: "POST" });
+  const started = await request<ReviewProxyTestJobResponse>("/api/settings/review-proxy/test", { method: "POST" });
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2 * 60_000) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+    const job = await request<ReviewProxyTestJobResponse>(`/api/settings/review-proxy/test/${encodeURIComponent(started.jobId)}`);
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed" && job.error) {
+      throw new ApiRequestError(
+        job.error.message,
+        job.error.httpStatus,
+        job.error.code,
+        job.error.action,
+        job.error.traceId,
+        job.error.details,
+      );
+    }
+  }
+  throw new ApiRequestError(
+    "Проверка прокси выполняется слишком долго.",
+    504,
+    "REVIEW_PROXY_TEST_TIMEOUT",
+    "Повторите проверку позже. Фоновая задача на сервере могла продолжить выполнение.",
+    started.jobId,
+  );
 }
 
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {
