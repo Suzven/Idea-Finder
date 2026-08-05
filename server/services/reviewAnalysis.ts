@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page } from "playwright";
-import type { ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 
 interface ReviewAdapter {
@@ -12,6 +12,7 @@ interface ReviewAdapter {
 
 const MAX_PAGES = 2;
 const NAVIGATION_TIMEOUT_MS = 35_000;
+const CHALLENGE_WAIT_MS = 15_000;
 
 export function normalizeCompanyQuery(value: string): { domain: string; slug: string } {
   let normalized = value.trim().toLowerCase();
@@ -68,7 +69,7 @@ function deduplicateReviews(reviews: UserReview[]): UserReview[] {
   });
 }
 
-async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; text: string }> {
+async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; title: string; preview: string }> {
   const state = await page.evaluate(() => ({
     title: document.title,
     text: document.body?.innerText.slice(0, 30_000) ?? "",
@@ -95,7 +96,17 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
     "we can’t find",
     "404 error",
   ].some((phrase) => text.includes(phrase));
-  return { blocked, notFound, text };
+  return { blocked, notFound, title: state.title, preview: state.text.replace(/\s+/g, " ").trim().slice(0, 500) };
+}
+
+async function waitForChallenge(page: Page): Promise<Awaited<ReturnType<typeof pageState>>> {
+  let state = await pageState(page);
+  const deadline = Date.now() + CHALLENGE_WAIT_MS;
+  while (state.blocked && Date.now() < deadline) {
+    await page.waitForTimeout(1_500);
+    state = await pageState(page);
+  }
+  return state;
 }
 
 async function extractReviews(page: Page, source: ReviewSource, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }> {
@@ -191,64 +202,122 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
   },
 };
 
-async function createContext(): Promise<BrowserContext> {
+async function createContext(): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo }> {
   const browser = await getMetaBrowser();
+  const rawVersion = browser.version();
+  const version = rawVersion.match(/\d+(?:\.\d+){1,3}/)?.[0] ?? rawVersion;
+  const majorVersion = version.match(/^\d+/)?.[0] ?? "126";
+  const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`;
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1_000 },
+    screen: { width: 1920, height: 1080 },
+    deviceScaleFactor: 1,
+    colorScheme: "light",
     locale: "en-US",
     timezoneId: "UTC",
-    userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
+    userAgent,
+    extraHTTPHeaders: {
+      "Accept-Language": "en-US,en;q=0.9",
+      "sec-ch-ua": `"Chromium";v="${majorVersion}", "Not_A Brand";v="99"`,
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": "\"Linux\"",
+    },
   });
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
   });
-  return context;
+  return { context, browser: { version, userAgent } };
 }
 
 async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<ReviewSourceResult> {
   const candidates = adapter.buildCandidates(query);
   const attemptedUrls: string[] = [];
-  const context = await createContext();
+  const attempts: ReviewAttemptLog[] = [];
+  const created = await createContext();
+  const { context, browser } = created;
+  const record = (attempt: ReviewAttemptLog) => {
+    attempts.push(attempt);
+    console.info(`[review-analysis:${adapter.source}]`, JSON.stringify(attempt));
+  };
   try {
     const page = await context.newPage();
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
     let lastError = "";
     for (const candidate of candidates) {
       attemptedUrls.push(candidate);
+      const startedAt = Date.now();
       try {
         const response = await page.goto(candidate, { waitUntil: "domcontentloaded" });
-        await page.waitForTimeout(1_200);
-        const state = await pageState(page);
+        await page.waitForTimeout(700);
+        const state = await waitForChallenge(page);
+        const firstAttempt: ReviewAttemptLog = {
+          url: candidate,
+          finalUrl: page.url(),
+          httpStatus: response?.status(),
+          title: state.title,
+          outcome: state.blocked ? "blocked" : response?.status() === 404 || state.notFound ? "not_found" : "loaded",
+          durationMs: Date.now() - startedAt,
+          pagePreview: state.preview,
+        };
         if (state.blocked) {
+          firstAttempt.message = `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`;
+          record(firstAttempt);
           return {
             source: adapter.source,
             label: adapter.label,
             status: "blocked",
             query,
-            profileUrl: candidate,
+            profileUrl: page.url(),
             attemptedUrls,
+            attempts,
+            browser,
             reviews: [],
-            message: `${adapter.label} включил проверку браузера и не отдал страницу отзывов серверу. Повторите запрос позже.`,
+            message: `${adapter.label} не завершил проверку браузера за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд. Подробности находятся в логе Chromium ниже.`,
           };
         }
-        if (response?.status() === 404 || state.notFound) continue;
+        if (response?.status() === 404 || state.notFound) {
+          record(firstAttempt);
+          continue;
+        }
 
         const allReviews: UserReview[] = [];
         let companyName: string | undefined;
+        let profileUrl = page.url();
         for (let currentPage = 1; currentPage <= MAX_PAGES; currentPage += 1) {
           const target = pageUrl(candidate, currentPage);
+          let currentAttempt = firstAttempt;
           if (currentPage > 1) {
             attemptedUrls.push(target);
-            await page.goto(target, { waitUntil: "domcontentloaded" });
-            await page.waitForTimeout(1_000);
-            const nextState = await pageState(page);
-            if (nextState.blocked || nextState.notFound) break;
+            const pageStartedAt = Date.now();
+            const nextResponse = await page.goto(target, { waitUntil: "domcontentloaded" });
+            await page.waitForTimeout(700);
+            const nextState = await waitForChallenge(page);
+            currentAttempt = {
+              url: target,
+              finalUrl: page.url(),
+              httpStatus: nextResponse?.status(),
+              title: nextState.title,
+              outcome: nextState.blocked ? "blocked" : nextResponse?.status() === 404 || nextState.notFound ? "not_found" : "loaded",
+              durationMs: Date.now() - pageStartedAt,
+              pagePreview: nextState.preview,
+            };
+            if (nextState.blocked || nextResponse?.status() === 404 || nextState.notFound) {
+              currentAttempt.message = nextState.blocked ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.` : "Вторая страница не найдена.";
+              record(currentAttempt);
+              break;
+            }
           }
+          const extractionStartedAt = Date.now();
           const extracted = await adapter.extract(page, currentPage);
           companyName ||= extracted.companyName;
           allReviews.push(...extracted.reviews);
-          if (!extracted.reviews.length && currentPage === 1) break;
+          currentAttempt.reviewsFound = extracted.reviews.length;
+          currentAttempt.outcome = extracted.reviews.length ? "found" : "empty";
+          currentAttempt.durationMs += Date.now() - extractionStartedAt;
+          if (!extracted.reviews.length) currentAttempt.message = "Страница открылась, но подходящие карточки отзывов в DOM не найдены.";
+          record(currentAttempt);
+          if (!extracted.reviews.length) break;
         }
         const reviews = deduplicateReviews(allReviews);
         if (!reviews.length) {
@@ -261,12 +330,21 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
           status: "found",
           query,
           companyName,
-          profileUrl: candidate,
+          profileUrl,
           attemptedUrls,
+          attempts,
+          browser,
           reviews,
         };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
+        record({
+          url: candidate,
+          finalUrl: page.url(),
+          outcome: "error",
+          durationMs: Date.now() - startedAt,
+          message: lastError,
+        });
       }
     }
     return {
@@ -275,6 +353,8 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
       status: lastError ? "error" : "not_found",
       query,
       attemptedUrls,
+      attempts,
+      browser,
       reviews: [],
       message: lastError || `Компания не найдена в ${adapter.label} ни по одному варианту адреса.`,
     };
@@ -294,6 +374,7 @@ export async function searchCompanyReviews(query: string, sources: ReviewSource[
         status: "error" as const,
         query,
         attemptedUrls: adapters[source].buildCandidates(query),
+        attempts: [],
         reviews: [],
         message: error instanceof Error ? error.message : "Неизвестная ошибка браузерного сбора.",
       };

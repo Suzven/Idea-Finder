@@ -34,6 +34,15 @@ function SourceStatus({ result }: { result: ReviewSourceResult }) {
   </div>;
 }
 
+const attemptLabels = {
+  loaded: "Страница загружена",
+  found: "Отзывы извлечены",
+  empty: "Карточки не найдены",
+  not_found: "Страница не найдена",
+  blocked: "Проверка браузера",
+  error: "Ошибка",
+} as const;
+
 function SourceResult({ result }: { result: ReviewSourceResult }) {
   return <section className="review-source-result">
     <header>
@@ -49,7 +58,24 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
         {review.reviewUrl && <a href={review.reviewUrl} target="_blank" rel="noreferrer">Оригинал отзыва <ExternalLink size={13} /></a>}
       </article>)}</div>
       : <SourceStatus result={result} />}
-    <details className="review-attempts"><summary>Проверенные адреса ({result.attemptedUrls.length})</summary><ul>{result.attemptedUrls.map((url) => <li key={url}>{url}</li>)}</ul></details>
+    <details className="review-attempts" open={result.status === "blocked" || result.status === "error"}>
+      <summary>Лог Chromium ({result.attempts.length} попыток)</summary>
+      {result.browser && <div className="review-browser-info"><span><b>Chromium:</b> {result.browser.version}</span><span><b>User-Agent:</b> {result.browser.userAgent}</span></div>}
+      {result.attempts.length
+        ? <div className="review-attempt-log">{result.attempts.map((attempt, index) => <article key={`${attempt.url}-${index}`} className={attempt.outcome}>
+          <header><b>{index + 1}. {attemptLabels[attempt.outcome]}</b><span>{attempt.durationMs} мс</span></header>
+          <dl>
+            <div><dt>Запрос</dt><dd>{attempt.url}</dd></div>
+            {attempt.finalUrl && <div><dt>Итоговый URL</dt><dd>{attempt.finalUrl}</dd></div>}
+            <div><dt>HTTP</dt><dd>{attempt.httpStatus ?? "нет ответа"}</dd></div>
+            {attempt.title && <div><dt>Title</dt><dd>{attempt.title}</dd></div>}
+            {attempt.reviewsFound !== undefined && <div><dt>Отзывы</dt><dd>{attempt.reviewsFound}</dd></div>}
+            {attempt.message && <div><dt>Причина</dt><dd>{attempt.message}</dd></div>}
+          </dl>
+          {attempt.pagePreview && <details><summary>Фрагмент текста страницы</summary><pre>{attempt.pagePreview}</pre></details>}
+        </article>)}</div>
+        : <p className="review-log-empty">Chromium не успел открыть страницу. Проверьте серверный журнал.</p>}
+    </details>
   </section>;
 }
 

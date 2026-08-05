@@ -151,6 +151,23 @@ export interface UserReview {
   page: number;
 }
 
+export interface ReviewAttemptLog {
+  url: string;
+  finalUrl?: string;
+  httpStatus?: number;
+  title?: string;
+  outcome: "loaded" | "found" | "empty" | "not_found" | "blocked" | "error";
+  durationMs: number;
+  reviewsFound?: number;
+  message?: string;
+  pagePreview?: string;
+}
+
+export interface ReviewBrowserInfo {
+  version: string;
+  userAgent: string;
+}
+
 export interface ReviewSourceResult {
   source: ReviewSource;
   label: string;
@@ -159,6 +176,8 @@ export interface ReviewSourceResult {
   companyName?: string;
   profileUrl?: string;
   attemptedUrls: string[];
+  attempts: ReviewAttemptLog[];
+  browser?: ReviewBrowserInfo;
   reviews: UserReview[];
   message?: string;
 }
