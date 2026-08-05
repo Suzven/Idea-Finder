@@ -56,6 +56,7 @@ const adCreativeSchema = z.object({
   advertiserAvatar: z.string().max(5_000).optional(),
   country: z.string().max(20),
   countryName: z.string().max(500),
+  countries: z.array(z.string().max(120)).max(250).optional(),
   platforms: z.array(z.string().max(80)).max(20),
   mediaType: z.enum(["image", "video", "carousel"]),
   mediaUrl: z.string().max(5_000),

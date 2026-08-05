@@ -78,10 +78,12 @@ describe("extractMetaMediaFromHtml", () => {
   it("extracts creative, page avatar and unwrapped destination from rendered ad_snapshot_url DOM", () => {
     const html = `
       <div>ID Библиотеки: 1006049118713192</div>
+      <script type="application/json">{"cta_type":"SHOP_NOW"}</script>
       <img alt="Romantic&amp;Love" class="_8nqq img"
         src="https://scontent-iev1-1.xx.fbcdn.net/avatar.jpg?stp=dst-jpg_s60x60_tt6&amp;asset=avatar">
       <a target="_blank" href="https://l.facebook.com/l.php?u=https%3A%2F%2Fshop.example%2Foffer%3Fx%3D1&amp;h=signature">
         <img alt="" src="https://scontent-iev1-1.xx.fbcdn.net/creative.jpg?stp=dst-jpg_s600x600_tt6&amp;asset=creative">
+        <span>Shop Now</span>
       </a>`;
 
     expect(extractMetaMediaFromHtml(html, "1006049118713192")).toEqual({
@@ -90,6 +92,7 @@ describe("extractMetaMediaFromHtml", () => {
       thumbnailUrl: "https://scontent-iev1-1.xx.fbcdn.net/creative.jpg?stp=dst-jpg_s600x600_tt6&asset=creative",
       advertiserAvatar: "https://scontent-iev1-1.xx.fbcdn.net/avatar.jpg?stp=dst-jpg_s60x60_tt6&asset=avatar",
       landingUrl: "https://shop.example/offer?x=1",
+      cta: "Shop Now",
     });
   });
 
@@ -117,6 +120,7 @@ describe("extractMetaMediaFromHtml", () => {
               snapshot: {
                 page_profile_picture_url: "https://scontent.xx.fbcdn.net/page.jpg",
                 link_url: "https://shop.example/product",
+                cta_type: "SHOP_NOW",
                 images: [{ original_image_url: "https://scontent.xx.fbcdn.net/creative.jpg" }],
               },
             },
@@ -131,6 +135,7 @@ describe("extractMetaMediaFromHtml", () => {
       thumbnailUrl: "https://scontent.xx.fbcdn.net/creative.jpg",
       advertiserAvatar: "https://scontent.xx.fbcdn.net/page.jpg",
       landingUrl: "https://shop.example/product",
+      cta: "В магазин",
     });
   });
 });

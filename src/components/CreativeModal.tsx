@@ -1,4 +1,4 @@
-import { Bookmark, CalendarDays, Download, ExternalLink, Globe2, ImageOff, Layers3, X } from "lucide-react";
+import { Bookmark, CalendarRange, Clock3, Download, ExternalLink, Globe2, ImageOff, Layers3, TrendingUp, X } from "lucide-react";
 import { useEffect } from "react";
 import { useResolvedAdMedia } from "../hooks/useResolvedAdMedia";
 import type { AdCreative } from "../shared/types";
@@ -12,6 +12,9 @@ interface CreativeModalProps {
 export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
   const { ad: resolvedAd, loading: mediaLoading, error: mediaError } = useResolvedAdMedia(ad);
   ad = resolvedAd;
+  const live = !ad.endedAt || new Date(ad.endedAt).setHours(23, 59, 59, 999) >= Date.now();
+  const formatDate = (value: string) => new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(value));
+  const formatReach = (value?: number) => value === undefined ? "Нет данных" : new Intl.NumberFormat("ru-RU").format(value);
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", close);
@@ -33,12 +36,14 @@ export function CreativeModal({ ad, onClose, onFavorite }: CreativeModalProps) {
           </div>
         </div>
         <div className="modal-details">
-          <div className="modal-brand"><span className="avatar large">{ad.advertiserAvatar ? <img src={ad.advertiserAvatar} alt="" /> : ad.advertiser.slice(0, 1)}</span><div><span className="eyebrow">{ad.source === "meta" ? "META AD" : "TIKTOK AD"}</span><h2>{ad.advertiser}</h2></div></div>
+          <div className="modal-brand"><span className="avatar large">{ad.advertiserAvatar ? <img src={ad.advertiserAvatar} alt="" /> : ad.advertiser.slice(0, 1)}</span><div><span className="eyebrow">{ad.source === "meta" ? "META AD" : "TIKTOK AD"}</span><h2>{ad.advertiser}</h2></div><span className={`modal-live-status ${live ? "live" : "ended"}`}><i />{live ? "Live" : "Завершено"}</span></div>
           <button className={`save-wide ${ad.isFavorite ? "saved" : ""}`} onClick={() => onFavorite(ad)}><Bookmark size={17} fill={ad.isFavorite ? "currentColor" : "none"} />{ad.isFavorite ? "Сохранено" : "В заметки"}</button>
           <div className="detail-metrics">
-            <span><CalendarDays size={16} /><small>Запущено</small><strong>{new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(ad.startedAt))}</strong></span>
-            <span><Globe2 size={16} /><small>География</small><strong>{ad.countryName}</strong></span>
-            <span><Layers3 size={16} /><small>Площадки</small><strong>{ad.platforms.join(", ")}</strong></span>
+            <span><CalendarRange size={16} /><small>Период показа</small><strong>{formatDate(ad.startedAt)} — {ad.endedAt ? formatDate(ad.endedAt) : "сейчас"}</strong></span>
+            <span><Clock3 size={16} /><small>Всего крутилась</small><strong>{ad.daysActive} дн.</strong></span>
+            <span><Globe2 size={16} /><small>Все страны</small><strong>{ad.countries?.join(", ") || ad.countryName}</strong></span>
+            <span><TrendingUp size={16} /><small>Охват</small><strong>{formatReach(ad.reach)}</strong></span>
+            <span className="platform-metric"><Layers3 size={16} /><small>Площадки</small><strong>{ad.platforms.join(", ")}</strong></span>
           </div>
           <div className="modal-copy"><h1>{ad.headline}</h1><p>{ad.body}</p></div>
           {ad.appUrl && <p className="modal-display-url">Сайт в объявлении: <strong>{ad.appUrl}</strong></p>}

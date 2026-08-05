@@ -1,4 +1,4 @@
-import { Bookmark, ExternalLink, ImageOff, Images, Play, TrendingUp } from "lucide-react";
+import { Bookmark, Clock3, ExternalLink, ImageOff, Images, Play, TrendingUp } from "lucide-react";
 import { useResolvedAdMedia } from "../hooks/useResolvedAdMedia";
 import type { AdCreative } from "../shared/types";
 
@@ -11,6 +11,7 @@ interface AdCardProps {
 
 const formatNumber = (value?: number) => value === undefined ? "—" : new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 const formatDate = (value: string) => new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(value));
+const isLive = (endedAt?: string) => !endedAt || new Date(endedAt).setHours(23, 59, 59, 999) >= Date.now();
 
 export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
   const { ad: resolvedAd, loading: mediaLoading, error: mediaError } = useResolvedAdMedia(ad);
@@ -23,10 +24,8 @@ export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
         : ad.thumbnailUrl || ad.mediaUrl
           ? <img src={ad.thumbnailUrl || ad.mediaUrl} alt={`Креатив ${ad.advertiser}`} loading="lazy" />
           : <div className={`media-placeholder ${mediaLoading ? "loading" : ""}`}><ImageOff size={28} /><span>{mediaLoading ? "Загружаем креатив…" : mediaError ? "Не удалось извлечь креатив" : "Креатив доступен в Meta"}</span></div>}
-      <span className="media-shade" />
       {ad.mediaType === "video" && !ad.mediaUrl && <span className="play-button"><Play size={18} fill="currentColor" /></span>}
       {ad.mediaType === "carousel" && <span className="media-type"><Images size={14} /> {ad.carousel?.length ?? 2}</span>}
-      <div className="media-metrics"><span><TrendingUp size={13} /> {formatNumber(ad.reach)}</span><span>{ad.daysActive} дн.</span></div>
     </div>
   );
 
@@ -55,7 +54,14 @@ export function AdCard({ ad, onOpen, onFavorite, compact }: AdCardProps) {
         {ad.appUrl && <small className="display-url">{ad.appUrl}</small>}
         <h3>{ad.headline}</h3>
         {!compact && <p>{ad.body}</p>}
-        <div className="card-cta"><span>{ad.cta}</span><ExternalLink size={15} /></div>
+        <div className="card-stats">
+          <span><TrendingUp size={14} /><small>Охват</small><strong>{formatNumber(ad.reach)}</strong></span>
+          <span><Clock3 size={14} /><small>Показ</small><strong>{ad.daysActive} дн.</strong></span>
+          <span className={`ad-status ${isLive(ad.endedAt) ? "live" : "ended"}`}><i /><strong>{isLive(ad.endedAt) ? "Live" : "Завершено"}</strong></span>
+        </div>
+        {ad.landingUrl
+          ? <a className="card-cta" href={ad.landingUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}><span>{ad.cta}</span><ExternalLink size={15} /></a>
+          : <span className="card-cta disabled"><span>{ad.cta}</span><ExternalLink size={15} /></span>}
       </div>
     </article>
   );

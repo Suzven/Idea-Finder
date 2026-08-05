@@ -8,6 +8,7 @@ export interface AdCreative {
   advertiserAvatar?: string;
   country: string;
   countryName: string;
+  countries?: string[];
   platforms: string[];
   mediaType: MediaType;
   mediaUrl: string;

@@ -150,6 +150,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
         advertiser: ad.page_name ?? `Страница ${ad.page_id ?? ad.id}`,
         country: selectedCountries.length === 1 ? selectedCountries[0] : `${selectedCountries[0]}+${selectedCountries.length - 1}`,
         countryName: selectedCountries.join(", "),
+        countries: selectedCountries,
         platforms: (ad.publisher_platforms ?? ["Facebook"]).map((value) => value.replaceAll("_", " ")),
         mediaType: filters.mediaType === "video" ? "video" : "image",
         mediaUrl: "",
@@ -157,7 +158,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
         mediaInfoUrl: registerMetaAd(ad.id, ad.ad_snapshot_url),
         headline: ad.ad_creative_link_titles?.[0] ?? "Объявление Meta",
         body: ad.ad_creative_bodies?.[0] ?? ad.ad_creative_link_descriptions?.[0] ?? "Откройте оригинал объявления для просмотра креатива.",
-        cta: "Открыть объявление",
+        cta: "Подробнее",
         landingUrl,
         appUrl: displayWebsite,
         // ad_snapshot_url contains the access token, so it must never reach the browser.

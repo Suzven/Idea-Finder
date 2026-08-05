@@ -13,6 +13,7 @@ export interface MetaMedia {
   thumbnailUrl: string;
   advertiserAvatar: string;
   landingUrl?: string;
+  cta?: string;
 }
 
 interface ExtractedMetaMedia {
@@ -21,6 +22,7 @@ interface ExtractedMetaMedia {
   thumbnailUrl?: string;
   advertiserAvatar?: string;
   landingUrl?: string;
+  cta?: string;
 }
 
 interface Candidate {
@@ -162,6 +164,76 @@ function extractLandingUrl(source: string, diagnostics: MetaMediaParseAttempt[])
   return candidates[0]?.url;
 }
 
+const CTA_LABELS: Record<string, string> = {
+  APPLY_NOW: "Подать заявку",
+  BOOK_NOW: "Забронировать",
+  BUY_NOW: "Купить",
+  CONTACT_US: "Связаться",
+  DOWNLOAD: "Скачать",
+  GET_OFFER: "Получить предложение",
+  GET_QUOTE: "Узнать цену",
+  LEARN_MORE: "Подробнее",
+  LISTEN_NOW: "Слушать",
+  ORDER_NOW: "Заказать",
+  PLAY_GAME: "Играть",
+  SEE_MENU: "Посмотреть меню",
+  SHOP_NOW: "В магазин",
+  SIGN_UP: "Зарегистрироваться",
+  SUBSCRIBE: "Подписаться",
+  WATCH_MORE: "Смотреть",
+};
+
+function normalizeCtaText(rawValue: string, mapEnum = false): string | undefined {
+  let value = decodeHtml(rawValue)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\\u([0-9a-f]{4})/gi, (_match, code: string) => String.fromCharCode(Number.parseInt(code, 16)))
+    .replaceAll("\\/", "/")
+    .replace(/\s+/g, " ")
+    .trim();
+  try { value = JSON.parse(`"${value}"`) as string; } catch { /* already decoded */ }
+  if (!value || value.length > 80 || /^https?:\/\//i.test(value)) return undefined;
+  const enumValue = value.toUpperCase().replace(/[\s-]+/g, "_");
+  return mapEnum ? CTA_LABELS[enumValue] ?? value : value;
+}
+
+function extractCtaText(source: string, landingUrl: string | undefined, diagnostics: MetaMediaParseAttempt[]): string | undefined {
+  const candidates: Array<{ text: string; score: number; source: string }> = [];
+  const add = (rawText: string | undefined, score: number, candidateSource: string, mapEnum = false) => {
+    if (!rawText) return;
+    const text = normalizeCtaText(rawText, mapEnum);
+    if (text) candidates.push({ text, score, source: candidateSource });
+  };
+
+  const jsonFields: Array<[string, number]> = [
+    ["cta_text", 1_600],
+    ["call_to_action_text", 1_550],
+    ["call_to_action_type", 900],
+    ["cta_type", 850],
+  ];
+  for (const [field, score] of jsonFields) {
+    const pattern = new RegExp(`["']${field}["']\\s*:\\s*["']((?:\\\\.|[^"'\\\\])*)["']`, "gi");
+    for (const match of source.matchAll(pattern)) add(match[1], score, field, field.endsWith("type"));
+  }
+
+  for (const match of source.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attributes = match[1];
+    const rawUrl = attributeValue(attributes, "data-lynx-uri") ?? attributeValue(attributes, "href");
+    const url = rawUrl ? decodeLandingUrl(rawUrl) : undefined;
+    const sameLanding = Boolean(url && landingUrl && url === landingUrl);
+    add(attributeValue(attributes, "aria-label"), sameLanding ? 1_350 : 850, "anchor_aria_label");
+    add(match[2], sameLanding ? 1_250 : 650, "anchor_text");
+  }
+
+  for (const match of source.matchAll(/<(button|div)\b([^>]*(?:role\s*=\s*["']button["']|aria-label\s*=\s*["'][^"']+["'])[^>]*)>([\s\S]*?)<\/\1>/gi)) {
+    add(attributeValue(match[2], "aria-label"), 1_100, "button_aria_label");
+    add(match[3], 1_000, "button_text");
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  diagnostics.push({ stage: "cta_text", candidates: candidates.length, selected: candidates[0] ?? null });
+  return candidates[0]?.text;
+}
+
 function targetAdSource(html: string, adId?: string): string {
   const source = decodeHtml(html);
   if (!adId) return source;
@@ -215,6 +287,7 @@ export function extractMetaMediaFromHtml(
   const avatarMatch = source.match(/["']page_profile_picture_url["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/i);
   let advertiserAvatar = avatarMatch ? decodeUrl(avatarMatch[1]) : undefined;
   const landingUrl = extractLandingUrl(source, diagnostics);
+  const cta = extractCtaText(source, landingUrl, diagnostics);
   const fieldPattern = /["'](playable_url_quality_hd|playable_url|video_hd_url|video_sd_url|watermarked_video_hd_url|watermarked_video_sd_url|video_preview_image_url|original_image_url|resized_image_url|image_url|image_uri|thumbnail_url)["']\s*:\s*["']((?:\\.|[^"'\\])*)["']/gi;
   for (const match of source.matchAll(fieldPattern)) {
     const field = match[1].toLowerCase();
@@ -255,8 +328,9 @@ export function extractMetaMediaFromHtml(
     selectedImage: images[0] ?? null,
     advertiserAvatar: advertiserAvatar ?? null,
     landingUrl: landingUrl ?? null,
+    cta: cta ?? null,
   });
-  const optionalFields = { ...(advertiserAvatar ? { advertiserAvatar } : {}), ...(landingUrl ? { landingUrl } : {}) };
+  const optionalFields = { ...(advertiserAvatar ? { advertiserAvatar } : {}), ...(landingUrl ? { landingUrl } : {}), ...(cta ? { cta } : {}) };
   if (videos[0]) return { mediaType: "video", mediaUrl: videos[0].url, thumbnailUrl: images[0]?.url, ...optionalFields };
   if (images[0]) return { mediaType: "image", mediaUrl: images[0].url, thumbnailUrl: images[0].url, ...optionalFields };
   return undefined;
@@ -400,8 +474,16 @@ async function scrapeMetaMedia(adId: string): Promise<ExtractedMetaMedia> {
       body: graphqlRequest.postData(),
     });
     parseAttempts.push({ stage: "browser_graphql_response", status: graphqlStatus, bodyLength: graphqlBody.length });
-    const media = extractMetaMediaFromHtml(graphqlBody, adId, parseAttempts);
-    if (!media) throw new AppError(404, "META_MEDIA_NOT_FOUND", "Рабочий GraphQL-ответ Meta не содержит изображения или видео.");
+    const graphqlMedia = extractMetaMediaFromHtml(graphqlBody, adId, parseAttempts);
+    const renderedMedia = pageHtml ? extractMetaMediaFromHtml(pageHtml, adId, parseAttempts) : undefined;
+    const baseMedia = graphqlMedia ?? renderedMedia;
+    if (!baseMedia) throw new AppError(404, "META_MEDIA_NOT_FOUND", "Страница объявления Meta не содержит изображения или видео.");
+    const media: ExtractedMetaMedia = {
+      ...baseMedia,
+      advertiserAvatar: graphqlMedia?.advertiserAvatar ?? renderedMedia?.advertiserAvatar,
+      landingUrl: graphqlMedia?.landingUrl ?? renderedMedia?.landingUrl,
+      cta: renderedMedia?.cta ?? graphqlMedia?.cta,
+    };
     await graphqlLogger.success({ responseStatus: graphqlStatus, responseHeaders: graphqlHeaders, responseBody: graphqlBody, parseAttempts });
     return media;
   } catch (error) {
@@ -440,6 +522,7 @@ export async function getMetaMedia(adId: string): Promise<MetaMedia> {
     thumbnailUrl: media.thumbnailUrl ? `/api/meta/media/${encodeURIComponent(adId)}/thumbnail` : "",
     advertiserAvatar: media.advertiserAvatar ? `/api/meta/media/${encodeURIComponent(adId)}/avatar` : "",
     ...(media.landingUrl ? { landingUrl: media.landingUrl } : {}),
+    ...(media.cta ? { cta: media.cta } : {}),
   };
 }
 
