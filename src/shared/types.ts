@@ -37,6 +37,13 @@ export interface AdsResponse {
   limitations?: string[];
 }
 
+export interface CreativeCollection {
+  id: string;
+  name: string;
+  itemCount: number;
+  createdAt: string;
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

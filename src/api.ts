@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -49,14 +49,27 @@ export async function fetchAds(source: AdSource, filters: AdFilters, cursor?: st
   return request<AdsResponse>(`/api/ads?${params}`);
 }
 
-export async function fetchFavoriteAds(): Promise<AdsResponse> {
-  return request<AdsResponse>("/api/favorites");
+export async function fetchFavoriteAds(collectionId?: string): Promise<AdsResponse> {
+  const params = collectionId ? `?collectionId=${encodeURIComponent(collectionId)}` : "";
+  return request<AdsResponse>(`/api/favorites${params}`);
 }
 
-export async function setFavorite(ad: AdCreative, value: boolean): Promise<void> {
+export async function setFavorite(ad: AdCreative, value: boolean, collectionId?: string): Promise<void> {
   await request(`/api/favorites/${encodeURIComponent(ad.id)}`, {
     method: value ? "POST" : "DELETE",
-    body: value ? JSON.stringify({ source: ad.source, ad }) : undefined,
+    body: value ? JSON.stringify({ source: ad.source, ad, collectionId }) : undefined,
+  });
+}
+
+export async function fetchCollections(): Promise<CreativeCollection[]> {
+  const response = await request<{ items: CreativeCollection[] }>("/api/collections");
+  return response.items;
+}
+
+export async function createCollection(name: string): Promise<CreativeCollection> {
+  return request<CreativeCollection>("/api/collections", {
+    method: "POST",
+    body: JSON.stringify({ name }),
   });
 }
 

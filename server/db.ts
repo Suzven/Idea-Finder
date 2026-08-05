@@ -1,6 +1,6 @@
 import mysql from "mysql2/promise";
 import { config } from "./config.js";
-import type { AdCreative, AdSource, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
+import type { AdCreative, AdSource, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
 
 const databaseConfig = config.database;
 const databaseConfigured = Boolean(
@@ -22,6 +22,9 @@ const pool = databaseConfigured
   : null;
 const memoryFavorites = new Map<string, Set<string>>();
 const memoryFavoriteAds = new Map<string, Map<string, AdCreative>>();
+const memoryCollections = new Map<string, Map<string, CreativeCollection>>();
+const memoryFavoriteCollections = new Map<string, Map<string, Set<string>>>();
+let memoryCollectionId = 0;
 
 export interface CollectedAdEntry {
   ad: AdCreative;
@@ -308,17 +311,24 @@ export async function getFavoriteIds(clientId: string): Promise<Set<string>> {
   return new Set(rows.map((row) => String(row.ad_id)));
 }
 
-export async function getFavoriteAds(clientId: string): Promise<StoredFavorite[]> {
+export async function getFavoriteAds(clientId: string, collectionId?: string): Promise<StoredFavorite[]> {
   if (!pool) {
-    return [...(memoryFavoriteAds.get(clientId)?.values() ?? [])].map((ad) => ({ ad: { ...ad, isFavorite: true } }));
+    const memberships = memoryFavoriteCollections.get(clientId);
+    return [...(memoryFavoriteAds.get(clientId)?.values() ?? [])]
+      .filter((ad) => !collectionId || memberships?.get(ad.id)?.has(collectionId))
+      .map((ad) => ({ ad: { ...ad, isFavorite: true } }));
   }
+  const collectionJoin = collectionId
+    ? "INNER JOIN favorite_collections fc ON fc.client_id = f.client_id AND fc.ad_id = f.ad_id AND fc.collection_id = ?"
+    : "";
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
     `SELECT c.normalized_payload, c.source_payload
      FROM favorites f
+     ${collectionJoin}
      INNER JOIN collected_ads c ON c.id = f.ad_id
      WHERE f.client_id = ?
      ORDER BY f.created_at DESC`,
-    [clientId],
+    collectionId ? [collectionId, clientId] : [clientId],
   );
   return rows.flatMap((row) => {
     const ad = parseJson(row.normalized_payload) as AdCreative | undefined;
@@ -327,19 +337,86 @@ export async function getFavoriteAds(clientId: string): Promise<StoredFavorite[]
   });
 }
 
-export async function addFavorite(clientId: string, ad: AdCreative): Promise<void> {
+export async function getCollections(clientId: string): Promise<CreativeCollection[]> {
+  if (!pool) return [...(memoryCollections.get(clientId)?.values() ?? [])];
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT c.id, c.name, c.created_at, COUNT(fc.ad_id) AS item_count
+     FROM collections c
+     LEFT JOIN favorite_collections fc
+       ON fc.client_id = c.client_id AND fc.collection_id = c.id
+     WHERE c.client_id = ?
+     GROUP BY c.id, c.name, c.created_at
+     ORDER BY c.updated_at DESC, c.id DESC`,
+    [clientId],
+  );
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    itemCount: Number(row.item_count),
+    createdAt: new Date(row.created_at as string | Date).toISOString(),
+  }));
+}
+
+export async function createCollection(clientId: string, name: string): Promise<CreativeCollection> {
   if (!pool) {
+    const collections = memoryCollections.get(clientId) ?? new Map<string, CreativeCollection>();
+    const existing = [...collections.values()].find((collection) => collection.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (existing) return existing;
+    const collection: CreativeCollection = {
+      id: String(++memoryCollectionId),
+      name,
+      itemCount: 0,
+      createdAt: new Date().toISOString(),
+    };
+    collections.set(collection.id, collection);
+    memoryCollections.set(clientId, collections);
+    return collection;
+  }
+  await pool.execute(
+    `INSERT INTO collections (client_id, name)
+     VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
+    [clientId, name],
+  );
+  const collections = await getCollections(clientId);
+  const collection = collections.find((item) => item.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+  if (!collection) throw new Error("Созданная коллекция не найдена.");
+  return collection;
+}
+
+export async function addFavorite(clientId: string, ad: AdCreative, collectionId?: string): Promise<boolean> {
+  if (!pool) {
+    if (collectionId && !memoryCollections.get(clientId)?.has(collectionId)) return false;
     const favorites = memoryFavorites.get(clientId) ?? new Set<string>();
     favorites.add(ad.id);
     memoryFavorites.set(clientId, favorites);
     const ads = memoryFavoriteAds.get(clientId) ?? new Map<string, AdCreative>();
     ads.set(ad.id, { ...ad, isFavorite: true });
     memoryFavoriteAds.set(clientId, ads);
-    return;
+    if (collectionId) {
+      const memberships = memoryFavoriteCollections.get(clientId) ?? new Map<string, Set<string>>();
+      const adCollections = memberships.get(ad.id) ?? new Set<string>();
+      adCollections.add(collectionId);
+      memberships.set(ad.id, adCollections);
+      memoryFavoriteCollections.set(clientId, memberships);
+      const collection = memoryCollections.get(clientId)?.get(collectionId);
+      if (collection) collection.itemCount = [...memberships.values()].filter((ids) => ids.has(collectionId)).length;
+    }
+    return true;
   }
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
+    if (collectionId) {
+      const [collections] = await connection.execute<mysql.RowDataPacket[]>(
+        "SELECT id FROM collections WHERE client_id = ? AND id = ? FOR UPDATE",
+        [clientId, collectionId],
+      );
+      if (!collections.length) {
+        await connection.rollback();
+        return false;
+      }
+    }
     await writeCollectedAds(connection, [{ ad }]);
     await connection.execute(
       `INSERT INTO favorites (client_id, ad_id, source)
@@ -347,7 +424,15 @@ export async function addFavorite(clientId: string, ad: AdCreative): Promise<voi
        ON DUPLICATE KEY UPDATE source = VALUES(source)`,
       [clientId, ad.id, ad.source],
     );
+    if (collectionId) {
+      await connection.execute(
+        `INSERT IGNORE INTO favorite_collections (client_id, ad_id, collection_id)
+         VALUES (?, ?, ?)`,
+        [clientId, ad.id, collectionId],
+      );
+    }
     await connection.commit();
+    return true;
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -360,6 +445,13 @@ export async function removeFavorite(clientId: string, adId: string): Promise<vo
   if (!pool) {
     memoryFavorites.get(clientId)?.delete(adId);
     memoryFavoriteAds.get(clientId)?.delete(adId);
+    const memberships = memoryFavoriteCollections.get(clientId);
+    const removedCollections = memberships?.get(adId);
+    memberships?.delete(adId);
+    for (const collectionId of removedCollections ?? []) {
+      const collection = memoryCollections.get(clientId)?.get(collectionId);
+      if (collection) collection.itemCount = [...(memberships?.values() ?? [])].filter((ids) => ids.has(collectionId)).length;
+    }
     return;
   }
   await pool.execute("DELETE FROM favorites WHERE client_id = ? AND ad_id = ?", [clientId, adId]);

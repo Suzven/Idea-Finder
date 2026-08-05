@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../server/config.js", () => ({ config: {} }));
 
-import { addFavorite, getFavoriteAds, getFavoriteIds, removeFavorite } from "../server/db.js";
+import { addFavorite, createCollection, getCollections, getFavoriteAds, getFavoriteIds, removeFavorite } from "../server/db.js";
 import type { AdCreative } from "../src/shared/types.js";
 
 const creative: AdCreative = {
@@ -38,5 +38,22 @@ describe("favorites storage", () => {
 
     await removeFavorite(clientId, creative.id);
     expect(await getFavoriteAds(clientId)).toEqual([]);
+  });
+
+  it("groups saved creatives into named collections", async () => {
+    const clientId = "favorite-collections-test";
+    const collection = await createCollection(clientId, "Winning videos");
+
+    expect(await addFavorite(clientId, creative, collection.id)).toBe(true);
+    expect(await getFavoriteAds(clientId, collection.id)).toHaveLength(1);
+    expect(await getCollections(clientId)).toEqual([{ ...collection, itemCount: 1 }]);
+
+    const otherCollection = await createCollection(clientId, "Empty collection");
+    expect(await getFavoriteAds(clientId, otherCollection.id)).toEqual([]);
+  });
+
+  it("rejects a collection owned by another client", async () => {
+    const collection = await createCollection("collection-owner", "Private");
+    expect(await addFavorite("different-client", creative, collection.id)).toBe(false);
   });
 });

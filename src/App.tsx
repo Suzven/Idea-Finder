@@ -1,13 +1,15 @@
 import { Bookmark, Menu, Settings2, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAds, fetchFavoriteAds, setFavorite } from "./api";
+import { createCollection, fetchAds, fetchCollections, fetchFavoriteAds, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
+import { CollectionPicker } from "./components/CollectionPicker";
+import { CollectionsPanel } from "./components/CollectionsPanel";
 import { CreativeModal } from "./components/CreativeModal";
 import { FilterPanel } from "./components/FilterPanel";
 import { LogsPage } from "./components/LogsPage";
 import { Sidebar } from "./components/Sidebar";
 import { ViewSettings } from "./components/ViewSettings";
-import { EMPTY_FILTERS, type AdCreative, type AdFilters, type AdSource } from "./shared/types";
+import { EMPTY_FILTERS, type AdCreative, type AdFilters, type AdSource, type CreativeCollection } from "./shared/types";
 
 function isFiltered(filters: AdFilters): boolean {
   return Object.entries(filters).some(([key, value]) => {
@@ -30,59 +32,133 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [savedOnly, setSavedOnly] = useState(false);
+  const [collections, setCollections] = useState<CreativeCollection[]>([]);
+  const [collectionsLoading, setCollectionsLoading] = useState(false);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
+  const [favoriteCandidate, setFavoriteCandidate] = useState<AdCreative | null>(null);
   const [columns, setColumns] = useState(4);
   const [compact, setCompact] = useState(false);
   const [infinite, setInfinite] = useState(true);
   const loaderRef = useRef<HTMLDivElement>(null);
+  const loadRequestRef = useRef(0);
+
+  const loadCollections = useCallback(async () => {
+    setCollectionsLoading(true);
+    try {
+      setCollections(await fetchCollections());
+    } catch {
+      setCollections([]);
+    } finally {
+      setCollectionsLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async (nextCursor?: string, append = false) => {
+    const requestId = ++loadRequestRef.current;
     append ? setLoadingMore(true) : setLoading(true);
+    if (!append) {
+      setItems([]);
+      setCursor(null);
+    }
     setError("");
     try {
       const result = savedOnly
-        ? await fetchFavoriteAds()
+        ? await fetchFavoriteAds(selectedCollectionId ?? undefined)
         : await fetchAds(source, appliedFilters, nextCursor);
-      setItems((current) => append ? [...current, ...result.items] : result.items);
+      if (requestId !== loadRequestRef.current) return;
+      setItems((current) => {
+        const nextItems = append ? [...current, ...result.items] : result.items;
+        return [...new Map(nextItems.map((ad) => [ad.id, ad])).values()];
+      });
       setCursor(result.nextCursor);
     } catch (loadError) {
+      if (requestId !== loadRequestRef.current) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить объявления");
       if (!append) setItems([]);
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [source, appliedFilters, savedOnly]);
+  }, [source, appliedFilters, savedOnly, selectedCollectionId]);
 
   useEffect(() => { if (activeView === "ads") void load(); }, [activeView, load]);
 
   useEffect(() => {
-    if (activeView !== "ads" || !infinite || !cursor || loadingMore) return;
+    if (savedOnly || favoriteCandidate) void loadCollections();
+  }, [favoriteCandidate, loadCollections, savedOnly]);
+
+  useEffect(() => {
+    if (activeView !== "ads" || savedOnly || !infinite || !cursor || loadingMore) return;
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) void load(cursor, true);
     }, { rootMargin: "400px" });
     if (loaderRef.current) observer.observe(loaderRef.current);
     return () => observer.disconnect();
-  }, [activeView, cursor, infinite, load, loadingMore]);
+  }, [activeView, cursor, infinite, load, loadingMore, savedOnly]);
 
   const changeSource = (nextSource: AdSource) => {
     if (nextSource === source) return;
     setSource(nextSource);
     setDraftFilters({ ...EMPTY_FILTERS });
     setAppliedFilters({ ...EMPTY_FILTERS });
+    loadRequestRef.current += 1;
+    setItems([]);
+    setCursor(null);
     setMobileNavOpen(false);
   };
 
-  const toggleFavorite = async (ad: AdCreative) => {
-    const nextValue = !ad.isFavorite;
-    const update = (item: AdCreative) => item.id === ad.id ? { ...item, isFavorite: nextValue, savedCount: item.savedCount + (nextValue ? 1 : -1) } : item;
+  const changeSavedOnly = (value: boolean) => {
+    if (value === savedOnly) return;
+    loadRequestRef.current += 1;
+    setItems([]);
+    setCursor(null);
+    setError("");
+    setSelectedCollectionId(null);
+    setSavedOnly(value);
+  };
+
+  const changeCollection = (collectionId: string | null) => {
+    if (collectionId === selectedCollectionId) return;
+    loadRequestRef.current += 1;
+    setItems([]);
+    setCursor(null);
+    setError("");
+    setSelectedCollectionId(collectionId);
+  };
+
+  const updateFavorite = (ad: AdCreative, nextValue: boolean) => {
+    const update = (item: AdCreative) => item.id === ad.id ? { ...item, isFavorite: nextValue, savedCount: Math.max(0, item.savedCount + (nextValue ? 1 : -1)) } : item;
     setItems((current) => current.map(update));
     setSelectedAd((current) => current?.id === ad.id ? update(current) : current);
+  };
+
+  const toggleFavorite = async (ad: AdCreative) => {
+    if (!ad.isFavorite) {
+      setFavoriteCandidate(ad);
+      return;
+    }
+    updateFavorite(ad, false);
     try {
-      await setFavorite(ad, nextValue);
+      await setFavorite(ad, false);
+      await loadCollections();
     } catch {
       setItems((current) => current.map((item) => item.id === ad.id ? ad : item));
       setSelectedAd((current) => current?.id === ad.id ? ad : current);
     }
+  };
+
+  const saveFavorite = async (ad: AdCreative, collectionId?: string) => {
+    await setFavorite(ad, true, collectionId);
+    updateFavorite(ad, true);
+    await loadCollections();
+  };
+
+  const addCollection = async (name: string) => {
+    const collection = await createCollection(name);
+    setCollections((current) => [collection, ...current.filter((item) => item.id !== collection.id)]);
+    return collection;
   };
 
   const visibleItems = useMemo(() => savedOnly ? items.filter((ad) => ad.isFavorite) : items, [items, savedOnly]);
@@ -91,7 +167,7 @@ export default function App() {
     <div className="app-shell">
       <div className={`mobile-sidebar-backdrop ${mobileNavOpen ? "show" : ""}`} onClick={() => setMobileNavOpen(false)} />
       <div className={`sidebar-wrap ${mobileNavOpen ? "open" : ""}`}>
-        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={setSavedOnly} />
+        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={changeSavedOnly} />
       </div>
 
       <main className="main-content">
@@ -109,13 +185,15 @@ export default function App() {
             </div>
           </section>
 
+          {savedOnly && <CollectionsPanel collections={collections} selectedId={selectedCollectionId} loading={collectionsLoading} onSelect={changeCollection} onCreate={addCollection} />}
+
           {!savedOnly && <FilterPanel source={source} filters={draftFilters} onChange={setDraftFilters} canApply={isFiltered(draftFilters)} loading={loading} onApply={() => setAppliedFilters({ ...draftFilters })} onClear={() => { setDraftFilters({ ...EMPTY_FILTERS }); setAppliedFilters({ ...EMPTY_FILTERS }); }} />}
 
           <section className="results-section">
             <div className="results-toolbar">
               <div><h2>{savedOnly ? "Мои заметки" : "Креативы"}</h2></div>
               <div className="toolbar-actions">
-                {isFiltered(appliedFilters) && <button className="filter-chip" onClick={() => { setAppliedFilters({ ...EMPTY_FILTERS }); setDraftFilters({ ...EMPTY_FILTERS }); }}>Фильтры активны <X size={14} /></button>}
+                {!savedOnly && isFiltered(appliedFilters) && <button className="filter-chip" onClick={() => { setAppliedFilters({ ...EMPTY_FILTERS }); setDraftFilters({ ...EMPTY_FILTERS }); }}>Фильтры активны <X size={14} /></button>}
                 <button className="button ghost small"><Bookmark size={16} />Сохранённые</button>
                 <button className="button ghost small" onClick={() => setSettingsOpen(true)}><Settings2 size={16} />Вид</button>
               </div>
@@ -137,6 +215,7 @@ export default function App() {
       </main>
 
       {selectedAd && <CreativeModal ad={selectedAd} onClose={() => setSelectedAd(null)} onFavorite={(ad) => void toggleFavorite(ad)} />}
+      {favoriteCandidate && <CollectionPicker ad={favoriteCandidate} collections={collections} loading={collectionsLoading} onClose={() => setFavoriteCandidate(null)} onCreate={addCollection} onSave={(collectionId) => saveFavorite(favoriteCandidate, collectionId)} />}
       {settingsOpen && <div className="drawer-backdrop" onClick={() => setSettingsOpen(false)} />}
       <ViewSettings open={settingsOpen} onClose={() => setSettingsOpen(false)} columns={columns} onColumnsChange={setColumns} compact={compact} onCompactChange={setCompact} infinite={infinite} onInfiniteChange={setInfinite} />
     </div>

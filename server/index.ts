@@ -9,7 +9,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteExpiredIntegrationLogs, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -158,7 +158,14 @@ app.get("/api/ads", async (request, response, next) => {
   }
 });
 
-const favoriteSchema = z.object({ source: z.enum(["meta", "tiktok"]), ad: adCreativeSchema });
+const collectionIdSchema = z.string().regex(/^\d+$/);
+const favoriteSchema = z.object({
+  source: z.enum(["meta", "tiktok"]),
+  ad: adCreativeSchema,
+  collectionId: collectionIdSchema.nullish(),
+});
+const favoriteQuerySchema = z.object({ collectionId: collectionIdSchema.optional() });
+const createCollectionSchema = z.object({ name: z.string().trim().min(1).max(120) });
 
 function snapshotUrlFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -168,7 +175,8 @@ function snapshotUrlFromPayload(payload: unknown): string | undefined {
 
 app.get("/api/favorites", async (request, response, next) => {
   try {
-    const stored = await getFavoriteAds(getClientId(request));
+    const { collectionId } = favoriteQuerySchema.parse(request.query);
+    const stored = await getFavoriteAds(getClientId(request), collectionId);
     const items = stored.map(({ ad, sourcePayload }) => {
       if (ad.source !== "meta") return { ...ad, isFavorite: true };
       const externalId = ad.id.replace(/^meta-/, "");
@@ -184,12 +192,30 @@ app.get("/api/favorites", async (request, response, next) => {
 
 app.post("/api/favorites/:adId", async (request, response, next) => {
   try {
-    const { source, ad } = favoriteSchema.parse(request.body);
+    const { source, ad, collectionId } = favoriteSchema.parse(request.body);
     if (ad.id !== request.params.adId || ad.source !== source) {
       throw new AppError(400, "FAVORITE_AD_MISMATCH", "Данные сохраняемого объявления не совпадают с адресом запроса.");
     }
-    await addFavorite(getClientId(request), ad);
+    const saved = await addFavorite(getClientId(request), ad, collectionId ?? undefined);
+    if (!saved) throw new AppError(404, "COLLECTION_NOT_FOUND", "Коллекция не найдена.");
     response.status(201).json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/collections", async (request, response, next) => {
+  try {
+    response.json({ items: await getCollections(getClientId(request)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/collections", async (request, response, next) => {
+  try {
+    const { name } = createCollectionSchema.parse(request.body);
+    response.status(201).json(await createCollection(getClientId(request), name));
   } catch (error) {
     next(error);
   }
