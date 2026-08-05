@@ -45,6 +45,46 @@ export interface CreativeCollection {
   createdAt: string;
 }
 
+export interface AICreativeFinding {
+  adId: string;
+  advertiser: string;
+  verdict: string;
+  evidence: string[];
+  improvements: string[];
+}
+
+export interface AITestIdea {
+  priority: "high" | "medium" | "low";
+  hypothesis: string;
+  creativeAngle: string;
+  offer: string;
+}
+
+export interface NicheAnalysis {
+  niche: string;
+  executiveSummary: string;
+  opportunityScore: number;
+  confidence: "high" | "medium" | "low";
+  demandSignals: string[];
+  winningPatterns: string[];
+  audienceInsights: string[];
+  landingInsights: string[];
+  risks: string[];
+  recommendations: string[];
+  testPlan: AITestIdea[];
+  creativeFindings: AICreativeFinding[];
+  caveats: string[];
+}
+
+export interface AIAnalysisResponse {
+  collection: CreativeCollection;
+  analysis: NicheAnalysis;
+  model: string;
+  analyzedCount: number;
+  totalCount: number;
+  warnings: string[];
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

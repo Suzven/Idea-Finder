@@ -13,6 +13,7 @@ import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, del
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
+import { analyzeCollection } from "./services/aiAnalysis.js";
 import type { AdFilters, AdSource, AdsResponse } from "../src/shared/types.js";
 
 const app = express();
@@ -167,6 +168,7 @@ const favoriteSchema = z.object({
 });
 const favoriteQuerySchema = z.object({ collectionId: collectionIdSchema.optional() });
 const createCollectionSchema = z.object({ name: z.string().trim().min(1).max(120) });
+const analyzeCollectionSchema = z.object({ collectionId: collectionIdSchema });
 
 function snapshotUrlFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -228,6 +230,24 @@ app.delete("/api/collections/:collectionId", async (request, response, next) => 
     const deletedFavorites = await deleteCollection(getClientId(request), collectionId);
     if (deletedFavorites === null) throw new AppError(404, "COLLECTION_NOT_FOUND", "Коллекция не найдена.");
     response.json({ ok: true, deletedFavorites });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai-analysis", async (request, response, next) => {
+  try {
+    const apiKey = String(request.header("x-openai-api-key") ?? "").trim();
+    if (!apiKey || apiKey.length > 500) {
+      throw new AppError(400, "OPENAI_KEY_REQUIRED", "Добавьте OpenAI API-ключ в Настройках.");
+    }
+    const { collectionId } = analyzeCollectionSchema.parse(request.body);
+    const clientId = getClientId(request);
+    const collection = (await getCollections(clientId)).find((item) => item.id === collectionId);
+    if (!collection) throw new AppError(404, "COLLECTION_NOT_FOUND", "Коллекция не найдена.");
+    const items = await getFavoriteAds(clientId, collectionId);
+    if (!items.length) throw new AppError(400, "COLLECTION_EMPTY", "В коллекции нет креативов для анализа.");
+    response.json(await analyzeCollection({ apiKey, clientId, collection, items }));
   } catch (error) {
     next(error);
   }

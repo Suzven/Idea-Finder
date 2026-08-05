@@ -2,15 +2,16 @@ import { Activity, BarChart3, Bookmark, Radar, Settings2 } from "lucide-react";
 import type { AdSource } from "../shared/types";
 
 interface SidebarProps {
-  activeView: "ads" | "logs";
-  onViewChange: (view: "ads" | "logs") => void;
+  activeView: "ads" | "logs" | "analytics";
+  onViewChange: (view: "ads" | "logs" | "analytics") => void;
   source: AdSource;
   onSourceChange: (source: AdSource) => void;
   savedOnly: boolean;
   onSavedOnlyChange: (value: boolean) => void;
+  onOpenSettings: () => void;
 }
 
-export function Sidebar({ activeView, onViewChange, source, onSourceChange, savedOnly, onSavedOnlyChange }: SidebarProps) {
+export function Sidebar({ activeView, onViewChange, source, onSourceChange, savedOnly, onSavedOnlyChange, onOpenSettings }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -39,15 +40,14 @@ export function Sidebar({ activeView, onViewChange, source, onSourceChange, save
           <span>Логи</span>
           <i className="live-dot" />
         </button>
-        <button className="nav-item muted" disabled>
+        <button className={`nav-item ${activeView === "analytics" ? "active" : ""}`} onClick={() => onViewChange("analytics")}>
           <BarChart3 size={18} />
-          <span>Аналитика</span>
-          <span className="soon">скоро</span>
+          <span>AI Аналитика</span>
         </button>
       </nav>
 
       <div className="sidebar-footer">
-        <button className="nav-item"><Settings2 size={18} /><span>Настройки</span></button>
+        <button className="nav-item" onClick={onOpenSettings}><Settings2 size={18} /><span>Настройки</span></button>
         <div className="profile-row">
           <span className="profile-avatar">OS</span>
           <span><strong>Workspace</strong><small>Private account</small></span>

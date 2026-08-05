@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -77,6 +77,14 @@ export async function createCollection(name: string): Promise<CreativeCollection
 export async function deleteCollection(collectionId: string): Promise<{ ok: true; deletedFavorites: number }> {
   return request<{ ok: true; deletedFavorites: number }>(`/api/collections/${encodeURIComponent(collectionId)}`, {
     method: "DELETE",
+  });
+}
+
+export async function analyzeCreativeCollection(collectionId: string, apiKey: string): Promise<AIAnalysisResponse> {
+  return request<AIAnalysisResponse>("/api/ai-analysis", {
+    method: "POST",
+    headers: { "x-openai-api-key": apiKey },
+    body: JSON.stringify({ collectionId }),
   });
 }
 

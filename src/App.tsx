@@ -2,6 +2,8 @@ import { Bookmark, Menu, Settings2, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createCollection, deleteCollection, fetchAds, fetchCollections, fetchFavoriteAds, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
+import { AIAnalyticsPage } from "./components/AIAnalyticsPage";
+import { ApiSettings } from "./components/ApiSettings";
 import { CollectionPicker } from "./components/CollectionPicker";
 import { CollectionsPanel } from "./components/CollectionsPanel";
 import { CreativeModal } from "./components/CreativeModal";
@@ -19,7 +21,7 @@ function isFiltered(filters: AdFilters): boolean {
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState<"ads" | "logs">("ads");
+  const [activeView, setActiveView] = useState<"ads" | "logs" | "analytics">("ads");
   const [source, setSource] = useState<AdSource>("meta");
   const [draftFilters, setDraftFilters] = useState<AdFilters>({ ...EMPTY_FILTERS });
   const [appliedFilters, setAppliedFilters] = useState<AdFilters>({ ...EMPTY_FILTERS });
@@ -29,7 +31,9 @@ export default function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [selectedAd, setSelectedAd] = useState<AdCreative | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [viewSettingsOpen, setViewSettingsOpen] = useState(false);
+  const [apiSettingsOpen, setApiSettingsOpen] = useState(false);
+  const [settingsRevision, setSettingsRevision] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [savedOnly, setSavedOnly] = useState(false);
   const [collections, setCollections] = useState<CreativeCollection[]>([]);
@@ -179,16 +183,16 @@ export default function App() {
     <div className="app-shell">
       <div className={`mobile-sidebar-backdrop ${mobileNavOpen ? "show" : ""}`} onClick={() => setMobileNavOpen(false)} />
       <div className={`sidebar-wrap ${mobileNavOpen ? "open" : ""}`}>
-        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={changeSavedOnly} />
+        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={changeSavedOnly} onOpenSettings={() => { setApiSettingsOpen(true); setMobileNavOpen(false); }} />
       </div>
 
       <main className="main-content">
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Открыть меню"><Menu size={21} /></button>
-          <div className="breadcrumb"><span>{activeView === "logs" ? "Система" : "Библиотека рекламы"}</span><span>/</span><strong>{activeView === "logs" ? "Логи интеграций" : source === "meta" ? "Meta Ads" : "TikTok Ads"}</strong></div>
+          <div className="breadcrumb"><span>{activeView === "logs" ? "Система" : activeView === "analytics" ? "Рабочее пространство" : "Библиотека рекламы"}</span><span>/</span><strong>{activeView === "logs" ? "Логи интеграций" : activeView === "analytics" ? "AI Аналитика" : source === "meta" ? "Meta Ads" : "TikTok Ads"}</strong></div>
         </header>
 
-        {activeView === "logs" ? <LogsPage /> : <div className="page-wrap">
+        {activeView === "logs" ? <LogsPage /> : activeView === "analytics" ? <AIAnalyticsPage onOpenSettings={() => setApiSettingsOpen(true)} settingsRevision={settingsRevision} /> : <div className="page-wrap">
           <section className="page-intro">
             <div>
               <span className="eyebrow"><Sparkles size={13} /> AD INTELLIGENCE</span>
@@ -207,7 +211,7 @@ export default function App() {
               <div className="toolbar-actions">
                 {!savedOnly && isFiltered(appliedFilters) && <button className="filter-chip" onClick={() => { setAppliedFilters({ ...EMPTY_FILTERS }); setDraftFilters({ ...EMPTY_FILTERS }); }}>Фильтры активны <X size={14} /></button>}
                 <button className="button ghost small"><Bookmark size={16} />Сохранённые</button>
-                <button className="button ghost small" onClick={() => setSettingsOpen(true)}><Settings2 size={16} />Вид</button>
+                <button className="button ghost small" onClick={() => setViewSettingsOpen(true)}><Settings2 size={16} />Вид</button>
               </div>
             </div>
 
@@ -228,8 +232,10 @@ export default function App() {
 
       {selectedAd && <CreativeModal ad={selectedAd} onClose={() => setSelectedAd(null)} onFavorite={(ad) => void toggleFavorite(ad)} />}
       {favoriteCandidate && <CollectionPicker ad={favoriteCandidate} collections={collections} loading={collectionsLoading} onClose={() => setFavoriteCandidate(null)} onCreate={addCollection} onSave={(collectionId) => saveFavorite(favoriteCandidate, collectionId)} />}
-      {settingsOpen && <div className="drawer-backdrop" onClick={() => setSettingsOpen(false)} />}
-      <ViewSettings open={settingsOpen} onClose={() => setSettingsOpen(false)} columns={columns} onColumnsChange={setColumns} compact={compact} onCompactChange={setCompact} infinite={infinite} onInfiniteChange={setInfinite} />
+      {viewSettingsOpen && <div className="drawer-backdrop" onClick={() => setViewSettingsOpen(false)} />}
+      <ViewSettings open={viewSettingsOpen} onClose={() => setViewSettingsOpen(false)} columns={columns} onColumnsChange={setColumns} compact={compact} onCompactChange={setCompact} infinite={infinite} onInfiniteChange={setInfinite} />
+      {apiSettingsOpen && <div className="drawer-backdrop" onClick={() => setApiSettingsOpen(false)} />}
+      <ApiSettings open={apiSettingsOpen} onClose={() => setApiSettingsOpen(false)} onSaved={() => setSettingsRevision((value) => value + 1)} />
     </div>
   );
 }

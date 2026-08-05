@@ -379,7 +379,7 @@ function releaseSnapshotSlot(): void {
   waiters.shift()?.();
 }
 
-async function getMetaBrowser(): Promise<Browser> {
+export async function getMetaBrowser(): Promise<Browser> {
   if (browserPromise) return browserPromise;
   const executablePath = [
     config.metaChromiumExecutablePath,
