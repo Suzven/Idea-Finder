@@ -79,10 +79,10 @@ export interface IntegrationLogsResponse {
 export interface AdFilters {
   search: string;
   searchMode: "all" | "exact" | "media";
-  country: string;
+  country: string[];
   app: string;
   mediaType: "all" | MediaType;
-  language: string;
+  language: string[];
   dateFrom: string;
   dateTo: string;
   platform: string;
@@ -98,10 +98,10 @@ export interface AdFilters {
 export const EMPTY_FILTERS: AdFilters = {
   search: "",
   searchMode: "all",
-  country: "",
+  country: ["US"],
   app: "",
   mediaType: "all",
-  language: "",
+  language: [],
   dateFrom: "",
   dateTo: "",
   platform: "",

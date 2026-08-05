@@ -36,6 +36,7 @@ function parseReach(value: string | undefined): number | undefined {
 
 export async function fetchTikTokAds(filters: Partial<AdFilters>, cursor: string | undefined, limit: number): Promise<AdsResponse> {
   if (!config.tiktokAccessToken) throw new Error("TIKTOK_ACCESS_TOKEN не настроен");
+  const selectedCountry = filters.country?.find((country) => country !== "ALL");
   const fields = [
     "ad.id", "ad.first_shown_date", "ad.last_shown_date", "ad.status", "ad.videos",
     "ad.image_urls", "ad.reach", "advertiser.business_id", "advertiser.business_name", "advertiser.paid_for_by",
@@ -46,7 +47,7 @@ export async function fetchTikTokAds(filters: Partial<AdFilters>, cursor: string
         min: dateForApi(filters.dateFrom, 30),
         max: dateForApi(filters.dateTo, 0),
       },
-      ...(filters.country ? { country_code: filters.country } : {}),
+      ...(selectedCountry ? { country_code: selectedCountry } : {}),
     },
     max_count: Math.min(limit, 50),
     ...(filters.advertiser || filters.search ? { search_term: filters.advertiser || filters.search } : {}),
@@ -94,8 +95,8 @@ export async function fetchTikTokAds(filters: Partial<AdFilters>, cursor: string
         id: `tiktok-${id}`,
         source: "tiktok",
         advertiser: advertiser.business_name ?? `Advertiser ${advertiser.business_id ?? id}`,
-        country: filters.country ?? "EU",
-        countryName: filters.country ?? "Европейская экономическая зона",
+        country: selectedCountry ?? "EU",
+        countryName: selectedCountry ?? "Европейская экономическая зона",
         platforms: ["TikTok"],
         mediaType: video ? "video" : "image",
         mediaUrl: video ?? image ?? "",

@@ -4,9 +4,18 @@ import { filterAds } from "../server/services/filterAds.js";
 
 describe("filterAds", () => {
   it("filters Meta ads by country and media type", () => {
-    const result = filterAds(demoAds.meta, { country: "DE", mediaType: "image" });
+    const result = filterAds(demoAds.meta, { country: ["DE"], mediaType: "image" });
     expect(result).toHaveLength(1);
     expect(result[0].country).toBe("DE");
+  });
+
+  it("supports multiple countries and languages", () => {
+    const result = filterAds(demoAds.meta, { country: ["DE", "FR"], language: ["de", "fr"] });
+    expect(result.map((ad) => ad.country)).toEqual(["DE", "FR"]);
+  });
+
+  it("treats ALL as no country restriction", () => {
+    expect(filterAds(demoAds.meta, { country: ["ALL"] })).toHaveLength(demoAds.meta.length);
   });
 
   it("supports advertiser search and numeric ranges", () => {

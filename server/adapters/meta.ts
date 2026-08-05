@@ -73,11 +73,12 @@ function parseReach(ad: MetaAd): number | undefined {
 
 export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string | undefined, limit: number): Promise<AdsResponse> {
   if (!config.metaAccessToken) throw new Error("META_ACCESS_TOKEN не настроен");
+  const selectedCountries = filters.country?.length ? filters.country : ["US"];
   const params = new URLSearchParams({
     access_token: config.metaAccessToken,
     ad_type: "ALL",
     ad_active_status: "ALL",
-    ad_reached_countries: JSON.stringify(filters.country ? [filters.country] : ["ALL"]),
+    ad_reached_countries: JSON.stringify(selectedCountries),
     fields: [
       "id", "page_id", "page_name", "ad_creation_time", "ad_delivery_start_time",
       "ad_delivery_stop_time", "ad_creative_bodies", "ad_creative_link_captions",
@@ -91,7 +92,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
   if (filters.searchMode === "exact") params.set("search_type", "KEYWORD_EXACT_PHRASE");
   if (filters.dateFrom) params.set("ad_delivery_date_min", filters.dateFrom);
   if (filters.dateTo) params.set("ad_delivery_date_max", filters.dateTo);
-  if (filters.language) params.set("languages", JSON.stringify([filters.language]));
+  if (filters.language?.length) params.set("languages", JSON.stringify(filters.language));
   if (filters.mediaType === "image" || filters.mediaType === "video") {
     params.set("media_type", filters.mediaType.toUpperCase());
   }
@@ -145,8 +146,8 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
         id: `meta-${ad.id}`,
         source: "meta",
         advertiser: ad.page_name ?? `Страница ${ad.page_id ?? ad.id}`,
-        country: filters.country ?? "ALL",
-        countryName: filters.country ?? "Все страны",
+        country: selectedCountries.length === 1 ? selectedCountries[0] : `${selectedCountries[0]}+${selectedCountries.length - 1}`,
+        countryName: selectedCountries.join(", "),
         platforms: (ad.publisher_platforms ?? ["Facebook"]).map((value) => value.replaceAll("_", " ")),
         mediaType: filters.mediaType === "video" ? "video" : "image",
         mediaUrl: "",

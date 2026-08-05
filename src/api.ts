@@ -39,7 +39,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export async function fetchAds(source: AdSource, filters: AdFilters, cursor?: string): Promise<AdsResponse> {
   const params = new URLSearchParams({ source, limit: "12" });
   Object.entries(filters).forEach(([key, value]) => {
-    if (value && value !== "all") params.set(key, value);
+    if (Array.isArray(value)) {
+      if (value.length > 0) params.set(key, value.join(","));
+    } else if (value && value !== "all") {
+      params.set(key, value);
+    }
   });
   if (cursor) params.set("cursor", cursor);
   return request<AdsResponse>(`/api/ads?${params}`);

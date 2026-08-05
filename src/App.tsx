@@ -10,7 +10,10 @@ import { ViewSettings } from "./components/ViewSettings";
 import { EMPTY_FILTERS, type AdCreative, type AdFilters, type AdSource } from "./shared/types";
 
 function isFiltered(filters: AdFilters): boolean {
-  return Object.entries(filters).some(([key, value]) => key !== "searchMode" && key !== "mediaType" && Boolean(value)) || filters.mediaType !== "all";
+  return Object.entries(filters).some(([key, value]) => {
+    if (key === "searchMode" || key === "mediaType") return false;
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  }) || filters.mediaType !== "all";
 }
 
 export default function App() {

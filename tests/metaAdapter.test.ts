@@ -35,16 +35,16 @@ describe("fetchMetaAds", () => {
 
     const result = await fetchMetaAds({
       search: "nike",
-      country: "DE",
-      language: "en",
+      country: ["DE", "US"],
+      language: ["en", "de"],
       mediaType: "video",
       platform: "Instagram",
     }, undefined, 1);
 
     const requestUrl = new URL(String(fetchMock.mock.calls[0][0]));
     expect(requestUrl.searchParams.get("search_terms")).toBe("nike");
-    expect(requestUrl.searchParams.get("ad_reached_countries")).toBe('["DE"]');
-    expect(requestUrl.searchParams.get("languages")).toBe('["en"]');
+    expect(requestUrl.searchParams.get("ad_reached_countries")).toBe('["DE","US"]');
+    expect(requestUrl.searchParams.get("languages")).toBe('["en","de"]');
     expect(requestUrl.searchParams.get("media_type")).toBe("VIDEO");
     expect(requestUrl.searchParams.get("publisher_platforms")).toBe('["INSTAGRAM"]');
     expect(requestUrl.searchParams.get("fields")).toContain("ad_creative_link_captions");
@@ -82,11 +82,26 @@ describe("fetchMetaAds", () => {
       }),
     }));
 
-    await expect(fetchMetaAds({ country: "DE" }, undefined, 1)).rejects.toMatchObject({
+    await expect(fetchMetaAds({ country: ["DE"] }, undefined, 1)).rejects.toMatchObject({
       status: 401,
       code: "META_TOKEN_EXPIRED",
       message: "Токен Meta истёк, был отозван или больше не действителен.",
       action: expect.stringContaining("META_ACCESS_TOKEN"),
     });
+  });
+
+  it("uses US as the default country when no filters are supplied", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [] }),
+      headers: new Headers(),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchMetaAds({}, undefined, 12);
+
+    const requestUrl = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(requestUrl.searchParams.get("ad_reached_countries")).toBe('["US"]');
   });
 });

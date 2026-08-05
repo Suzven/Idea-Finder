@@ -21,16 +21,22 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" }, contentS
 app.use(compression());
 app.use(express.json({ limit: "100kb" }));
 
+function parseList(value: unknown): unknown {
+  if (value === undefined || value === "") return undefined;
+  const rawValues = Array.isArray(value) ? value : String(value).split(",");
+  return [...new Set(rawValues.map((item) => String(item).trim()).filter(Boolean))];
+}
+
 const querySchema = z.object({
   source: z.enum(["meta", "tiktok"]).default("meta"),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(50).default(12),
   search: z.string().max(100).optional(),
   searchMode: z.enum(["all", "exact", "media"]).optional(),
-  country: z.string().max(3).optional(),
+  country: z.preprocess(parseList, z.array(z.string().regex(/^(?:ALL|[A-Z]{2})$/)).max(250).optional()),
   app: z.string().max(250).optional(),
   mediaType: z.enum(["all", "image", "video", "carousel"]).optional(),
-  language: z.string().max(10).optional(),
+  language: z.preprocess(parseList, z.array(z.string().regex(/^[a-z]{2,3}$/)).max(200).optional()),
   dateFrom: z.string().max(10).optional(),
   dateTo: z.string().max(10).optional(),
   platform: z.string().max(40).optional(),

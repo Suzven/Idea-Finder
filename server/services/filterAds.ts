@@ -20,9 +20,10 @@ export function filterAds(items: AdCreative[], filters: Partial<AdFilters>): AdC
         : search.split(/\s+/).every((word) => includes(haystack, word));
       if (!matches) return false;
     }
-    if (filters.country && ad.country !== filters.country) return false;
+    const countries = filters.country?.filter((country) => country !== "ALL") ?? [];
+    if (countries.length && !countries.includes(ad.country)) return false;
     if (filters.mediaType && filters.mediaType !== "all" && ad.mediaType !== filters.mediaType) return false;
-    if (filters.language && ad.language !== filters.language) return false;
+    if (filters.language?.length && !filters.language.includes(ad.language)) return false;
     if (filters.platform && !ad.platforms.some((platform) => includes(platform, filters.platform!))) return false;
     if (filters.app && !includes(ad.appUrl ?? "", filters.app)) return false;
     if (filters.advertiser && !includes(ad.advertiser, filters.advertiser)) return false;
