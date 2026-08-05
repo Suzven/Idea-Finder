@@ -2,7 +2,7 @@ import {
   Activity, AlertTriangle, Braces, CheckCircle2, ChevronLeft, ChevronRight,
   Clock3, Database, RefreshCw, Search, Server, Trash2, X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { clearIntegrationLogs, fetchIntegrationLog, fetchIntegrationLogs } from "../api";
 import type { AdSource, IntegrationLogDetail, IntegrationLogStatus, IntegrationLogsResponse, IntegrationLogSummary } from "../shared/types";
 
@@ -172,11 +172,6 @@ export function LogsPage() {
 
   const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  const successRate = useMemo(() => {
-    const completed = (data?.stats.success ?? 0) + (data?.stats.errors ?? 0);
-    return completed ? Math.round(((data?.stats.success ?? 0) / completed) * 100) : 0;
-  }, [data]);
-
   return <div className="page-wrap logs-page">
     <section className="page-intro logs-intro">
       <div>
@@ -192,9 +187,6 @@ export function LogsPage() {
 
     <section className="log-kpis">
       <article><span className="kpi-icon violet"><Database size={19} /></span><div><small>Всего записей</small><strong>{data?.total ?? 0}</strong><em>хранятся 7 дней</em></div></article>
-      <article><span className="kpi-icon green"><CheckCircle2 size={19} /></span><div><small>Успешность</small><strong>{successRate}%</strong><em>{data?.stats.success ?? 0} успешных</em></div></article>
-      <article><span className="kpi-icon red"><AlertTriangle size={19} /></span><div><small>Ошибки</small><strong>{data?.stats.errors ?? 0}</strong><em>{data?.stats.inProgress ?? 0} выполняются</em></div></article>
-      <article><span className="kpi-icon cyan"><Clock3 size={19} /></span><div><small>Среднее время</small><strong>{formatDuration(data?.stats.averageDurationMs ?? 0)}</strong><em>по текущей выборке</em></div></article>
     </section>
 
     <section className="logs-panel">

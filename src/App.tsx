@@ -1,4 +1,4 @@
-import { Bell, Bookmark, ChevronDown, LayoutGrid, Menu, Search, Settings2, Sparkles, X } from "lucide-react";
+import { Bookmark, Menu, Settings2, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchAds, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
@@ -20,9 +20,6 @@ export default function App() {
   const [appliedFilters, setAppliedFilters] = useState<AdFilters>({ ...EMPTY_FILTERS });
   const [items, setItems] = useState<AdCreative[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
-  const [total, setTotal] = useState(0);
-  const [mode, setMode] = useState<"demo" | "live">("demo");
-  const [limitations, setLimitations] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
@@ -42,9 +39,6 @@ export default function App() {
       const result = await fetchAds(source, appliedFilters, nextCursor);
       setItems((current) => append ? [...current, ...result.items] : result.items);
       setCursor(result.nextCursor);
-      setTotal(result.total);
-      setMode(result.mode);
-      setLimitations(result.limitations ?? []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить объявления");
       if (!append) setItems([]);
@@ -87,8 +81,6 @@ export default function App() {
   };
 
   const visibleItems = useMemo(() => savedOnly ? items.filter((ad) => ad.isFavorite) : items, [items, savedOnly]);
-  const favoriteCount = items.filter((ad) => ad.isFavorite).length;
-  const countriesCount = new Set(items.map((ad) => ad.country)).size;
 
   return (
     <div className="app-shell">
@@ -101,11 +93,6 @@ export default function App() {
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Открыть меню"><Menu size={21} /></button>
           <div className="breadcrumb"><span>{activeView === "logs" ? "Система" : "Библиотека рекламы"}</span><span>/</span><strong>{activeView === "logs" ? "Логи интеграций" : source === "meta" ? "Meta Ads" : "TikTok Ads"}</strong></div>
-          <div className="top-actions">
-            <div className="global-search"><Search size={16} /><span>Быстрый поиск</span><kbd>⌘ K</kbd></div>
-            <button aria-label="Уведомления"><Bell size={19} /><i /></button>
-            <button className="user-button"><span>OS</span><ChevronDown size={14} /></button>
-          </div>
         </header>
 
         {activeView === "logs" ? <LogsPage /> : <div className="page-wrap">
@@ -115,18 +102,13 @@ export default function App() {
               <h1>{savedOnly ? "Сохранённые креативы" : source === "meta" ? "Реклама Meta" : "TikTok Ads"}</h1>
               <p>{savedOnly ? "Ваша личная библиотека сильных рекламных решений." : "Находите устойчивые связки, изучайте подачу и сохраняйте идеи для новых кампаний."}</p>
             </div>
-            <div className="summary-stats">
-              <span><small>Найдено</small><strong>{total}</strong></span>
-              <span><small>Географий</small><strong>{countriesCount}</strong></span>
-              <span><small>В заметках</small><strong>{favoriteCount}</strong></span>
-            </div>
           </section>
 
           {!savedOnly && <FilterPanel source={source} filters={draftFilters} onChange={setDraftFilters} canApply={isFiltered(draftFilters)} loading={loading} onApply={() => setAppliedFilters({ ...draftFilters })} onClear={() => { setDraftFilters({ ...EMPTY_FILTERS }); setAppliedFilters({ ...EMPTY_FILTERS }); }} />}
 
           <section className="results-section">
             <div className="results-toolbar">
-              <div><h2>{savedOnly ? "Мои заметки" : "Креативы"}</h2><span>{visibleItems.length} из {total} · {mode === "live" ? "живые данные" : "демо-режим"}</span></div>
+              <div><h2>{savedOnly ? "Мои заметки" : "Креативы"}</h2></div>
               <div className="toolbar-actions">
                 {isFiltered(appliedFilters) && <button className="filter-chip" onClick={() => { setAppliedFilters({ ...EMPTY_FILTERS }); setDraftFilters({ ...EMPTY_FILTERS }); }}>Фильтры активны <X size={14} /></button>}
                 <button className="button ghost small"><Bookmark size={16} />Сохранённые</button>
@@ -134,7 +116,6 @@ export default function App() {
               </div>
             </div>
 
-            {limitations.map((limitation) => <div className="limitation" key={limitation}>{limitation}</div>)}
             {error && <div className="error-state"><strong>Не удалось получить данные</strong><span>{error}</span><button className="button primary" onClick={() => void load()}>Повторить</button></div>}
             {loading && !items.length ? <div className="skeleton-grid">{Array.from({ length: 8 }).map((_, index) => <span key={index} />)}</div> : null}
             {!loading && !error && !visibleItems.length ? <div className="empty-state"><span><Bookmark size={25} /></span><h3>{savedOnly ? "Пока ничего не сохранено" : "Ничего не найдено"}</h3><p>{savedOnly ? "Добавляйте сильные объявления в заметки — они появятся здесь." : "Попробуйте расширить географию или очистить часть фильтров."}</p></div> : null}

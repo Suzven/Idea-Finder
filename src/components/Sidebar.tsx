@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Bookmark, CircleHelp, Radar, Settings2 } from "lucide-react";
+import { Activity, BarChart3, Bookmark, Radar, Settings2 } from "lucide-react";
 import type { AdSource } from "../shared/types";
 
 interface SidebarProps {
@@ -48,7 +48,6 @@ export function Sidebar({ activeView, onViewChange, source, onSourceChange, save
 
       <div className="sidebar-footer">
         <button className="nav-item"><Settings2 size={18} /><span>Настройки</span></button>
-        <button className="nav-item"><CircleHelp size={18} /><span>Документация</span></button>
         <div className="profile-row">
           <span className="profile-avatar">OS</span>
           <span><strong>Workspace</strong><small>Private account</small></span>
