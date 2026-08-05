@@ -3,6 +3,7 @@ import type { BrowserContext, Page, Response as PlaywrightResponse } from "playw
 import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
+import { createAuthenticatedSocks5Bridge, type SocksProxyBridge } from "./socksProxyBridge.js";
 
 export interface ReviewProxyCredentials {
   server: string;
@@ -272,7 +273,7 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
   },
 };
 
-async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo }> {
+async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo; close: () => Promise<void> }> {
   const browser = await getMetaBrowser();
   const rawVersion = browser.version();
   const version = rawVersion.match(/\d+(?:\.\d+){1,3}/)?.[0] ?? rawVersion;
@@ -287,28 +288,39 @@ async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ 
       "Укажите адрес вместе с протоколом, например http://host:port или socks5://host:port.",
     );
   }
+  let bridge: SocksProxyBridge | undefined;
+  const needsSocksAuthBridge = Boolean(proxyServer?.toLowerCase().startsWith("socks5://") && (proxySettings?.username || proxySettings?.password));
+  if (proxyServer && needsSocksAuthBridge) {
+    bridge = await createAuthenticatedSocks5Bridge(proxyServer, proxySettings?.username, proxySettings?.password);
+  }
   const proxy = proxyServer ? {
-    server: proxyServer,
-    ...(proxySettings?.username ? { username: proxySettings.username } : {}),
-    ...(proxySettings?.password ? { password: proxySettings.password } : {}),
+    server: bridge?.server ?? proxyServer,
+    ...(!bridge && proxySettings?.username ? { username: proxySettings.username } : {}),
+    ...(!bridge && proxySettings?.password ? { password: proxySettings.password } : {}),
     ...(proxySettings?.bypass ? { bypass: proxySettings.bypass } : {}),
   } : undefined;
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 1_000 },
-    screen: { width: 1920, height: 1080 },
-    deviceScaleFactor: 1,
-    colorScheme: "light",
-    locale: "en-US",
-    timezoneId: "UTC",
-    userAgent,
-    extraHTTPHeaders: {
-      "Accept-Language": "en-US,en;q=0.9",
-      "sec-ch-ua": `"Chromium";v="${majorVersion}", "Not_A Brand";v="99"`,
-      "sec-ch-ua-mobile": "?0",
-      "sec-ch-ua-platform": "\"Linux\"",
-    },
-    ...(proxy ? { proxy } : {}),
-  });
+  let context: BrowserContext;
+  try {
+    context = await browser.newContext({
+      viewport: { width: 1440, height: 1_000 },
+      screen: { width: 1920, height: 1080 },
+      deviceScaleFactor: 1,
+      colorScheme: "light",
+      locale: "en-US",
+      timezoneId: "UTC",
+      userAgent,
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+        "sec-ch-ua": `"Chromium";v="${majorVersion}", "Not_A Brand";v="99"`,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Linux\"",
+      },
+      ...(proxy ? { proxy } : {}),
+    });
+  } catch (error) {
+    await bridge?.close();
+    throw error;
+  }
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
@@ -320,7 +332,17 @@ async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ 
     parsed.password = "";
     proxyLabel = parsed.toString().replace(/\/$/, "");
   }
-  return { context, browser: { version, userAgent, ...(proxyLabel ? { proxy: proxyLabel } : {}) } };
+  return {
+    context,
+    browser: { version, userAgent, ...(proxyLabel ? { proxy: proxyLabel } : {}) },
+    close: async () => {
+      try {
+        await context.close();
+      } finally {
+        await bridge?.close();
+      }
+    },
+  };
 }
 
 export async function testReviewProxyConnection(proxySettings?: ReviewProxyCredentials): Promise<ReviewProxyTestResult> {
@@ -330,6 +352,7 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
   const startedAt = Date.now();
   const logs: ReviewProxyTestLog[] = [];
   let context: BrowserContext | undefined;
+  let closeContext: (() => Promise<void>) | undefined;
   let browserInfo: ReviewBrowserInfo | undefined;
   const proxyLabel = (() => {
     try {
@@ -366,12 +389,14 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
   addLog("proxy", "started", "Настройки прокси получены сервером.", {
     proxy: proxyLabel,
     authentication: Boolean(proxySettings.username || proxySettings.password),
+    socksAuthBridge: Boolean(proxySettings.server.toLowerCase().startsWith("socks5://") && (proxySettings.username || proxySettings.password)),
     bypass: Boolean(proxySettings.bypass),
   });
   try {
     addLog("browser", "started", "Запускаем изолированный контекст Chromium через прокси.");
     const created = await createContext(proxySettings);
     context = created.context;
+    closeContext = created.close;
     browserInfo = created.browser;
     addLog("browser", "success", `Chromium ${created.browser.version} запущен.`, {
       version: created.browser.version,
@@ -421,9 +446,9 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
       logs,
     };
   } finally {
-    if (context) {
+    if (closeContext) {
       try {
-        await context.close();
+        await closeContext();
         addLog("cleanup", "success", "Контекст Chromium закрыт.");
       } catch (error) {
         addLog("cleanup", "error", error instanceof Error ? error.message : String(error));
@@ -576,7 +601,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       message: lastError || `Компания не найдена в ${adapter.label} ни по одному варианту адреса.`,
     };
   } finally {
-    await context.close();
+    await created.close();
   }
 }
 
