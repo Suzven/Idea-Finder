@@ -1,6 +1,7 @@
 import compression from "compression";
 import express from "express";
 import helmet from "helmet";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -287,19 +288,26 @@ if (existsSync(staticDir)) {
 }
 
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+  const traceId = randomUUID();
   const message = error instanceof z.ZodError
     ? "Некорректные параметры запроса"
     : error instanceof Error ? error.message : "Неизвестная ошибка";
-  console.error(error);
+  console.error(`[${traceId}]`, error);
   if (error instanceof AppError) {
     response.status(error.status).json({
       error: message,
       code: error.code,
+      traceId,
       ...(error.action ? { action: error.action } : {}),
+      ...(error.details ? { details: error.details } : {}),
     });
     return;
   }
-  response.status(error instanceof z.ZodError ? 400 : 502).json({ error: message });
+  response.status(error instanceof z.ZodError ? 400 : 502).json({
+    error: message,
+    code: error instanceof z.ZodError ? "INVALID_REQUEST" : "INTERNAL_ERROR",
+    traceId,
+  });
 });
 
 const server = app.listen(config.port, "0.0.0.0", () => {

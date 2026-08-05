@@ -11,6 +11,28 @@ export interface ResolvedAdMedia {
 
 const clientIdKey = "spyservice-client-id";
 
+interface ApiErrorPayload {
+  error?: string;
+  code?: string;
+  action?: string;
+  traceId?: string;
+  details?: Record<string, unknown>;
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code = "REQUEST_FAILED",
+    public readonly action?: string,
+    public readonly traceId?: string,
+    public readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 function getClientId(): string {
   let clientId = localStorage.getItem(clientIdKey);
   if (!clientId) {
@@ -21,18 +43,51 @@ function getClientId(): string {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "x-client-id": getClientId(),
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "x-client-id": getClientId(),
+        ...init?.headers,
+      },
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error : new Error("unknown network error");
+    throw new ApiRequestError(
+      "Браузер не смог подключиться к серверу приложения.",
+      0,
+      "NETWORK_ERROR",
+      "Проверьте интернет-соединение и доступность сайта.",
+      undefined,
+      { endpoint: url, cause: cause.name, message: cause.message },
+    );
+  }
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Ошибка сети" })) as { error?: string; action?: string };
-    const message = [payload.error, payload.action].filter(Boolean).join(" ");
-    throw new Error(message || `HTTP ${response.status}`);
+    const rawBody = await response.text();
+    let payload: ApiErrorPayload;
+    try {
+      payload = JSON.parse(rawBody) as ApiErrorPayload;
+    } catch {
+      payload = {
+        error: "Сервер вернул ответ в неожиданном формате.",
+        code: "NON_JSON_RESPONSE",
+        details: {
+          endpoint: url,
+          contentType: response.headers.get("content-type"),
+          responsePreview: rawBody.replace(/\s+/g, " ").slice(0, 500),
+        },
+      };
+    }
+    throw new ApiRequestError(
+      payload.error || `HTTP ${response.status}`,
+      response.status,
+      payload.code,
+      payload.action,
+      payload.traceId,
+      payload.details,
+    );
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }

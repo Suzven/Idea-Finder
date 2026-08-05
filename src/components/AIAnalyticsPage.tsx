@@ -1,13 +1,48 @@
 import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, FlaskConical, Folder, Gauge, Image, KeyRound, Lightbulb, LoaderCircle, RefreshCw, Rocket, ShieldAlert, Sparkles, Target, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { analyzeCreativeCollection, fetchCollections } from "../api";
+import { analyzeCreativeCollection, ApiRequestError, fetchCollections } from "../api";
 import { getOpenAIKey, hasOpenAIKey } from "../openaiSettings";
 import type { AIAnalysisResponse, CreativeCollection } from "../shared/types";
 
 interface AIAnalyticsPageProps {
   onOpenSettings: () => void;
   settingsRevision: number;
+}
+
+interface AIErrorInfo {
+  message: string;
+  action?: string;
+  code?: string;
+  status?: number;
+  traceId?: string;
+  details?: Record<string, unknown>;
+}
+
+function toErrorInfo(error: unknown, fallback: string): AIErrorInfo {
+  if (error instanceof ApiRequestError) {
+    return {
+      message: error.message,
+      action: error.action,
+      code: error.code,
+      status: error.status,
+      traceId: error.traceId,
+      details: error.details,
+    };
+  }
+  return { message: error instanceof Error ? error.message : fallback };
+}
+
+function errorLog(error: AIErrorInfo): string {
+  return JSON.stringify({
+    time: new Date().toISOString(),
+    code: error.code,
+    httpStatus: error.status || undefined,
+    traceId: error.traceId,
+    message: error.message,
+    action: error.action,
+    details: error.details,
+  }, null, 2);
 }
 
 const progressMessages = [
@@ -32,7 +67,7 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   const [loadingCollections, setLoadingCollections] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [progressIndex, setProgressIndex] = useState(0);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<AIErrorInfo | null>(null);
   const [result, setResult] = useState<AIAnalysisResponse | null>(null);
   const keyConfigured = useMemo(() => hasOpenAIKey(), [settingsRevision]);
   const selected = collections.find((collection) => collection.id === selectedId);
@@ -45,7 +80,7 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
       setCollections(items);
       setSelectedId((current) => current && items.some((item) => item.id === current) ? current : items.find((item) => item.itemCount > 0)?.id ?? items[0]?.id ?? "");
     }).catch((loadError) => {
-      if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить коллекции");
+      if (!cancelled) setError(toErrorInfo(loadError, "Не удалось загрузить коллекции"));
     }).finally(() => { if (!cancelled) setLoadingCollections(false); });
     return () => { cancelled = true; };
   }, []);
@@ -62,12 +97,12 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
     if (!apiKey) { onOpenSettings(); return; }
     setAnalyzing(true);
     setProgressIndex(0);
-    setError("");
+    setError(null);
     setResult(null);
     try {
       setResult(await analyzeCreativeCollection(selectedId, apiKey));
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : "Не удалось выполнить AI-анализ");
+      setError(toErrorInfo(analysisError, "Не удалось выполнить AI-анализ"));
     } finally {
       setAnalyzing(false);
     }
@@ -89,7 +124,19 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
     {analyzing && <section className="ai-processing"><div className="ai-orbit"><BrainCircuit size={34} /><i /><i /><i /></div><h2>Исследуем коллекцию «{selected?.name}»</h2><p>{progressMessages[progressIndex]}</p><div className="ai-progress-steps">{progressMessages.map((message, index) => <span key={message} className={index <= progressIndex ? "active" : ""}>{index < progressIndex ? <CheckCircle2 size={15} /> : <i />}{message}</span>)}</div><small>Полные лендинги загружаются через Chromium, поэтому первый анализ может занять несколько минут.</small></section>}
 
-    {error && !analyzing && <div className="ai-error"><AlertTriangle size={22} /><div><strong>AI-анализ не завершён</strong><p>{error}</p></div>{/ключ|OpenAI/i.test(error) ? <button className="button ghost" onClick={onOpenSettings}>Открыть настройки</button> : <button className="button ghost" onClick={() => void analyze()}><RefreshCw size={15} />Повторить</button>}</div>}
+    {error && !analyzing && <div className="ai-error">
+      <AlertTriangle size={22} />
+      <div className="ai-error-content">
+        <strong>AI-анализ не завершён</strong>
+        <p>{error.message}</p>
+        {error.action && <p className="ai-error-action">Что делать: {error.action}</p>}
+        {(error.code || error.status || error.traceId || error.details) && <details className="ai-error-log">
+          <summary>Показать лог запроса</summary>
+          <pre>{errorLog(error)}</pre>
+        </details>}
+      </div>
+      {/ключ|OpenAI/i.test(error.message) && error.code === "OPENAI_KEY_INVALID" ? <button className="button ghost" onClick={onOpenSettings}>Открыть настройки</button> : <button className="button ghost" onClick={() => void analyze()}><RefreshCw size={15} />Повторить</button>}
+    </div>}
 
     {result && !analyzing && <section className="ai-report">
       <header className="ai-report-head"><div><span className="eyebrow"><TrendingUp size={13} /> NICHE REPORT</span><h2>{result.analysis.niche}</h2><p>{result.analysis.executiveSummary}</p></div><div className={`ai-score ${result.analysis.opportunityScore >= 70 ? "strong" : result.analysis.opportunityScore >= 45 ? "medium" : "weak"}`}><span><strong>{result.analysis.opportunityScore}</strong><small>/100</small></span><em>Потенциал ниши</em></div></header>

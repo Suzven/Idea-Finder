@@ -32,7 +32,7 @@ interface OpenAIResponse {
     type?: string;
     content?: Array<{ type?: string; text?: string; refusal?: string }>;
   }>;
-  error?: { message?: string; code?: string };
+  error?: { message?: string; code?: string; type?: string; param?: string };
 }
 
 function snapshotUrlFromPayload(payload: unknown): string | undefined {
@@ -353,29 +353,48 @@ async function requestOpenAI(apiKey: string, clientId: string, collection: Creat
     if (creative.landingImage) content.push({ type: "input_image", image_url: creative.landingImage, detail: "high" });
   });
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(180_000),
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      store: false,
-      safety_identifier: createHash("sha256").update(clientId).digest("hex"),
-      reasoning: { effort: "medium" },
-      max_output_tokens: 16_000,
-      input: [{ role: "user", content }],
-      text: {
-        verbosity: "medium",
-        format: { type: "json_schema", name: "niche_analysis", strict: true, schema: analysisSchema },
-      },
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(180_000),
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        store: false,
+        safety_identifier: createHash("sha256").update(clientId).digest("hex"),
+        reasoning: { effort: "medium" },
+        max_output_tokens: 16_000,
+        input: [{ role: "user", content }],
+        text: {
+          verbosity: "medium",
+          format: { type: "json_schema", name: "niche_analysis", strict: true, schema: analysisSchema },
+        },
+      }),
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error : new Error("unknown network error");
+    throw new AppError(
+      502,
+      "OPENAI_NETWORK_ERROR",
+      cause.name === "TimeoutError" ? "OpenAI не ответил за отведённое время." : "Сервер не смог подключиться к OpenAI.",
+      "Проверьте соединение VPS с api.openai.com и повторите анализ.",
+      { cause: cause.name, message: cause.message },
+    );
+  }
   const payload = await response.json().catch(() => ({})) as OpenAIResponse;
   if (!response.ok) {
     const message = payload.error?.message ?? `OpenAI API ответил HTTP ${response.status}`;
-    if (response.status === 401) throw new AppError(401, "OPENAI_KEY_INVALID", "OpenAI API-ключ недействителен или отозван.", "Откройте Настройки и сохраните актуальный ключ.");
-    if (response.status === 429) throw new AppError(429, "OPENAI_LIMIT", "OpenAI отклонил запрос из-за лимита или отсутствия средств.", "Проверьте Billing и лимиты проекта OpenAI.");
-    throw new AppError(502, "OPENAI_API_ERROR", message);
+    const details = {
+      openAIRequestId: response.headers.get("x-request-id") ?? payload.id,
+      upstreamHttpStatus: response.status,
+      upstreamCode: payload.error?.code,
+      upstreamType: payload.error?.type,
+      upstreamParam: payload.error?.param,
+    };
+    if (response.status === 401) throw new AppError(401, "OPENAI_KEY_INVALID", "OpenAI API-ключ недействителен или отозван.", "Откройте Настройки и сохраните актуальный ключ.", details);
+    if (response.status === 429) throw new AppError(429, "OPENAI_LIMIT", "OpenAI отклонил запрос из-за лимита или отсутствия средств.", "Проверьте Billing и лимиты проекта OpenAI.", details);
+    throw new AppError(502, "OPENAI_API_ERROR", message, "Повторите запрос или проверьте состояние OpenAI API.", details);
   }
   const outputText = extractOutputText(payload);
   if (payload.status === "incomplete") {
@@ -385,16 +404,17 @@ async function requestOpenAI(apiKey: string, clientId: string, collection: Creat
       "OPENAI_INCOMPLETE_RESPONSE",
       "OpenAI не успел сформировать полный отчёт.",
       "Повторите анализ. Если ошибка повторится, уменьшите количество креативов в коллекции.",
+      responseDiagnostics(payload, outputText),
     );
   }
   const refusal = extractRefusal(payload);
   if (refusal) {
     console.warn("OpenAI refused collection analysis", responseDiagnostics(payload, outputText));
-    throw new AppError(422, "OPENAI_REFUSAL", "OpenAI отказался анализировать содержимое одного из креативов.");
+    throw new AppError(422, "OPENAI_REFUSAL", "OpenAI отказался анализировать содержимое одного из креативов.", undefined, responseDiagnostics(payload, outputText));
   }
   if (!outputText) {
     console.warn("OpenAI analysis response contained no output text", responseDiagnostics(payload));
-    throw new AppError(502, "OPENAI_EMPTY_RESPONSE", "OpenAI не вернул текст аналитики.");
+    throw new AppError(502, "OPENAI_EMPTY_RESPONSE", "OpenAI не вернул текст аналитики.", undefined, responseDiagnostics(payload));
   }
   try {
     return parseAnalysisOutput(outputText);
@@ -408,6 +428,10 @@ async function requestOpenAI(apiKey: string, clientId: string, collection: Creat
       "OPENAI_INVALID_RESPONSE",
       "OpenAI вернул аналитику в неожиданном формате.",
       "Повторите анализ. В журнале сервера сохранена безопасная диагностика ответа.",
+      {
+        ...responseDiagnostics(payload, outputText),
+        parseError: error instanceof Error ? error.message : "unknown",
+      },
     );
   }
 }
