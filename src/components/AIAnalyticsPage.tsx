@@ -74,14 +74,14 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   const [activeReportId, setActiveReportId] = useState("");
   const [creativeNotes, setCreativeNotes] = useState<AICreativeNoteItem[]>([]);
   const [loadingNotes, setLoadingNotes] = useState(false);
-  const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
+  const [selectedCreativeIds, setSelectedCreativeIds] = useState<Set<string>>(new Set());
   const [noteDraft, setNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
   const [noteMessage, setNoteMessage] = useState("");
   const [exportingPdf, setExportingPdf] = useState(false);
   const keyConfigured = useMemo(() => hasOpenAIKey(), [settingsRevision]);
   const selected = collections.find((collection) => collection.id === selectedId);
-  const videoCreatives = creativeNotes.filter((item) => item.ad.mediaType === "video");
+  const noteCreatives = creativeNotes;
 
   useEffect(() => {
     let cancelled = false;
@@ -108,7 +108,7 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
   useEffect(() => {
     let cancelled = false;
-    setSelectedVideoIds(new Set());
+    setSelectedCreativeIds(new Set());
     setNoteDraft("");
     setNoteMessage("");
     if (!selectedId) { setCreativeNotes([]); return () => { cancelled = true; }; }
@@ -146,11 +146,11 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
     }
   };
 
-  const toggleVideo = (item: AICreativeNoteItem) => {
-    const next = new Set(selectedVideoIds);
+  const toggleCreative = (item: AICreativeNoteItem) => {
+    const next = new Set(selectedCreativeIds);
     if (next.has(item.ad.id)) next.delete(item.ad.id);
     else next.add(item.ad.id);
-    setSelectedVideoIds(next);
+    setSelectedCreativeIds(next);
     setNoteMessage("");
     if (next.size === 0) {
       setNoteDraft("");
@@ -161,14 +161,14 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   };
 
   const saveNotes = async () => {
-    if (!selectedId || !selectedVideoIds.size) return;
+    if (!selectedId || !selectedCreativeIds.size) return;
     setSavingNote(true);
     setNoteMessage("");
     setError(null);
     try {
-      await saveCreativeAnalysisNotes(selectedId, [...selectedVideoIds], noteDraft.trim());
-      setCreativeNotes((items) => items.map((item) => selectedVideoIds.has(item.ad.id) ? { ...item, note: noteDraft.trim() } : item));
-      setNoteMessage(noteDraft.trim() ? `Заметка сохранена для ${selectedVideoIds.size} видео` : `Заметка удалена у ${selectedVideoIds.size} видео`);
+      await saveCreativeAnalysisNotes(selectedId, [...selectedCreativeIds], noteDraft.trim());
+      setCreativeNotes((items) => items.map((item) => selectedCreativeIds.has(item.ad.id) ? { ...item, note: noteDraft.trim() } : item));
+      setNoteMessage(noteDraft.trim() ? `Заметка сохранена для ${selectedCreativeIds.size} креативов` : `Заметка удалена у ${selectedCreativeIds.size} креативов`);
     } catch (saveError) {
       setError(toErrorInfo(saveError, "Не удалось сохранить заметку"));
     } finally {
@@ -226,23 +226,23 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
       </div>
       {selected && <div className="ai-selection-summary"><span><Image size={16} /><strong>{selected.itemCount}</strong> креативов в коллекции</span><span><Gauge size={16} />За один запуск анализируется до 10 креативов</span><span><ShieldAlert size={16} />Результат — оценка сигналов, не гарантия прибыли</span></div>}
       {selected && <section className="ai-video-notes">
-        <header><span><MessageSquareText size={19} /></span><div><h3>Дополнительное описание видео</h3><p>Выберите одно или несколько видео и опишите важное действие в кадре. AI получит эту заметку вместе с первым кадром.</p></div></header>
+        <header><span><MessageSquareText size={19} /></span><div><h3>Дополнительное описание креативов</h3><p>Выберите один или несколько креативов и добавьте важный контекст. Для видео AI получит заметку вместе с первым кадром, для изображений — вместе с самим изображением.</p></div></header>
         {loadingNotes
-          ? <div className="ai-notes-loading"><LoaderCircle className="spin" size={17} />Загружаем видео…</div>
-          : videoCreatives.length
-            ? <><div className="ai-video-grid">{videoCreatives.map((item) => {
-              const selectedVideo = selectedVideoIds.has(item.ad.id);
-              return <button type="button" key={item.ad.id} className={`ai-video-item ${selectedVideo ? "selected" : ""}`} onClick={() => toggleVideo(item)}>
+          ? <div className="ai-notes-loading"><LoaderCircle className="spin" size={17} />Загружаем креативы…</div>
+          : noteCreatives.length
+            ? <><div className="ai-video-grid">{noteCreatives.map((item) => {
+              const selectedCreative = selectedCreativeIds.has(item.ad.id);
+              return <button type="button" key={item.ad.id} className={`ai-video-item ${selectedCreative ? "selected" : ""}`} onClick={() => toggleCreative(item)}>
                 <span className="ai-video-thumb">{item.ad.thumbnailUrl ? <img src={item.ad.thumbnailUrl} alt="" loading="lazy" /> : <Image size={20} />}</span>
-                <span className="ai-video-copy"><strong>{item.ad.advertiser}</strong><small>{item.ad.headline || "Видео без заголовка"}</small>{item.note && <em>{item.note}</em>}</span>
-                <span className="ai-video-check">{selectedVideo ? <CheckCircle2 size={18} /> : <i />}</span>
+                <span className="ai-video-copy"><strong>{item.ad.advertiser}</strong><small>{item.ad.headline || "Креатив без заголовка"}</small>{item.note && <em>{item.note}</em>}</span>
+                <span className="ai-video-check">{selectedCreative ? <CheckCircle2 size={18} /> : <i />}</span>
               </button>;
             })}</div>
             <div className="ai-note-editor">
-              <label><span>Заметка для выбранных видео ({selectedVideoIds.size})</span><textarea maxLength={1000} value={noteDraft} disabled={!selectedVideoIds.size || savingNote} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Например: девушка танцует и показывает платье крупным планом…" /></label>
-              <div><small>{noteDraft.length}/1000 · пустое поле удалит существующую заметку</small>{noteMessage && <b>{noteMessage}</b>}<button className="button ghost" disabled={!selectedVideoIds.size || savingNote} onClick={() => void saveNotes()}>{savingNote ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}Сохранить заметку</button></div>
+              <label><span>Заметка для выбранных креативов ({selectedCreativeIds.size})</span><textarea maxLength={1000} value={noteDraft} disabled={!selectedCreativeIds.size || savingNote} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Например: девушка танцует и показывает платье крупным планом…" /></label>
+              <div><small>{noteDraft.length}/1000 · пустое поле удалит существующую заметку</small>{noteMessage && <b>{noteMessage}</b>}<button className="button ghost" disabled={!selectedCreativeIds.size || savingNote} onClick={() => void saveNotes()}>{savingNote ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}Сохранить заметку</button></div>
             </div></>
-            : <p className="ai-no-videos">В выбранной коллекции нет видеокреативов.</p>}
+            : <p className="ai-no-videos">В выбранной коллекции нет креативов.</p>}
       </section>}
     </section>
 
