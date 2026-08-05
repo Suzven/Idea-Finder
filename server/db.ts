@@ -1,6 +1,6 @@
 import mysql from "mysql2/promise";
 import { config } from "./config.js";
-import type { AdSource, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
+import type { AdCreative, AdSource, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
 
 const databaseConfig = config.database;
 const databaseConfigured = Boolean(
@@ -21,6 +21,17 @@ const pool = databaseConfigured
     })
   : null;
 const memoryFavorites = new Map<string, Set<string>>();
+const memoryFavoriteAds = new Map<string, Map<string, AdCreative>>();
+
+export interface CollectedAdEntry {
+  ad: AdCreative;
+  sourcePayload?: unknown;
+}
+
+export interface StoredFavorite {
+  ad: AdCreative;
+  sourcePayload?: unknown;
+}
 
 export interface IntegrationLogStart {
   traceId: string;
@@ -234,6 +245,60 @@ export async function healthcheckDatabase(): Promise<"connected" | "disabled" | 
   }
 }
 
+function externalAdId(ad: AdCreative): string {
+  return ad.id.replace(/^(?:meta|tiktok)-/, "").slice(0, 128);
+}
+
+function mysqlDate(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function parseJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value) as unknown; } catch { return undefined; }
+}
+
+async function writeCollectedAds(
+  executor: Pick<mysql.Pool, "execute"> | Pick<mysql.PoolConnection, "execute">,
+  entries: CollectedAdEntry[],
+): Promise<void> {
+  for (const { ad, sourcePayload } of entries) {
+    await executor.execute(
+      `INSERT INTO collected_ads
+        (id, source, external_id, advertiser_name, country_code, media_type, started_at, ended_at, normalized_payload, source_payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         advertiser_name = VALUES(advertiser_name), country_code = VALUES(country_code),
+         media_type = VALUES(media_type), started_at = VALUES(started_at), ended_at = VALUES(ended_at),
+         normalized_payload = VALUES(normalized_payload),
+         source_payload = COALESCE(VALUES(source_payload), source_payload)`,
+      [
+        ad.id,
+        ad.source,
+        externalAdId(ad),
+        ad.advertiser,
+        ad.country.split("+")[0].slice(0, 3) || null,
+        ad.mediaType,
+        mysqlDate(ad.startedAt),
+        mysqlDate(ad.endedAt),
+        JSON.stringify(ad),
+        sourcePayload === undefined ? null : JSON.stringify(sourcePayload),
+      ],
+    );
+  }
+}
+
+export async function cacheCollectedAds(entries: CollectedAdEntry[]): Promise<void> {
+  if (!pool || entries.length === 0) return;
+  try {
+    await writeCollectedAds(pool, entries);
+  } catch (error) {
+    console.error("Не удалось сохранить найденные объявления:", error);
+  }
+}
+
 export async function getFavoriteIds(clientId: string): Promise<Set<string>> {
   if (!pool) return new Set(memoryFavorites.get(clientId) ?? []);
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
@@ -243,23 +308,58 @@ export async function getFavoriteIds(clientId: string): Promise<Set<string>> {
   return new Set(rows.map((row) => String(row.ad_id)));
 }
 
-export async function addFavorite(clientId: string, adId: string, source: string): Promise<void> {
+export async function getFavoriteAds(clientId: string): Promise<StoredFavorite[]> {
+  if (!pool) {
+    return [...(memoryFavoriteAds.get(clientId)?.values() ?? [])].map((ad) => ({ ad: { ...ad, isFavorite: true } }));
+  }
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT c.normalized_payload, c.source_payload
+     FROM favorites f
+     INNER JOIN collected_ads c ON c.id = f.ad_id
+     WHERE f.client_id = ?
+     ORDER BY f.created_at DESC`,
+    [clientId],
+  );
+  return rows.flatMap((row) => {
+    const ad = parseJson(row.normalized_payload) as AdCreative | undefined;
+    if (!ad?.id || !ad.source) return [];
+    return [{ ad: { ...ad, isFavorite: true }, sourcePayload: parseJson(row.source_payload) }];
+  });
+}
+
+export async function addFavorite(clientId: string, ad: AdCreative): Promise<void> {
   if (!pool) {
     const favorites = memoryFavorites.get(clientId) ?? new Set<string>();
-    favorites.add(adId);
+    favorites.add(ad.id);
     memoryFavorites.set(clientId, favorites);
+    const ads = memoryFavoriteAds.get(clientId) ?? new Map<string, AdCreative>();
+    ads.set(ad.id, { ...ad, isFavorite: true });
+    memoryFavoriteAds.set(clientId, ads);
     return;
   }
-  await pool.execute(
-    `INSERT IGNORE INTO favorites (client_id, ad_id, source)
-     VALUES (?, ?, ?)`,
-    [clientId, adId, source],
-  );
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await writeCollectedAds(connection, [{ ad }]);
+    await connection.execute(
+      `INSERT INTO favorites (client_id, ad_id, source)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE source = VALUES(source)`,
+      [clientId, ad.id, ad.source],
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function removeFavorite(clientId: string, adId: string): Promise<void> {
   if (!pool) {
     memoryFavorites.get(clientId)?.delete(adId);
+    memoryFavoriteAds.get(clientId)?.delete(adId);
     return;
   }
   await pool.execute("DELETE FROM favorites WHERE client_id = ? AND ad_id = ?", [clientId, adId]);

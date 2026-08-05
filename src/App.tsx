@@ -1,6 +1,6 @@
 import { Bookmark, Menu, Settings2, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAds, setFavorite } from "./api";
+import { fetchAds, fetchFavoriteAds, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
 import { CreativeModal } from "./components/CreativeModal";
 import { FilterPanel } from "./components/FilterPanel";
@@ -39,7 +39,9 @@ export default function App() {
     append ? setLoadingMore(true) : setLoading(true);
     setError("");
     try {
-      const result = await fetchAds(source, appliedFilters, nextCursor);
+      const result = savedOnly
+        ? await fetchFavoriteAds()
+        : await fetchAds(source, appliedFilters, nextCursor);
       setItems((current) => append ? [...current, ...result.items] : result.items);
       setCursor(result.nextCursor);
     } catch (loadError) {
@@ -49,7 +51,7 @@ export default function App() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [source, appliedFilters]);
+  }, [source, appliedFilters, savedOnly]);
 
   useEffect(() => { if (activeView === "ads") void load(); }, [activeView, load]);
 

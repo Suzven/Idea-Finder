@@ -49,10 +49,14 @@ export async function fetchAds(source: AdSource, filters: AdFilters, cursor?: st
   return request<AdsResponse>(`/api/ads?${params}`);
 }
 
+export async function fetchFavoriteAds(): Promise<AdsResponse> {
+  return request<AdsResponse>("/api/favorites");
+}
+
 export async function setFavorite(ad: AdCreative, value: boolean): Promise<void> {
   await request(`/api/favorites/${encodeURIComponent(ad.id)}`, {
     method: value ? "POST" : "DELETE",
-    body: value ? JSON.stringify({ source: ad.source }) : undefined,
+    body: value ? JSON.stringify({ source: ad.source, ad }) : undefined,
   });
 }
 

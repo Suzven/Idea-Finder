@@ -1,5 +1,6 @@
 import type { AdCreative, AdFilters, AdsResponse } from "../../src/shared/types.js";
 import { config } from "../config.js";
+import { cacheCollectedAds } from "../db.js";
 import { AppError } from "../errors.js";
 import { filterAds } from "../services/filterAds.js";
 import { IntegrationLogger } from "../services/integrationLogger.js";
@@ -184,6 +185,7 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
       });
       return normalized;
     });
+    await cacheCollectedAds(mapped.map((ad, index) => ({ ad, sourcePayload: payload.data?.[index] })));
 
     // Meta has already applied these filters. Applying them again locally can
     // incorrectly discard fuzzy matches returned by the provider (for example,

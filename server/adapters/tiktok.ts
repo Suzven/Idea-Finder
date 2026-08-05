@@ -1,5 +1,6 @@
 import type { AdCreative, AdFilters, AdsResponse } from "../../src/shared/types.js";
 import { config } from "../config.js";
+import { cacheCollectedAds } from "../db.js";
 import { filterAds } from "../services/filterAds.js";
 import { IntegrationLogger } from "../services/integrationLogger.js";
 
@@ -127,6 +128,7 @@ export async function fetchTikTokAds(filters: Partial<AdFilters>, cursor: string
       });
       return normalized;
     });
+    await cacheCollectedAds(mapped.map((ad, index) => ({ ad, sourcePayload: payload.data?.ads?.[index] })));
 
     const items = filterAds(mapped, filters);
     parseAttempts.push({ stage: "local_filters", before: mapped.length, after: items.length, filters });

@@ -9,10 +9,10 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, deleteExpiredIntegrationLogs, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
-import { getMetaMedia, streamMetaMedia } from "./services/metaSnapshot.js";
+import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import type { AdFilters, AdSource, AdsResponse } from "../src/shared/types.js";
 
 const app = express();
@@ -47,6 +47,34 @@ const querySchema = z.object({
   durationTo: z.string().max(10).optional(),
   savedFrom: z.string().max(10).optional(),
   savedTo: z.string().max(10).optional(),
+});
+
+const adCreativeSchema = z.object({
+  id: z.string().min(1).max(160),
+  source: z.enum(["meta", "tiktok"]),
+  advertiser: z.string().max(2_000),
+  advertiserAvatar: z.string().max(5_000).optional(),
+  country: z.string().max(20),
+  countryName: z.string().max(500),
+  platforms: z.array(z.string().max(80)).max(20),
+  mediaType: z.enum(["image", "video", "carousel"]),
+  mediaUrl: z.string().max(5_000),
+  thumbnailUrl: z.string().max(5_000),
+  mediaInfoUrl: z.string().max(5_000).optional(),
+  carousel: z.array(z.string().max(5_000)).max(50).optional(),
+  headline: z.string().max(20_000),
+  body: z.string().max(50_000),
+  cta: z.string().max(1_000),
+  landingUrl: z.string().max(5_000).optional(),
+  sourceUrl: z.string().max(5_000).optional(),
+  startedAt: z.string().max(50),
+  endedAt: z.string().max(50).optional(),
+  daysActive: z.number().finite().nonnegative(),
+  reach: z.number().finite().nonnegative().optional(),
+  savedCount: z.number().finite().nonnegative(),
+  language: z.string().max(20),
+  appUrl: z.string().max(5_000).optional(),
+  isFavorite: z.boolean().optional(),
 });
 
 function getClientId(request: express.Request): string {
@@ -130,12 +158,37 @@ app.get("/api/ads", async (request, response, next) => {
   }
 });
 
-const favoriteSchema = z.object({ source: z.enum(["meta", "tiktok"]) });
+const favoriteSchema = z.object({ source: z.enum(["meta", "tiktok"]), ad: adCreativeSchema });
+
+function snapshotUrlFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as Record<string, unknown>).ad_snapshot_url;
+  return typeof value === "string" ? value : undefined;
+}
+
+app.get("/api/favorites", async (request, response, next) => {
+  try {
+    const stored = await getFavoriteAds(getClientId(request));
+    const items = stored.map(({ ad, sourcePayload }) => {
+      if (ad.source !== "meta") return { ...ad, isFavorite: true };
+      const externalId = ad.id.replace(/^meta-/, "");
+      const snapshotUrl = snapshotUrlFromPayload(sourcePayload);
+      const mediaInfoUrl = snapshotUrl ? registerMetaAd(externalId, snapshotUrl) : ad.mediaInfoUrl;
+      return { ...ad, mediaInfoUrl, isFavorite: true };
+    });
+    response.json({ items, nextCursor: null, total: items.length, mode: "live" } satisfies AdsResponse);
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.post("/api/favorites/:adId", async (request, response, next) => {
   try {
-    const { source } = favoriteSchema.parse(request.body);
-    await addFavorite(getClientId(request), request.params.adId, source);
+    const { source, ad } = favoriteSchema.parse(request.body);
+    if (ad.id !== request.params.adId || ad.source !== source) {
+      throw new AppError(400, "FAVORITE_AD_MISMATCH", "Данные сохраняемого объявления не совпадают с адресом запроса.");
+    }
+    await addFavorite(getClientId(request), ad);
     response.status(201).json({ ok: true });
   } catch (error) {
     next(error);
