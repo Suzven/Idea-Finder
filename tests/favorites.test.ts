@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../server/config.js", () => ({ config: {} }));
 
-import { addFavorite, createCollection, getCollections, getFavoriteAds, getFavoriteIds, removeFavorite } from "../server/db.js";
+import { addFavorite, createCollection, deleteCollection, getCollections, getFavoriteAds, getFavoriteIds, removeFavorite } from "../server/db.js";
 import type { AdCreative } from "../src/shared/types.js";
 
 const creative: AdCreative = {
@@ -55,5 +55,16 @@ describe("favorites storage", () => {
   it("rejects a collection owned by another client", async () => {
     const collection = await createCollection("collection-owner", "Private");
     expect(await addFavorite("different-client", creative, collection.id)).toBe(false);
+  });
+
+  it("deletes a collection and its saved creatives", async () => {
+    const clientId = "cascade-delete-test";
+    const collection = await createCollection(clientId, "Temporary");
+    await addFavorite(clientId, creative, collection.id);
+
+    expect(await deleteCollection(clientId, collection.id)).toBe(1);
+    expect(await getCollections(clientId)).toEqual([]);
+    expect(await getFavoriteAds(clientId)).toEqual([]);
+    expect(await getFavoriteIds(clientId)).toEqual(new Set());
   });
 });

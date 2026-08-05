@@ -73,6 +73,12 @@ export async function createCollection(name: string): Promise<CreativeCollection
   });
 }
 
+export async function deleteCollection(collectionId: string): Promise<{ ok: true; deletedFavorites: number }> {
+  return request<{ ok: true; deletedFavorites: number }>(`/api/collections/${encodeURIComponent(collectionId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {
   return request<ResolvedAdMedia>(mediaInfoUrl);
 }

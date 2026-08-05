@@ -1,6 +1,6 @@
 import { Bookmark, Menu, Settings2, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createCollection, fetchAds, fetchCollections, fetchFavoriteAds, setFavorite } from "./api";
+import { createCollection, deleteCollection, fetchAds, fetchCollections, fetchFavoriteAds, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
 import { CollectionPicker } from "./components/CollectionPicker";
 import { CollectionsPanel } from "./components/CollectionsPanel";
@@ -161,6 +161,18 @@ export default function App() {
     return collection;
   };
 
+  const removeCollection = async (collection: CreativeCollection) => {
+    const result = await deleteCollection(collection.id);
+    setCollections((current) => current.filter((item) => item.id !== collection.id));
+    await loadCollections();
+    loadRequestRef.current += 1;
+    setItems([]);
+    setCursor(null);
+    if (selectedCollectionId === collection.id) setSelectedCollectionId(null);
+    else void load();
+    return result.deletedFavorites;
+  };
+
   const visibleItems = useMemo(() => savedOnly ? items.filter((ad) => ad.isFavorite) : items, [items, savedOnly]);
 
   return (
@@ -185,7 +197,7 @@ export default function App() {
             </div>
           </section>
 
-          {savedOnly && <CollectionsPanel collections={collections} selectedId={selectedCollectionId} loading={collectionsLoading} onSelect={changeCollection} onCreate={addCollection} />}
+          {savedOnly && <CollectionsPanel collections={collections} selectedId={selectedCollectionId} loading={collectionsLoading} onSelect={changeCollection} onCreate={addCollection} onDelete={removeCollection} />}
 
           {!savedOnly && <FilterPanel source={source} filters={draftFilters} onChange={setDraftFilters} canApply={isFiltered(draftFilters)} loading={loading} onApply={() => setAppliedFilters({ ...draftFilters })} onClear={() => { setDraftFilters({ ...EMPTY_FILTERS }); setAppliedFilters({ ...EMPTY_FILTERS }); }} />}
 

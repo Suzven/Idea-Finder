@@ -384,6 +384,55 @@ export async function createCollection(clientId: string, name: string): Promise<
   return collection;
 }
 
+export async function deleteCollection(clientId: string, collectionId: string): Promise<number | null> {
+  if (!pool) {
+    const collections = memoryCollections.get(clientId);
+    if (!collections?.has(collectionId)) return null;
+    const memberships = memoryFavoriteCollections.get(clientId);
+    const adIds = [...(memberships?.entries() ?? [])]
+      .filter(([, collectionIds]) => collectionIds.has(collectionId))
+      .map(([adId]) => adId);
+    for (const adId of adIds) {
+      memoryFavorites.get(clientId)?.delete(adId);
+      memoryFavoriteAds.get(clientId)?.delete(adId);
+      memberships?.delete(adId);
+    }
+    collections.delete(collectionId);
+    return adIds.length;
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [collections] = await connection.execute<mysql.RowDataPacket[]>(
+      "SELECT id FROM collections WHERE client_id = ? AND id = ? FOR UPDATE",
+      [clientId, collectionId],
+    );
+    if (!collections.length) {
+      await connection.rollback();
+      return null;
+    }
+    const [favorites] = await connection.execute<mysql.ResultSetHeader>(
+      `DELETE f FROM favorites f
+       INNER JOIN favorite_collections fc
+         ON fc.client_id = f.client_id AND fc.ad_id = f.ad_id
+       WHERE fc.client_id = ? AND fc.collection_id = ?`,
+      [clientId, collectionId],
+    );
+    await connection.execute(
+      "DELETE FROM collections WHERE client_id = ? AND id = ?",
+      [clientId, collectionId],
+    );
+    await connection.commit();
+    return favorites.affectedRows;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 export async function addFavorite(clientId: string, ad: AdCreative, collectionId?: string): Promise<boolean> {
   if (!pool) {
     if (collectionId && !memoryCollections.get(clientId)?.has(collectionId)) return false;

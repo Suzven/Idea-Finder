@@ -9,7 +9,7 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteExpiredIntegrationLogs, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteCollection, deleteExpiredIntegrationLogs, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -216,6 +216,17 @@ app.post("/api/collections", async (request, response, next) => {
   try {
     const { name } = createCollectionSchema.parse(request.body);
     response.status(201).json(await createCollection(getClientId(request), name));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/collections/:collectionId", async (request, response, next) => {
+  try {
+    const collectionId = collectionIdSchema.parse(request.params.collectionId);
+    const deletedFavorites = await deleteCollection(getClientId(request), collectionId);
+    if (deletedFavorites === null) throw new AppError(404, "COLLECTION_NOT_FOUND", "Коллекция не найдена.");
+    response.json({ ok: true, deletedFavorites });
   } catch (error) {
     next(error);
   }
