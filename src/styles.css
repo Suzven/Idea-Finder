@@ -946,7 +946,7 @@ body.modal-open { overflow: hidden; }
 .review-source-result > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 16px 17px; border-bottom: 1px solid #e8ebf0; }
 .review-source-result > header > div:first-child { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .review-source-logo { display: grid; place-items: center; flex: 0 0 auto; width: 38px; height: 38px; color: #fff; border-radius: 10px; background: #169b68; font-size: 18px; font-weight: 900; }
-.review-source-logo.g2 { background: linear-gradient(145deg, #ff6b3d, #df3d22); font-size: 13px; }
+.review-source-logo.capterra { background: linear-gradient(145deg, #1967d2, #0b4ca8); font-size: 13px; }
 .review-source-result h2 { margin: 0; color: #344057; font-size: 15px; }
 .review-source-result header p { overflow: hidden; margin: 3px 0 0; color: #8d96a7; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .review-source-count { display: grid; justify-items: end; }

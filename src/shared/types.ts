@@ -135,7 +135,7 @@ export interface AIAnalysisJobResponse {
   error?: AIAnalysisJobError;
 }
 
-export type ReviewSource = "trustpilot" | "g2";
+export type ReviewSource = "trustpilot" | "capterra";
 export type ReviewSourceStatus = "found" | "not_found" | "blocked" | "error";
 
 export interface UserReview {

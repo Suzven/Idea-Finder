@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildG2Candidates, buildTrustpilotCandidates, normalizeCompanyQuery } from "../server/services/reviewAnalysis";
+import { buildCapterraCandidates, buildTrustpilotCandidates, normalizeCompanyQuery } from "../server/services/reviewAnalysis";
 
 describe("review analysis URL adapters", () => {
   it("normalizes a company URL into domain and product slug", () => {
@@ -17,11 +17,9 @@ describe("review analysis URL adapters", () => {
     ]);
   });
 
-  it("tries G2 product slug and domain-shaped variants", () => {
-    expect(buildG2Candidates("www.appsflyer.com")).toEqual([
-      "https://www.g2.com/products/appsflyer/reviews",
-      "https://www.g2.com/products/appsflyer-com/reviews",
-      "https://www.g2.com/products/www-appsflyer-com/reviews",
+  it("builds a Capterra search URL because product IDs cannot be derived from a domain", () => {
+    expect(buildCapterraCandidates("www.appsflyer.com")).toEqual([
+      "https://www.capterra.com/search/?query=appsflyer",
     ]);
   });
 });

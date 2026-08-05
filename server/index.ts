@@ -265,7 +265,7 @@ const aiNoteSchema = z.object({
 });
 const reviewSearchSchema = z.object({
   query: z.string().trim().min(2).max(120),
-  sources: z.array(z.enum(["trustpilot", "g2"])).min(1).max(10),
+  sources: z.array(z.enum(["trustpilot", "capterra"])).min(1).max(10),
 });
 const reviewProxySettingsSchema = z.object({
   server: z.string().trim().min(1).max(500).refine((value) => {

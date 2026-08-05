@@ -5,7 +5,7 @@ import type { ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview
 
 const sourceOptions: Array<{ id: ReviewSource; label: string; hint: string }> = [
   { id: "trustpilot", label: "Trustpilot", hint: "Отзывы покупателей и пользователей" },
-  { id: "g2", label: "G2", hint: "B2B-отзывы о программах и сервисах" },
+  { id: "capterra", label: "Capterra", hint: "Отзывы о программах с оценками, плюсами и минусами" },
 ];
 
 function formatReviewDate(value?: string): string {
@@ -46,7 +46,7 @@ const attemptLabels = {
 function SourceResult({ result }: { result: ReviewSourceResult }) {
   return <section className="review-source-result">
     <header>
-      <div><span className={`review-source-logo ${result.source}`}>{result.source === "trustpilot" ? "★" : "G2"}</span><div><h2>{result.label}</h2><p>{result.companyName || result.query}</p></div></div>
+      <div><span className={`review-source-logo ${result.source}`}>{result.source === "trustpilot" ? "★" : "C"}</span><div><h2>{result.label}</h2><p>{result.companyName || result.query}</p></div></div>
       <div className="review-source-count"><strong>{result.reviews.length}</strong><span>отзывов с 2 страниц</span></div>
       {result.profileUrl && <a href={result.profileUrl} target="_blank" rel="noreferrer">Открыть профиль <ExternalLink size={14} /></a>}
     </header>
@@ -81,7 +81,7 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
 
 export function ReviewAnalysisPanel() {
   const [query, setQuery] = useState("");
-  const [selectedSources, setSelectedSources] = useState<Set<ReviewSource>>(new Set(["trustpilot", "g2"]));
+  const [selectedSources, setSelectedSources] = useState<Set<ReviewSource>>(new Set(["trustpilot", "capterra"]));
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ReviewSearchResponse | null>(null);
   const [error, setError] = useState<string>("");
@@ -143,10 +143,10 @@ export function ReviewAnalysisPanel() {
         <label><span>Название компании или домен</span><div><Building2 size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Например: appsflyer или appsflyer.com" maxLength={120} /></div></label>
         <button className="button primary" disabled={!canSearch}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}{loading ? "Собираем отзывы…" : "Найти отзывы"}</button>
       </form>
-      <footer><ShieldCheck size={15} /><span>Для каждого источника проверяются варианты <b>название</b>, <b>название.com</b> и <b>www.название.com</b>. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
+      <footer><ShieldCheck size={15} /><span>Trustpilot проверяет варианты домена, а Capterra сначала ищет точный профиль компании во внутреннем поиске. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
     </section>
 
-    {loading && <section className="review-progress"><LoaderCircle className="spin" size={28} /><div><strong>Chromium собирает отзывы</strong><p>Открываем Trustpilot и G2, проверяем варианты адресов и две страницы каждого найденного профиля. Это может занять несколько минут.</p></div></section>}
+    {loading && <section className="review-progress"><LoaderCircle className="spin" size={28} /><div><strong>Chromium собирает отзывы</strong><p>Открываем Trustpilot и Capterra. В Capterra сначала находим точный профиль через поиск, раскрываем полные тексты, затем собираем две страницы отзывов.</p></div></section>}
     {error && <div className="review-global-error"><AlertTriangle size={20} /><div><strong>Сбор отзывов не завершён</strong><p>{error}</p></div><button className="button ghost" onClick={() => void submit()}>Повторить</button></div>}
 
     {result && <>

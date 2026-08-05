@@ -16,6 +16,8 @@ interface ReviewAdapter {
   source: ReviewSource;
   label: string;
   buildCandidates(query: string): string[];
+  resolveCandidates?: (page: Page, query: string) => Promise<string[]>;
+  prepare?: (page: Page) => Promise<void>;
   extract(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }>;
 }
 
@@ -46,14 +48,10 @@ export function buildTrustpilotCandidates(query: string): string[] {
   ]).map((candidate) => `https://www.trustpilot.com/review/${candidate}`);
 }
 
-export function buildG2Candidates(query: string): string[] {
-  const { domain, slug } = normalizeCompanyQuery(query);
-  return unique([
-    slug,
-    domain.replaceAll(".", "-"),
-    slug ? `${slug}-com` : "",
-    slug ? `www-${slug}-com` : "",
-  ]).map((candidate) => `https://www.g2.com/products/${candidate}/reviews`);
+export function buildCapterraCandidates(query: string): string[] {
+  const normalized = normalizeCompanyQuery(query);
+  const searchTerm = normalized.slug || normalized.domain || query.trim();
+  return [`https://www.capterra.com/search/?query=${encodeURIComponent(searchTerm)}`];
 }
 
 function pageUrl(baseUrl: string, pageNumber: number): string {
@@ -130,7 +128,7 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
         text: document.body?.innerText.slice(0, 30_000) ?? "",
         iframeCount: document.querySelectorAll("iframe").length,
         elementCount: document.body?.querySelectorAll("*").length ?? 0,
-        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-']").length,
+        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-'], div.mb-6.p-6 h3.typo-20.font-semibold").length,
       }));
       break;
     } catch (error) {
@@ -178,6 +176,98 @@ async function waitForChallenge(page: Page, initialState?: Awaited<ReturnType<ty
     state = await pageState(page);
   }
   return state;
+}
+
+async function resolveCapterraCandidates(page: Page, query: string): Promise<string[]> {
+  const normalized = normalizeCompanyQuery(query);
+  const keys = unique([normalized.slug, normalized.domain.replace(/\.[a-z]{2,}$/i, "")])
+    .map((value) => value.replace(/[^a-z0-9]/g, ""));
+  const reviewUrl = await page.evaluate(({ expectedKeys }) => {
+    const normalize = (value: string) => value.toLowerCase().replace(/\blogo\b/g, "").replace(/[^a-z0-9]/g, "");
+    const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href*='/p/']"))
+      .map((anchor) => {
+        const href = new URL(anchor.href, location.href);
+        const match = href.pathname.match(/^\/p\/(\d+)\/([^/]+)\/?/i);
+        if (!match) return undefined;
+        const text = normalize(anchor.textContent || anchor.querySelector("img")?.getAttribute("alt") || "");
+        const slug = normalize(match[2]);
+        const exact = expectedKeys.some((key) => key && text === key);
+        const slugMatch = expectedKeys.some((key) => key && slug === key);
+        const partial = expectedKeys.some((key) => key && (text.includes(key) || slug.includes(key)));
+        const score = exact ? 100 : slugMatch ? 90 : partial ? 40 : 0;
+        return { score, url: `${href.origin}/p/${match[1]}/${match[2]}/reviews/` };
+      })
+      .filter((candidate): candidate is { score: number; url: string } => Boolean(candidate?.score))
+      .sort((left, right) => right.score - left.score);
+    return candidates[0]?.url;
+  }, { expectedKeys: keys });
+  return reviewUrl ? [reviewUrl] : [];
+}
+
+async function prepareCapterraReviews(page: Page): Promise<void> {
+  const buttons = await page.getByRole("button", { name: "Continue reading", exact: true }).all();
+  for (const button of buttons) {
+    if (await button.isVisible().catch(() => false)) await button.click({ timeout: 2_000 }).catch(() => undefined);
+  }
+  if (buttons.length) await page.waitForTimeout(250);
+}
+
+async function extractCapterraReviews(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }> {
+  const raw = await page.evaluate(() => {
+    const compact = (value?: string | null) => value?.replace(/\s+/g, " ").trim() ?? "";
+    const headings = Array.from(document.querySelectorAll<HTMLHeadingElement>("h3.typo-20.font-semibold"));
+    const cards = [...new Set(headings.map((heading) => {
+      let current: Element | null = heading;
+      for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+        if (current.querySelector("span.typo-20.text-neutral-99.font-semibold") && current.querySelector("span.sr2r3oj")) return current;
+      }
+      return heading.closest("div.mb-6.p-6");
+    }).filter((card): card is Element => Boolean(card)))];
+    const heading = compact(document.querySelector("h1")?.textContent);
+    const companyName = heading
+      .replace(/\s+(?:software\s+)?reviews?.*$/i, "")
+      .replace(/\s+software\s+review.*$/i, "") || undefined;
+    return {
+      companyName,
+      reviews: cards.map((card) => {
+        const author = compact(card.querySelector("span.typo-20.text-neutral-99.font-semibold")?.textContent);
+        const title = compact(card.querySelector("h3.typo-20.font-semibold")?.textContent).replace(/^[\"“]|[\"”]$/g, "");
+        const date = compact(card.querySelector(".typo-0.text-neutral-90")?.textContent);
+        const ratingText = compact(card.querySelector("span.sr2r3oj")?.textContent);
+        const rating = Number(ratingText.match(/[0-5](?:[.,]\d+)?/)?.[0]?.replace(",", "."));
+        const paragraphs = Array.from(card.querySelectorAll("p"))
+          .map((paragraph) => compact(paragraph.textContent))
+          .filter(Boolean);
+        const text = [...new Set(paragraphs)].join("\n\n");
+        return {
+          author: author || "Анонимный пользователь",
+          date: date || undefined,
+          title: title || undefined,
+          text,
+          rating: Number.isFinite(rating) ? rating : undefined,
+          reviewUrl: location.href,
+        };
+      }).filter((review) => Boolean(review.text || review.title)),
+    };
+  });
+
+  return {
+    companyName: raw.companyName,
+    reviews: raw.reviews.map((review) => {
+      const value: Omit<UserReview, "id"> = {
+        source: "capterra",
+        author: review.author,
+        ...(review.date ? { date: review.date } : {}),
+        ...(review.title ? { title: review.title } : {}),
+        text: review.text,
+        ...(review.rating !== undefined ? { rating: review.rating } : {}),
+        maxRating: 5,
+        reviewUrl: review.reviewUrl,
+        page: pageNumber,
+      };
+      return { id: reviewId(value), ...value };
+    }),
+  };
 }
 
 async function extractReviews(page: Page, source: ReviewSource, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }> {
@@ -265,11 +355,13 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
     buildCandidates: buildTrustpilotCandidates,
     extract: (page, pageNumber) => extractReviews(page, "trustpilot", pageNumber),
   },
-  g2: {
-    source: "g2",
-    label: "G2",
-    buildCandidates: buildG2Candidates,
-    extract: (page, pageNumber) => extractReviews(page, "g2", pageNumber),
+  capterra: {
+    source: "capterra",
+    label: "Capterra",
+    buildCandidates: buildCapterraCandidates,
+    resolveCandidates: resolveCapterraCandidates,
+    prepare: prepareCapterraReviews,
+    extract: extractCapterraReviews,
   },
 };
 
@@ -458,7 +550,7 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
 }
 
 async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings?: ReviewProxyCredentials): Promise<ReviewSourceResult> {
-  const candidates = adapter.buildCandidates(query);
+  let candidates = adapter.buildCandidates(query);
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
   const created = await createContext(proxySettings);
@@ -469,6 +561,85 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
   };
   try {
     let lastError = "";
+    if (adapter.resolveCandidates) {
+      const searchUrl = candidates[0];
+      const searchPage = await context.newPage();
+      searchPage.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+      attemptedUrls.push(searchUrl);
+      const searchStartedAt = Date.now();
+      try {
+        const navigation = await navigateStable(searchPage, searchUrl);
+        const response = navigation.response;
+        await searchPage.waitForTimeout(700);
+        const initialState = await pageState(searchPage);
+        const state = initialState.notFound ? initialState : await waitForChallenge(searchPage, initialState);
+        const blockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound : false;
+        if (state.blocked || blockedByStatus) {
+          record({
+            url: searchUrl,
+            finalUrl: searchPage.url(),
+            httpStatus: response?.status(),
+            title: state.title,
+            outcome: "blocked",
+            durationMs: Date.now() - searchStartedAt,
+            pagePreview: state.preview,
+            message: blockedByStatus
+              ? `Источник вернул HTTP ${response?.status()} при поиске компании.`
+              : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`,
+          });
+          return {
+            source: adapter.source,
+            label: adapter.label,
+            status: "blocked",
+            query,
+            profileUrl: searchPage.url(),
+            attemptedUrls,
+            attempts,
+            browser,
+            reviews: [],
+            message: `${adapter.label} не отдала страницу поиска серверу. Подробности находятся в логе Chromium ниже.`,
+          };
+        }
+        candidates = response?.status() === 404 || state.notFound ? [] : await adapter.resolveCandidates(searchPage, query);
+        record({
+          url: searchUrl,
+          finalUrl: searchPage.url(),
+          httpStatus: response?.status(),
+          title: state.title,
+          outcome: candidates.length ? "found" : "not_found",
+          durationMs: Date.now() - searchStartedAt,
+          pagePreview: state.preview,
+          message: candidates.length
+            ? `Найден профиль компании: ${candidates[0]}`
+            : "Точный профиль компании не найден в результатах поиска.",
+        });
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        record({
+          url: searchUrl,
+          finalUrl: searchPage.url(),
+          outcome: "error",
+          durationMs: Date.now() - searchStartedAt,
+          message: lastError,
+        });
+        candidates = [];
+      } finally {
+        await searchPage.close().catch(() => undefined);
+      }
+      if (!candidates.length) {
+        return {
+          source: adapter.source,
+          label: adapter.label,
+          status: lastError ? "error" : "not_found",
+          query,
+          attemptedUrls,
+          attempts,
+          browser,
+          reviews: [],
+          message: lastError || `Компания не найдена через поиск ${adapter.label}.`,
+        };
+      }
+    }
     for (const candidate of candidates) {
       const page = await context.newPage();
       page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
@@ -549,6 +720,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             }
           }
           const extractionStartedAt = Date.now();
+          await adapter.prepare?.(page);
           const extracted = await adapter.extract(page, currentPage);
           companyName ||= extracted.companyName;
           allReviews.push(...extracted.reviews);
