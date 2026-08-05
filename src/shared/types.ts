@@ -96,7 +96,7 @@ export interface AdFilters {
 }
 
 export const EMPTY_FILTERS: AdFilters = {
-  search: "",
+  search: "sale",
   searchMode: "all",
   country: ["US"],
   app: "",

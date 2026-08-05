@@ -74,11 +74,13 @@ function parseReach(ad: MetaAd): number | undefined {
 export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string | undefined, limit: number): Promise<AdsResponse> {
   if (!config.metaAccessToken) throw new Error("META_ACCESS_TOKEN не настроен");
   const selectedCountries = filters.country?.length ? filters.country : ["US"];
+  const searchTerms = filters.search?.trim() || "sale";
   const params = new URLSearchParams({
     access_token: config.metaAccessToken,
     ad_type: "ALL",
     ad_active_status: "ALL",
     ad_reached_countries: JSON.stringify(selectedCountries),
+    search_terms: searchTerms,
     fields: [
       "id", "page_id", "page_name", "ad_creation_time", "ad_delivery_start_time",
       "ad_delivery_stop_time", "ad_creative_bodies", "ad_creative_link_captions",
@@ -88,7 +90,6 @@ export async function fetchMetaAds(filters: Partial<AdFilters>, cursor: string |
     ].join(","),
     limit: String(Math.min(limit, 50)),
   });
-  if (filters.search) params.set("search_terms", filters.search);
   if (filters.searchMode === "exact") params.set("search_type", "KEYWORD_EXACT_PHRASE");
   if (filters.dateFrom) params.set("ad_delivery_date_min", filters.dateFrom);
   if (filters.dateTo) params.set("ad_delivery_date_max", filters.dateTo);

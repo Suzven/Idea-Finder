@@ -103,5 +103,6 @@ describe("fetchMetaAds", () => {
 
     const requestUrl = new URL(String(fetchMock.mock.calls[0][0]));
     expect(requestUrl.searchParams.get("ad_reached_countries")).toBe('["US"]');
+    expect(requestUrl.searchParams.get("search_terms")).toBe("sale");
   });
 });
