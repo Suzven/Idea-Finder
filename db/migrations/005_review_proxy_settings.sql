@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS review_proxy_settings (
+    client_id VARCHAR(100) NOT NULL PRIMARY KEY,
+    proxy_server VARCHAR(500) NOT NULL,
+    proxy_username VARCHAR(255) NULL,
+    proxy_password TEXT NULL,
+    proxy_bypass VARCHAR(500) NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -1,7 +1,7 @@
 import mysql from "mysql2/promise";
-import { randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { config } from "./config.js";
-import type { AdCreative, AdSource, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary } from "../src/shared/types.js";
+import type { AdCreative, AdSource, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, IntegrationLogSummary, ReviewProxySettings, ReviewProxySettingsInput } from "../src/shared/types.js";
 
 const databaseConfig = config.database;
 const databaseConfigured = Boolean(
@@ -28,8 +28,43 @@ const memoryFavoriteCollections = new Map<string, Map<string, Set<string>>>();
 const memoryCreativeNotes = new Map<string, Map<string, string>>();
 const memoryAIReports = new Map<string, Map<string, AIAnalysisReport>>();
 const memoryAILandingScreenshots = new Map<string, { reportId: string; buffer: Buffer; mimeType: string }>();
+const memoryReviewProxySettings = new Map<string, StoredReviewProxySettings>();
 let memoryCollectionId = 0;
 let memoryAIReportId = 0;
+
+export interface StoredReviewProxySettings {
+  server: string;
+  username?: string;
+  password?: string;
+  bypass?: string;
+  updatedAt?: string;
+}
+
+function proxyEncryptionKey(): Buffer {
+  const secret = databaseConfig.password;
+  if (!secret) throw new Error("DB_PASSWORD недоступен для шифрования пароля прокси.");
+  return createHash("sha256").update(`spyservice:review-proxy:v1:${secret}`).digest();
+}
+
+function encryptProxyPassword(value?: string): string | null {
+  if (!value) return null;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", proxyEncryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1.${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+
+function decryptProxyPassword(value: unknown): string | undefined {
+  if (!value) return undefined;
+  const encoded = String(value);
+  if (!encoded.startsWith("v1.")) return encoded;
+  const [, ivValue, tagValue, encryptedValue] = encoded.split(".");
+  if (!ivValue || !tagValue || !encryptedValue) throw new Error("Повреждён сохранённый пароль прокси.");
+  const decipher = createDecipheriv("aes-256-gcm", proxyEncryptionKey(), Buffer.from(ivValue, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]).toString("utf8");
+}
 
 export interface CollectedAdEntry {
   ad: AdCreative;
@@ -262,6 +297,81 @@ export async function healthcheckDatabase(): Promise<"connected" | "disabled" | 
   } catch {
     return "unavailable";
   }
+}
+
+function publicReviewProxySettings(value?: StoredReviewProxySettings): ReviewProxySettings {
+  return {
+    configured: Boolean(value?.server),
+    server: value?.server ?? "",
+    username: value?.username ?? "",
+    bypass: value?.bypass ?? "",
+    hasPassword: Boolean(value?.password),
+    ...(value?.updatedAt ? { updatedAt: value.updatedAt } : {}),
+  };
+}
+
+export async function getReviewProxyCredentials(clientId: string): Promise<StoredReviewProxySettings | undefined> {
+  if (!pool) return memoryReviewProxySettings.get(clientId);
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT proxy_server, proxy_username, proxy_password, proxy_bypass, updated_at
+     FROM review_proxy_settings WHERE client_id = ?`,
+    [clientId],
+  );
+  const row = rows[0];
+  if (!row) return undefined;
+  return {
+    server: String(row.proxy_server),
+    username: nullableString(row.proxy_username) ?? undefined,
+    password: decryptProxyPassword(row.proxy_password),
+    bypass: nullableString(row.proxy_bypass) ?? undefined,
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+export async function getReviewProxySettings(clientId: string): Promise<ReviewProxySettings> {
+  return publicReviewProxySettings(await getReviewProxyCredentials(clientId));
+}
+
+export async function saveReviewProxySettings(clientId: string, input: ReviewProxySettingsInput): Promise<ReviewProxySettings> {
+  const server = input.server.trim();
+  const username = input.username?.trim() || undefined;
+  const bypass = input.bypass?.trim() || undefined;
+  const passwordProvided = input.password !== undefined;
+  if (!pool) {
+    const current = memoryReviewProxySettings.get(clientId);
+    const value: StoredReviewProxySettings = {
+      server,
+      username,
+      password: passwordProvided ? input.password || undefined : current?.password,
+      bypass,
+      updatedAt: new Date().toISOString(),
+    };
+    memoryReviewProxySettings.set(clientId, value);
+    return publicReviewProxySettings(value);
+  }
+  const encryptedPassword = passwordProvided ? encryptProxyPassword(input.password) : null;
+  await pool.execute(
+    `INSERT INTO review_proxy_settings
+      (client_id, proxy_server, proxy_username, proxy_password, proxy_bypass)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       proxy_server = VALUES(proxy_server),
+       proxy_username = VALUES(proxy_username),
+       proxy_password = IF(?, VALUES(proxy_password), proxy_password),
+       proxy_bypass = VALUES(proxy_bypass),
+       updated_at = CURRENT_TIMESTAMP`,
+    [clientId, server, username ?? null, encryptedPassword, bypass ?? null, passwordProvided ? 1 : 0],
+  );
+  return getReviewProxySettings(clientId);
+}
+
+export async function deleteReviewProxySettings(clientId: string): Promise<boolean> {
+  if (!pool) return memoryReviewProxySettings.delete(clientId);
+  const [result] = await pool.execute<mysql.ResultSetHeader>(
+    "DELETE FROM review_proxy_settings WHERE client_id = ?",
+    [clientId],
+  );
+  return result.affectedRows > 0;
 }
 
 function externalAdId(ad: AdCreative): string {

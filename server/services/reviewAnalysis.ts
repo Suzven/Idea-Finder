@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
-import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import { AppError } from "../errors.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
+
+export interface ReviewProxyCredentials {
+  server: string;
+  username?: string;
+  password?: string;
+  bypass?: string;
+}
 
 interface ReviewAdapter {
   source: ReviewSource;
@@ -112,8 +120,8 @@ async function navigateStable(page: Page, url: string): Promise<{ response?: Pla
   return { ...(finalResponse ? { response: finalResponse } : {}), ...(warning ? { warning } : {}) };
 }
 
-async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; title: string; preview: string }> {
-  let state: { title: string; text: string; iframeCount: number; elementCount: number } | undefined;
+async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; hasReviewContent: boolean; title: string; preview: string }> {
+  let state: { title: string; text: string; iframeCount: number; elementCount: number; reviewMarkerCount: number } | undefined;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
       state = await page.evaluate(() => ({
@@ -121,6 +129,7 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
         text: document.body?.innerText.slice(0, 30_000) ?? "",
         iframeCount: document.querySelectorAll("iframe").length,
         elementCount: document.body?.querySelectorAll("*").length ?? 0,
+        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-']").length,
       }));
       break;
     } catch (error) {
@@ -137,7 +146,6 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
     "are you a human",
     "security verification",
     "access denied",
-    "captcha",
     "checking your browser",
     "just a moment",
   ].some((phrase) => text.includes(phrase)) || (state.iframeCount > 0 && state.elementCount < 25 && state.text.length < 500);
@@ -148,13 +156,21 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
     "doesn't exist",
     "does not exist",
     "we can’t find",
+    "page you're looking for could not be found",
+    "page you’re looking for could not be found",
     "404 error",
   ].some((phrase) => text.includes(phrase));
-  return { blocked, notFound, title: state.title, preview: state.text.replace(/\s+/g, " ").trim().slice(0, 500) };
+  return {
+    blocked: blocked && state.reviewMarkerCount === 0,
+    notFound,
+    hasReviewContent: state.reviewMarkerCount > 0,
+    title: state.title,
+    preview: state.text.replace(/\s+/g, " ").trim().slice(0, 500),
+  };
 }
 
-async function waitForChallenge(page: Page): Promise<Awaited<ReturnType<typeof pageState>>> {
-  let state = await pageState(page);
+async function waitForChallenge(page: Page, initialState?: Awaited<ReturnType<typeof pageState>>): Promise<Awaited<ReturnType<typeof pageState>>> {
+  let state = initialState ?? await pageState(page);
   const deadline = Date.now() + CHALLENGE_WAIT_MS;
   while (state.blocked && Date.now() < deadline) {
     await page.waitForTimeout(1_500);
@@ -256,12 +272,27 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
   },
 };
 
-async function createContext(): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo }> {
+async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo }> {
   const browser = await getMetaBrowser();
   const rawVersion = browser.version();
   const version = rawVersion.match(/\d+(?:\.\d+){1,3}/)?.[0] ?? rawVersion;
   const majorVersion = version.match(/^\d+/)?.[0] ?? "126";
   const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`;
+  const proxyServer = proxySettings?.server;
+  if (proxyServer && !/^(?:https?|socks5):\/\/[^\s]+$/i.test(proxyServer)) {
+    throw new AppError(
+      500,
+      "REVIEW_PROXY_INVALID",
+      "Некорректный REVIEW_PROXY_SERVER.",
+      "Укажите адрес вместе с протоколом, например http://host:port или socks5://host:port.",
+    );
+  }
+  const proxy = proxyServer ? {
+    server: proxyServer,
+    ...(proxySettings?.username ? { username: proxySettings.username } : {}),
+    ...(proxySettings?.password ? { password: proxySettings.password } : {}),
+    ...(proxySettings?.bypass ? { bypass: proxySettings.bypass } : {}),
+  } : undefined;
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1_000 },
     screen: { width: 1920, height: 1080 },
@@ -276,19 +307,56 @@ async function createContext(): Promise<{ context: BrowserContext; browser: Revi
       "sec-ch-ua-mobile": "?0",
       "sec-ch-ua-platform": "\"Linux\"",
     },
+    ...(proxy ? { proxy } : {}),
   });
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
   });
-  return { context, browser: { version, userAgent } };
+  let proxyLabel: string | undefined;
+  if (proxyServer) {
+    const parsed = new URL(proxyServer);
+    parsed.username = "";
+    parsed.password = "";
+    proxyLabel = parsed.toString().replace(/\/$/, "");
+  }
+  return { context, browser: { version, userAgent, ...(proxyLabel ? { proxy: proxyLabel } : {}) } };
 }
 
-async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<ReviewSourceResult> {
+export async function testReviewProxyConnection(proxySettings?: ReviewProxyCredentials): Promise<ReviewProxyTestResult> {
+  if (!proxySettings?.server) {
+    throw new AppError(400, "REVIEW_PROXY_NOT_CONFIGURED", "Сначала сохраните настройки прокси.");
+  }
+  const startedAt = Date.now();
+  const { context } = await createContext(proxySettings);
+  try {
+    const page = await context.newPage();
+    const response = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const raw = await page.textContent("body");
+    let externalIp: string | undefined;
+    try {
+      const parsed = JSON.parse(raw ?? "{}") as { ip?: unknown };
+      if (typeof parsed.ip === "string") externalIp = parsed.ip;
+    } catch {
+      externalIp = raw?.trim().match(/(?:\d{1,3}\.){3}\d{1,3}|[a-f0-9:]{3,}/i)?.[0];
+    }
+    const ok = Boolean(response?.ok() && externalIp);
+    return {
+      ok,
+      ...(externalIp ? { externalIp } : {}),
+      elapsedMs: Date.now() - startedAt,
+      message: ok ? "Соединение через прокси установлено." : `Прокси вернула HTTP ${response?.status() ?? "без ответа"}.`,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings?: ReviewProxyCredentials): Promise<ReviewSourceResult> {
   const candidates = adapter.buildCandidates(query);
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
-  const created = await createContext();
+  const created = await createContext(proxySettings);
   const { context, browser } = created;
   const record = (attempt: ReviewAttemptLog) => {
     attempts.push(attempt);
@@ -305,18 +373,23 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
         const navigation = await navigateStable(page, candidate);
         const response = navigation.response;
         await page.waitForTimeout(700);
-        const state = await waitForChallenge(page);
-        const blockedByStatus = response ? [401, 403, 429].includes(response.status()) : false;
+        const initialState = await pageState(page);
+        const state = initialState.notFound || initialState.hasReviewContent ? initialState : await waitForChallenge(page, initialState);
+        const blockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound && !state.hasReviewContent : false;
         const firstAttempt: ReviewAttemptLog = {
           url: candidate,
           finalUrl: page.url(),
           httpStatus: response?.status(),
           title: state.title,
-          outcome: state.blocked || blockedByStatus ? "blocked" : response?.status() === 404 || state.notFound ? "not_found" : "loaded",
+          outcome: response?.status() === 404 || state.notFound ? "not_found" : state.blocked || blockedByStatus ? "blocked" : "loaded",
           durationMs: Date.now() - startedAt,
           pagePreview: state.preview,
           ...(navigation.warning ? { message: `Chromium обработал автоматический редирект: ${navigation.warning}` } : {}),
         };
+        if (response?.status() === 404 || state.notFound) {
+          record(firstAttempt);
+          continue;
+        }
         if (state.blocked || blockedByStatus) {
           firstAttempt.message = blockedByStatus
             ? `Источник вернул HTTP ${response?.status()} для IP сервера.`
@@ -337,11 +410,6 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
               : `${adapter.label} не завершил проверку браузера за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд. Подробности находятся в логе Chromium ниже.`,
           };
         }
-        if (response?.status() === 404 || state.notFound) {
-          record(firstAttempt);
-          continue;
-        }
-
         const allReviews: UserReview[] = [];
         let companyName: string | undefined;
         let profileUrl = page.url();
@@ -354,14 +422,15 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
             const nextNavigation = await navigateStable(page, target);
             const nextResponse = nextNavigation.response;
             await page.waitForTimeout(700);
-            const nextState = await waitForChallenge(page);
-            const nextBlockedByStatus = nextResponse ? [401, 403, 429].includes(nextResponse.status()) : false;
+            const initialNextState = await pageState(page);
+            const nextState = initialNextState.notFound || initialNextState.hasReviewContent ? initialNextState : await waitForChallenge(page, initialNextState);
+            const nextBlockedByStatus = nextResponse ? [401, 403, 429].includes(nextResponse.status()) && !nextState.notFound && !nextState.hasReviewContent : false;
             currentAttempt = {
               url: target,
               finalUrl: page.url(),
               httpStatus: nextResponse?.status(),
               title: nextState.title,
-              outcome: nextState.blocked || nextBlockedByStatus ? "blocked" : nextResponse?.status() === 404 || nextState.notFound ? "not_found" : "loaded",
+              outcome: nextResponse?.status() === 404 || nextState.notFound ? "not_found" : nextState.blocked || nextBlockedByStatus ? "blocked" : "loaded",
               durationMs: Date.now() - pageStartedAt,
               pagePreview: nextState.preview,
               ...(nextNavigation.warning ? { message: `Chromium обработал автоматический редирект: ${nextNavigation.warning}` } : {}),
@@ -431,10 +500,10 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
   }
 }
 
-export async function searchCompanyReviews(query: string, sources: ReviewSource[]): Promise<ReviewSearchResponse> {
+export async function searchCompanyReviews(query: string, sources: ReviewSource[], proxySettings?: ReviewProxyCredentials): Promise<ReviewSearchResponse> {
   const results = await Promise.all(sources.map(async (source) => {
     try {
-      return await scrapeSource(adapters[source], query);
+      return await scrapeSource(adapters[source], query, proxySettings);
     } catch (error) {
       return {
         source,

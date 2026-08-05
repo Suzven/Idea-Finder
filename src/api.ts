@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -220,6 +220,25 @@ export async function searchCompanyReviews(query: string, sources: ReviewSource[
     "Повторите запрос позже: фоновая задача на сервере могла продолжить выполнение.",
     started.jobId,
   );
+}
+
+export async function fetchReviewProxySettings(): Promise<ReviewProxySettings> {
+  return request<ReviewProxySettings>("/api/settings/review-proxy");
+}
+
+export async function saveReviewProxyConfiguration(settings: ReviewProxySettingsInput): Promise<ReviewProxySettings> {
+  return request<ReviewProxySettings>("/api/settings/review-proxy", {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function deleteReviewProxyConfiguration(): Promise<void> {
+  await request("/api/settings/review-proxy", { method: "DELETE" });
+}
+
+export async function testReviewProxyConfiguration(): Promise<ReviewProxyTestResult> {
+  return request<ReviewProxyTestResult>("/api/settings/review-proxy/test", { method: "POST" });
 }
 
 export async function fetchAdMedia(mediaInfoUrl: string): Promise<ResolvedAdMedia> {

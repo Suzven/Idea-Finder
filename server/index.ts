@@ -10,12 +10,12 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, setCreativeAnalysisNotes } from "./db.js";
+import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, deleteReviewProxySettings, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, getReviewProxyCredentials, getReviewProxySettings, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, saveReviewProxySettings, setCreativeAnalysisNotes } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
-import { searchCompanyReviews } from "./services/reviewAnalysis.js";
+import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
 import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "../src/shared/types.js";
 
 const app = express();
@@ -246,6 +246,22 @@ const reviewSearchSchema = z.object({
   query: z.string().trim().min(2).max(120),
   sources: z.array(z.enum(["trustpilot", "g2"])).min(1).max(10),
 });
+const reviewProxySettingsSchema = z.object({
+  server: z.string().trim().min(1).max(500).refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return ["http:", "https:", "socks5:"].includes(parsed.protocol)
+        && Boolean(parsed.hostname)
+        && !parsed.username
+        && !parsed.password;
+    } catch {
+      return false;
+    }
+  }, "Укажите прокси в формате http://host:port, https://host:port или socks5://host:port без логина в URL."),
+  username: z.string().trim().max(255).optional(),
+  password: z.string().max(1_000).optional(),
+  bypass: z.string().trim().max(500).optional(),
+});
 
 function snapshotUrlFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
@@ -457,6 +473,45 @@ app.get("/api/ai-analysis/jobs/:jobId", (request, response, next) => {
   }
 });
 
+app.get("/api/settings/review-proxy", async (request, response, next) => {
+  try {
+    response.json(await getReviewProxySettings(getClientId(request)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/settings/review-proxy", async (request, response, next) => {
+  try {
+    const settings = reviewProxySettingsSchema.parse(request.body);
+    response.json(await saveReviewProxySettings(getClientId(request), {
+      server: settings.server,
+      ...(settings.username ? { username: settings.username } : {}),
+      ...(settings.password ? { password: settings.password } : {}),
+      ...(settings.bypass ? { bypass: settings.bypass } : {}),
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/settings/review-proxy", async (request, response, next) => {
+  try {
+    await deleteReviewProxySettings(getClientId(request));
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/settings/review-proxy/test", async (request, response, next) => {
+  try {
+    response.json(await testReviewProxyConnection(await getReviewProxyCredentials(getClientId(request))));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/review-analysis", (request, response, next) => {
   try {
     const parsed = reviewSearchSchema.parse(request.body);
@@ -495,7 +550,8 @@ app.post("/api/review-analysis", (request, response, next) => {
       job.status = "running";
       job.updatedAt = Date.now();
       try {
-        job.result = await searchCompanyReviews(query, sources);
+        const proxySettings = await getReviewProxyCredentials(clientId);
+        job.result = await searchCompanyReviews(query, sources, proxySettings);
         job.status = "completed";
       } catch (error) {
         job.status = "failed";

@@ -166,6 +166,30 @@ export interface ReviewAttemptLog {
 export interface ReviewBrowserInfo {
   version: string;
   userAgent: string;
+  proxy?: string;
+}
+
+export interface ReviewProxySettings {
+  configured: boolean;
+  server: string;
+  username: string;
+  bypass: string;
+  hasPassword: boolean;
+  updatedAt?: string;
+}
+
+export interface ReviewProxySettingsInput {
+  server: string;
+  username?: string;
+  password?: string;
+  bypass?: string;
+}
+
+export interface ReviewProxyTestResult {
+  ok: boolean;
+  externalIp?: string;
+  elapsedMs: number;
+  message: string;
 }
 
 export interface ReviewSourceResult {

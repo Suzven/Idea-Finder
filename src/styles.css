@@ -309,7 +309,7 @@ body.modal-open { overflow: hidden; }
 .modal-bottom { display: flex; gap: 8px; }
 
 .drawer-backdrop { position: fixed; z-index: 79; inset: 0; background: rgba(13,19,36,.22); backdrop-filter: blur(2px); }
-.settings-drawer { position: fixed; z-index: 80; top: 0; right: 0; bottom: 0; width: min(390px, 92vw); padding: 28px; background: #fff; box-shadow: -25px 0 70px rgba(21,27,49,.16); transform: translateX(105%); transition: transform .25s ease; }
+.settings-drawer { position: fixed; z-index: 80; top: 0; right: 0; bottom: 0; width: min(390px, 92vw); overflow-x: hidden; overflow-y: auto; padding: 28px; background: #fff; box-shadow: -25px 0 70px rgba(21,27,49,.16); transform: translateX(105%); transition: transform .25s ease; }
 .settings-drawer.open { transform: translateX(0); }
 .drawer-title { display: flex; align-items: flex-start; justify-content: space-between; padding-bottom: 22px; border-bottom: 1px solid #e8eaf0; }
 .drawer-title h2 { margin: 5px 0 0; color: #273149; font-family: "Plus Jakarta Sans", "Manrope", sans-serif; font-size: 20px; }
@@ -462,6 +462,20 @@ body.modal-open { overflow: hidden; }
 .api-key-warning strong { color: #775a21; font-size: 11.5px; }
 .api-key-warning p { margin: 5px 0 0; color: #8f7748; font-size: 10px; line-height: 1.6; }
 .api-model-note > strong { display: block; margin-top: 11px; color: #2f3950; font-family: "Plus Jakarta Sans", "Manrope", sans-serif; font-size: 16px; }
+.review-proxy-block { margin-top: 22px; padding-top: 23px; border-top: 1px solid #e7e9ef; }
+.proxy-settings-loading { display: flex; align-items: center; gap: 8px; min-height: 70px; color: #8993a6; font-size: 10.5px; }
+.proxy-settings-fields { display: grid; gap: 11px; margin-top: 14px; }
+.proxy-settings-fields label > span { display: block; margin-bottom: 6px; color: #707b90; font-size: 9.5px; font-weight: 800; }
+.proxy-settings-fields label > input, .proxy-password-input { width: 100%; min-height: 42px; color: #354057; border: 1px solid #dcdfea; border-radius: 9px; outline: 0; background: #fafbfe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.proxy-settings-fields label > input { padding: 0 11px; }
+.proxy-settings-fields label > input:focus, .proxy-password-input:focus-within { border-color: #9885eb; box-shadow: 0 0 0 3px rgba(116,89,223,.1); }
+.proxy-password-input { display: flex; align-items: center; padding-left: 11px; }
+.proxy-password-input input { flex: 1; min-width: 0; height: 40px; color: inherit; border: 0; outline: 0; background: transparent; font: inherit; }
+.proxy-password-input button { display: grid; place-items: center; flex: 0 0 34px; height: 34px; color: #8993a6; }
+.proxy-settings-error { margin-top: 10px; color: #b44f5c; font-size: 10px; line-height: 1.5; }
+.proxy-actions { display: grid; grid-template-columns: 1fr 1fr; }
+.proxy-actions .button:first-child { grid-column: 1 / -1; }
+.proxy-security-note { margin-bottom: 25px; }
 
 /* AI analytics */
 .ai-page { max-width: 1640px; }
