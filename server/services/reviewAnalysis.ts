@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
 import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 
@@ -30,6 +30,7 @@ export function buildTrustpilotCandidates(query: string): string[] {
   const { domain, slug } = normalizeCompanyQuery(query);
   return unique([
     domain,
+    domain.includes(".") ? `www.${domain}` : "",
     slug,
     slug ? `${slug}.com` : "",
     slug ? `www.${slug}.com` : "",
@@ -69,13 +70,66 @@ function deduplicateReviews(reviews: UserReview[]): UserReview[] {
   });
 }
 
+function isNavigationRace(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /navigation.+interrupted|execution context was destroyed|cannot find context with specified id/i.test(message);
+}
+
+async function waitForNavigationToSettle(page: Page): Promise<void> {
+  const deadline = Date.now() + 8_000;
+  let lastUrl = "";
+  let stableChecks = 0;
+  while (Date.now() < deadline && !page.isClosed()) {
+    await page.waitForLoadState("domcontentloaded", { timeout: 2_000 }).catch(() => undefined);
+    const currentUrl = page.url();
+    stableChecks = currentUrl === lastUrl ? stableChecks + 1 : 0;
+    lastUrl = currentUrl;
+    if (stableChecks >= 2) return;
+    await page.waitForTimeout(350);
+  }
+}
+
+async function navigateStable(page: Page, url: string): Promise<{ response?: PlaywrightResponse; warning?: string }> {
+  let response: PlaywrightResponse | null = null;
+  let latestDocumentResponse: PlaywrightResponse | undefined;
+  let warning: string | undefined;
+  const captureDocumentResponse = (candidate: PlaywrightResponse) => {
+    if (candidate.request().resourceType() === "document") latestDocumentResponse = candidate;
+  };
+  page.on("response", captureDocumentResponse);
+  try {
+    response = await page.goto(url, { waitUntil: "domcontentloaded" });
+  } catch (error) {
+    if (!isNavigationRace(error) || page.url() === "about:blank") {
+      page.off("response", captureDocumentResponse);
+      throw error;
+    }
+    warning = error instanceof Error ? error.message : String(error);
+  }
+  await waitForNavigationToSettle(page);
+  page.off("response", captureDocumentResponse);
+  const finalResponse = response ?? latestDocumentResponse;
+  return { ...(finalResponse ? { response: finalResponse } : {}), ...(warning ? { warning } : {}) };
+}
+
 async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; title: string; preview: string }> {
-  const state = await page.evaluate(() => ({
-    title: document.title,
-    text: document.body?.innerText.slice(0, 30_000) ?? "",
-    iframeCount: document.querySelectorAll("iframe").length,
-    elementCount: document.body?.querySelectorAll("*").length ?? 0,
-  }));
+  let state: { title: string; text: string; iframeCount: number; elementCount: number } | undefined;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      state = await page.evaluate(() => ({
+        title: document.title,
+        text: document.body?.innerText.slice(0, 30_000) ?? "",
+        iframeCount: document.querySelectorAll("iframe").length,
+        elementCount: document.body?.querySelectorAll("*").length ?? 0,
+      }));
+      break;
+    } catch (error) {
+      if (!isNavigationRace(error) || attempt === 5) throw error;
+      await waitForNavigationToSettle(page);
+      await page.waitForTimeout(250);
+    }
+  }
+  if (!state) throw new Error("Chromium не смог прочитать DOM после цепочки редиректов.");
   const text = `${state.title}\n${state.text}`.toLowerCase();
   const blocked = [
     "verifying your connection",
@@ -241,27 +295,32 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
     console.info(`[review-analysis:${adapter.source}]`, JSON.stringify(attempt));
   };
   try {
-    const page = await context.newPage();
-    page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
     let lastError = "";
     for (const candidate of candidates) {
+      const page = await context.newPage();
+      page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
       attemptedUrls.push(candidate);
       const startedAt = Date.now();
       try {
-        const response = await page.goto(candidate, { waitUntil: "domcontentloaded" });
+        const navigation = await navigateStable(page, candidate);
+        const response = navigation.response;
         await page.waitForTimeout(700);
         const state = await waitForChallenge(page);
+        const blockedByStatus = response ? [401, 403, 429].includes(response.status()) : false;
         const firstAttempt: ReviewAttemptLog = {
           url: candidate,
           finalUrl: page.url(),
           httpStatus: response?.status(),
           title: state.title,
-          outcome: state.blocked ? "blocked" : response?.status() === 404 || state.notFound ? "not_found" : "loaded",
+          outcome: state.blocked || blockedByStatus ? "blocked" : response?.status() === 404 || state.notFound ? "not_found" : "loaded",
           durationMs: Date.now() - startedAt,
           pagePreview: state.preview,
+          ...(navigation.warning ? { message: `Chromium обработал автоматический редирект: ${navigation.warning}` } : {}),
         };
-        if (state.blocked) {
-          firstAttempt.message = `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`;
+        if (state.blocked || blockedByStatus) {
+          firstAttempt.message = blockedByStatus
+            ? `Источник вернул HTTP ${response?.status()} для IP сервера.`
+            : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`;
           record(firstAttempt);
           return {
             source: adapter.source,
@@ -273,7 +332,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
             attempts,
             browser,
             reviews: [],
-            message: `${adapter.label} не завершил проверку браузера за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд. Подробности находятся в логе Chromium ниже.`,
+            message: blockedByStatus
+              ? `${adapter.label} вернул HTTP ${response?.status()} для IP сервера. Подробности находятся в логе Chromium ниже.`
+              : `${adapter.label} не завершил проверку браузера за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд. Подробности находятся в логе Chromium ниже.`,
           };
         }
         if (response?.status() === 404 || state.notFound) {
@@ -290,20 +351,25 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
           if (currentPage > 1) {
             attemptedUrls.push(target);
             const pageStartedAt = Date.now();
-            const nextResponse = await page.goto(target, { waitUntil: "domcontentloaded" });
+            const nextNavigation = await navigateStable(page, target);
+            const nextResponse = nextNavigation.response;
             await page.waitForTimeout(700);
             const nextState = await waitForChallenge(page);
+            const nextBlockedByStatus = nextResponse ? [401, 403, 429].includes(nextResponse.status()) : false;
             currentAttempt = {
               url: target,
               finalUrl: page.url(),
               httpStatus: nextResponse?.status(),
               title: nextState.title,
-              outcome: nextState.blocked ? "blocked" : nextResponse?.status() === 404 || nextState.notFound ? "not_found" : "loaded",
+              outcome: nextState.blocked || nextBlockedByStatus ? "blocked" : nextResponse?.status() === 404 || nextState.notFound ? "not_found" : "loaded",
               durationMs: Date.now() - pageStartedAt,
               pagePreview: nextState.preview,
+              ...(nextNavigation.warning ? { message: `Chromium обработал автоматический редирект: ${nextNavigation.warning}` } : {}),
             };
-            if (nextState.blocked || nextResponse?.status() === 404 || nextState.notFound) {
-              currentAttempt.message = nextState.blocked ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.` : "Вторая страница не найдена.";
+            if (nextState.blocked || nextBlockedByStatus || nextResponse?.status() === 404 || nextState.notFound) {
+              currentAttempt.message = nextBlockedByStatus
+                ? `Источник вернул HTTP ${nextResponse?.status()} для IP сервера.`
+                : nextState.blocked ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.` : "Вторая страница не найдена.";
               record(currentAttempt);
               break;
             }
@@ -345,6 +411,8 @@ async function scrapeSource(adapter: ReviewAdapter, query: string): Promise<Revi
           durationMs: Date.now() - startedAt,
           message: lastError,
         });
+      } finally {
+        await page.close().catch(() => undefined);
       }
     }
     return {
