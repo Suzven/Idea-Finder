@@ -26,35 +26,6 @@ interface ReviewAdapter {
 const MAX_PAGES = 6;
 const NAVIGATION_TIMEOUT_MS = 35_000;
 const CHALLENGE_WAIT_MS = 45_000;
-const CAPTERRA_CHALLENGE_WAIT_MS = 90_000;
-const CAPTERRA_SESSION_TTL_MS = 6 * 60 * 60_000;
-
-type ReviewStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
-
-let capterraSessionCache: {
-  key: string;
-  state: ReviewStorageState;
-  updatedAt: number;
-} | undefined;
-
-function reviewProxySessionKey(proxySettings?: ReviewProxyCredentials): string {
-  return createHash("sha256")
-    .update([
-      proxySettings?.server ?? "direct",
-      proxySettings?.username ?? "",
-      proxySettings?.password ?? "",
-    ].join("\u0000"))
-    .digest("hex");
-}
-
-function getCapterraSessionState(key: string): ReviewStorageState | undefined {
-  if (!capterraSessionCache || capterraSessionCache.key !== key) return undefined;
-  if (Date.now() - capterraSessionCache.updatedAt > CAPTERRA_SESSION_TTL_MS) {
-    capterraSessionCache = undefined;
-    return undefined;
-  }
-  return capterraSessionCache.state;
-}
 
 export function normalizeCompanyQuery(value: string): { domain: string; slug: string } {
   let normalized = value.trim().toLowerCase();
@@ -275,13 +246,9 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
   };
 }
 
-async function waitForChallenge(
-  page: Page,
-  initialState?: Awaited<ReturnType<typeof pageState>>,
-  waitMs = CHALLENGE_WAIT_MS,
-): Promise<Awaited<ReturnType<typeof pageState>>> {
+async function waitForChallenge(page: Page, initialState?: Awaited<ReturnType<typeof pageState>>): Promise<Awaited<ReturnType<typeof pageState>>> {
   let state = initialState ?? await pageState(page);
-  const deadline = Date.now() + waitMs;
+  const deadline = Date.now() + CHALLENGE_WAIT_MS;
   while (state.blocked && Date.now() < deadline) {
     await page.waitForTimeout(1_500);
     state = await pageState(page);
@@ -616,10 +583,7 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
   },
 };
 
-async function createContext(
-  proxySettings?: ReviewProxyCredentials,
-  storageState?: ReviewStorageState,
-): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo; close: () => Promise<void> }> {
+async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo; close: () => Promise<void> }> {
   const browser = await getMetaBrowser();
   const rawVersion = browser.version();
   const version = rawVersion.match(/\d+(?:\.\d+){1,3}/)?.[0] ?? rawVersion;
@@ -661,7 +625,6 @@ async function createContext(
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": "\"Linux\"",
       },
-      ...(storageState ? { storageState } : {}),
       ...(proxy ? { proxy } : {}),
     });
   } catch (error) {
@@ -809,57 +772,14 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
   let resolvedCandidatePage: Page | undefined;
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
-  const capterraSessionKey = adapter.source === "capterra" ? reviewProxySessionKey(proxySettings) : undefined;
-  const restoredCapterraState = capterraSessionKey ? getCapterraSessionState(capterraSessionKey) : undefined;
-  const created = await createContext(proxySettings, restoredCapterraState);
+  const created = await createContext(proxySettings);
   const { context, browser } = created;
-  const challengeWaitMs = adapter.source === "capterra" ? CAPTERRA_CHALLENGE_WAIT_MS : CHALLENGE_WAIT_MS;
   const record = (attempt: ReviewAttemptLog) => {
     attempts.push(attempt);
     console.info(`[review-analysis:${adapter.source}]`, JSON.stringify(attempt));
   };
   try {
     let lastError = "";
-    if (adapter.source === "capterra") {
-      const warmupPage = await context.newPage();
-      warmupPage.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
-      const warmupUrl = "https://www.capterra.com/";
-      const warmupStartedAt = Date.now();
-      attemptedUrls.push(warmupUrl);
-      try {
-        const navigation = await navigateStable(warmupPage, warmupUrl);
-        await warmupPage.waitForTimeout(1_200);
-        const initialState = await pageState(warmupPage);
-        const state = initialState.blocked
-          ? await waitForChallenge(warmupPage, initialState, challengeWaitMs)
-          : initialState;
-        record({
-          url: warmupUrl,
-          finalUrl: warmupPage.url(),
-          httpStatus: navigation.response?.status(),
-          title: state.title,
-          outcome: state.blocked ? "blocked" : "loaded",
-          durationMs: Date.now() - warmupStartedAt,
-          pagePreview: state.preview,
-          message: state.blocked
-            ? `Прогрев сессии Capterra не прошёл проверку за ${Math.round(challengeWaitMs / 1_000)} секунд.`
-            : restoredCapterraState
-              ? "Сохранённая сессия Capterra восстановлена и прогрета перед поиском."
-              : "Создана и прогрета новая сессия Capterra; cookies будут использованы в следующих запусках.",
-        });
-      } catch (error) {
-        record({
-          url: warmupUrl,
-          finalUrl: warmupPage.url(),
-          outcome: "error",
-          durationMs: Date.now() - warmupStartedAt,
-          message: `Не удалось прогреть сессию Capterra: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      } finally {
-        await warmupPage.close().catch(() => undefined);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 700));
-    }
     if (adapter.resolveCandidates) {
       const searchUrl = candidates[0];
       const searchPage = await context.newPage();
@@ -872,7 +792,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         const response = navigation.response;
         await searchPage.waitForTimeout(700);
         const initialState = await pageState(searchPage);
-        const state = initialState.notFound ? initialState : await waitForChallenge(searchPage, initialState, challengeWaitMs);
+        const state = initialState.notFound ? initialState : await waitForChallenge(searchPage, initialState);
         const blockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound : false;
         if (state.blocked || blockedByStatus) {
           record({
@@ -885,7 +805,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             pagePreview: state.preview,
             message: blockedByStatus
               ? `Источник вернул HTTP ${response?.status()} при поиске компании.`
-              : `JS-проверка не завершилась за ${Math.round(challengeWaitMs / 1_000)} секунд.`,
+              : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`,
           });
           return {
             source: adapter.source,
@@ -958,7 +878,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         const response = navigation.response;
         await page.waitForTimeout(700);
         const initialState = await pageState(page);
-        const state = initialState.notFound || initialState.hasReviewContent ? initialState : await waitForChallenge(page, initialState, challengeWaitMs);
+        const state = initialState.notFound || initialState.hasReviewContent ? initialState : await waitForChallenge(page, initialState);
         const blockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound && !state.hasReviewContent : false;
         const firstAttempt: ReviewAttemptLog = {
           url: candidate,
@@ -981,7 +901,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         if (state.blocked || blockedByStatus) {
           firstAttempt.message = blockedByStatus
             ? `Источник вернул HTTP ${response?.status()} для IP сервера.`
-            : `JS-проверка не завершилась за ${Math.round(challengeWaitMs / 1_000)} секунд.`;
+            : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`;
           record(firstAttempt);
           return {
             source: adapter.source,
@@ -995,7 +915,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             reviews: [],
             message: blockedByStatus
               ? `${adapter.label} вернул HTTP ${response?.status()} для IP сервера. Подробности находятся в логе Chromium ниже.`
-              : `${adapter.label} не завершил проверку браузера за ${Math.round(challengeWaitMs / 1_000)} секунд. Подробности находятся в логе Chromium ниже.`,
+              : `${adapter.label} не завершил проверку браузера за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд. Подробности находятся в логе Chromium ниже.`,
           };
         }
         const allReviews: UserReview[] = [];
@@ -1027,7 +947,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             const nextResponse = "response" in nextNavigation ? nextNavigation.response : undefined;
             await page.waitForTimeout(700);
             const initialNextState = await pageState(page);
-            const nextState = initialNextState.notFound || initialNextState.hasReviewContent ? initialNextState : await waitForChallenge(page, initialNextState, challengeWaitMs);
+            const nextState = initialNextState.notFound || initialNextState.hasReviewContent ? initialNextState : await waitForChallenge(page, initialNextState);
             const nextBlockedByStatus = nextResponse ? [401, 403, 429].includes(nextResponse.status()) && !nextState.notFound && !nextState.hasReviewContent : false;
             currentAttempt = {
               url: target,
@@ -1043,7 +963,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
               currentAttempt.message = nextBlockedByStatus
                 ? `Источник вернул HTTP ${nextResponse?.status()} для IP сервера.`
                 : nextState.blocked
-                  ? `JS-проверка не завершилась за ${Math.round(challengeWaitMs / 1_000)} секунд.`
+                  ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`
                   : `Страница ${currentPage} не найдена.`;
               record(currentAttempt);
               break;
@@ -1113,16 +1033,6 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       message: lastError || `Компания не найдена в ${adapter.label} ни по одному варианту адреса.`,
     };
   } finally {
-    if (capterraSessionKey) {
-      const state = await context.storageState().catch(() => undefined);
-      if (state) {
-        capterraSessionCache = {
-          key: capterraSessionKey,
-          state,
-          updatedAt: Date.now(),
-        };
-      }
-    }
     await created.close();
   }
 }
