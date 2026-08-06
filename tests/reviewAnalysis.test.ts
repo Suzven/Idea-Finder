@@ -20,9 +20,9 @@ describe("review analysis URL adapters", () => {
 
   it("tries Trustpilot name and domain variants without duplicates", () => {
     expect(buildTrustpilotCandidates("appsflyer")).toEqual([
-      "https://www.trustpilot.com/review/appsflyer",
-      "https://www.trustpilot.com/review/appsflyer.com",
       "https://www.trustpilot.com/review/www.appsflyer.com",
+      "https://www.trustpilot.com/review/appsflyer.com",
+      "https://www.trustpilot.com/review/appsflyer",
     ]);
   });
 

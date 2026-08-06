@@ -17,7 +17,7 @@ interface ReviewAdapter {
   source: ReviewSource;
   label: string;
   buildCandidates(query: string): string[];
-  resolveCandidates?: (page: Page, query: string) => Promise<string[]>;
+  resolveCandidates?: (page: Page, query: string, activity?: ReviewActivityReporter) => Promise<string[]>;
   openResolvedCandidate?: (page: Page, candidate: string) => Promise<{ response?: PlaywrightResponse; warning?: string }>;
   advancePage?: (page: Page, pageNumber: number) => Promise<boolean>;
   prepare?: (page: Page) => Promise<void>;
@@ -26,6 +26,8 @@ interface ReviewAdapter {
 
 const MAX_PAGES = 6;
 const NAVIGATION_TIMEOUT_MS = 35_000;
+const ACTION_TIMEOUT_MS = 12_000;
+const PROFILE_RESOLUTION_TIMEOUT_MS = 30_000;
 const CHALLENGE_WAIT_MS = 45_000;
 const MANUAL_CHALLENGE_WAIT_MS = 5 * 60_000;
 
@@ -33,6 +35,26 @@ interface ReviewScrapeOptions {
   challengeOwnerId?: string;
   onChallengeChange?: (challenge?: ReviewManualChallenge) => void;
   onActivity?: (activity: Omit<ReviewProgressOperation, "at" | "elapsedMs">) => void;
+}
+
+type ReviewActivityReporter = (
+  stage: string,
+  message: string,
+  details?: Omit<ReviewProgressOperation, "stage" | "message" | "at" | "elapsedMs">,
+) => void;
+
+async function withTimeout<T>(work: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function normalizeCompanyQuery(value: string): { domain: string; slug: string } {
@@ -49,6 +71,13 @@ function unique(values: string[]): string[] {
 
 export function buildTrustpilotCandidates(query: string): string[] {
   const { domain, slug } = normalizeCompanyQuery(query);
+  if (!domain.includes(".")) {
+    return unique([
+      slug ? `www.${slug}.com` : "",
+      slug ? `${slug}.com` : "",
+      slug,
+    ]).map((candidate) => `https://www.trustpilot.com/review/${candidate}`);
+  }
   return unique([
     domain,
     domain.includes(".") ? `www.${domain}` : "",
@@ -411,32 +440,41 @@ async function extractCapterraReviews(page: Page, pageNumber: number): Promise<{
   };
 }
 
-async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promise<string[]> {
+async function resolveSoftwareAdviceCandidates(page: Page, query: string, activity?: ReviewActivityReporter): Promise<string[]> {
   const normalized = normalizeCompanyQuery(query);
   const searchTerm = query.includes(".") ? normalized.slug : query.trim();
   const input = page.getByRole("textbox", { name: "Search for products or categories" });
   if (!await input.count()) return [];
-  await input.fill(searchTerm);
+  activity?.("software_search_input", `Вводим «${searchTerm}» в поиск Software Advice.`);
+  await input.fill(searchTerm, { timeout: 5_000 });
   const options = page.locator("li > div.cursor-pointer");
   await options.first().waitFor({ state: "visible", timeout: 6_000 }).catch(() => undefined);
-  const optionCount = await options.count();
+  const availableOptions = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>("li > div.cursor-pointer"))
+    .map((element, index) => ({
+      index,
+      label: element.querySelector("p")?.textContent?.trim() ?? "",
+      visible: element.getClientRects().length > 0,
+    }))
+    .filter((option) => option.visible && option.label));
+  activity?.("software_search_results", `Software Advice вернул ${availableOptions.length} подходящих подсказок.`);
   let bestIndex = -1;
   let bestScore = 0;
-  for (let index = 0; index < optionCount; index += 1) {
-    const option = options.nth(index);
-    if (!await option.isVisible().catch(() => false)) continue;
-    const label = (await option.locator("p").first().textContent().catch(() => ""))?.trim() ?? "";
-    const score = scoreSoftwareAdviceResult(label, searchTerm);
+  let bestLabel = "";
+  for (const option of availableOptions) {
+    const score = scoreSoftwareAdviceResult(option.label, searchTerm);
     if (score > bestScore) {
-      bestIndex = index;
+      bestIndex = option.index;
       bestScore = score;
+      bestLabel = option.label;
     }
   }
   if (bestIndex < 0) return [];
 
+  activity?.("software_profile_selected", `Выбрана подсказка «${bestLabel}», открываем профиль.`);
   const selectedOption = options.nth(bestIndex);
   await selectedOption.scrollIntoViewIfNeeded().catch(() => undefined);
   await selectedOption.click({ timeout: 8_000 });
+  activity?.("software_profile_navigation", "Ожидаем переход на профиль Software Advice.");
   await page.waitForURL((url) => isSoftwareAdviceProfileUrl(url.toString()), { timeout: 12_000 }).catch(() => undefined);
 
   await waitForNavigationToSettle(page);
@@ -927,6 +965,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       const searchPage = await context.newPage();
       let keepSearchPage = false;
       searchPage.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+      searchPage.setDefaultTimeout(ACTION_TIMEOUT_MS);
       attemptedUrls.push(searchUrl);
       const searchStartedAt = Date.now();
       try {
@@ -970,7 +1009,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
           };
         }
         activity("profile_search", `Ищем точный профиль «${query}» в ${adapter.label}.`, { url: searchPage.url() });
-        candidates = response?.status() === 404 || state.notFound ? [] : await adapter.resolveCandidates(searchPage, query);
+        candidates = response?.status() === 404 || state.notFound ? [] : await withTimeout(
+          adapter.resolveCandidates(searchPage, query, activity),
+          PROFILE_RESOLUTION_TIMEOUT_MS,
+          `Поиск профиля в ${adapter.label} превысил ${Math.round(PROFILE_RESOLUTION_TIMEOUT_MS / 1_000)} секунд и был остановлен.`,
+        );
         activity(candidates.length ? "profile_found" : "profile_not_found", candidates.length
           ? `Профиль найден: ${candidates[0]}`
           : "Подходящий профиль не найден.", candidates.length ? { url: candidates[0] } : undefined);
@@ -1023,6 +1066,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       const shouldOpenFromResolvedPage = page === resolvedCandidatePage && Boolean(adapter.openResolvedCandidate);
       resolvedCandidatePage = undefined;
       page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+      page.setDefaultTimeout(ACTION_TIMEOUT_MS);
       attemptedUrls.push(candidate);
       const startedAt = Date.now();
       try {
