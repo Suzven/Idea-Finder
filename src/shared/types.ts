@@ -139,6 +139,15 @@ export type ReviewSource = "trustpilot" | "capterra" | "softwareadvice";
 export type ReviewSourceStatus = "found" | "not_found" | "blocked" | "error";
 export type ReviewSourceProgressState = "queued" | "running" | "completed";
 
+export interface ReviewManualChallenge {
+  id: string;
+  source: "capterra";
+  width: number;
+  height: number;
+  pageUrl: string;
+  expiresAt: string;
+}
+
 export interface ReviewSourceProgress {
   source: ReviewSource;
   label: string;
@@ -146,6 +155,7 @@ export interface ReviewSourceProgress {
   outcome?: ReviewSourceStatus;
   reviewsFound?: number;
   pagesCollected?: number;
+  challenge?: ReviewManualChallenge;
 }
 
 export interface UserReview {
@@ -177,7 +187,6 @@ export interface ReviewBrowserInfo {
   version: string;
   userAgent: string;
   proxy?: string;
-  session?: string;
 }
 
 export interface ReviewProxySettings {

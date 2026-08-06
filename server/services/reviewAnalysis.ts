@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
-import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewManualChallenge, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
-import { createCapterraBrowserContext } from "./capterraBrowser.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
+import { registerReviewChallenge } from "./reviewChallenge.js";
 import { createAuthenticatedSocks5Bridge, type SocksProxyBridge } from "./socksProxyBridge.js";
 
 export interface ReviewProxyCredentials {
@@ -27,6 +27,12 @@ interface ReviewAdapter {
 const MAX_PAGES = 6;
 const NAVIGATION_TIMEOUT_MS = 35_000;
 const CHALLENGE_WAIT_MS = 45_000;
+const MANUAL_CHALLENGE_WAIT_MS = 5 * 60_000;
+
+interface ReviewScrapeOptions {
+  challengeOwnerId?: string;
+  onChallengeChange?: (challenge?: ReviewManualChallenge) => void;
+}
 
 export function normalizeCompanyQuery(value: string): { domain: string; slug: string } {
   let normalized = value.trim().toLowerCase();
@@ -178,27 +184,6 @@ async function clickResolvedReviewLink(page: Page, candidate: string): Promise<{
   };
 }
 
-async function openCapterraReviewLink(page: Page, candidate: string): Promise<{ response?: PlaywrightResponse; warning?: string }> {
-  const reviewUrl = new URL(candidate);
-  const profileUrl = new URL(reviewUrl.toString());
-  profileUrl.pathname = profileUrl.pathname.replace(/\/reviews\/?$/i, "/");
-
-  await page.waitForTimeout(700 + Math.floor(Math.random() * 350));
-  const profileNavigation = await clickResolvedReviewLink(page, profileUrl.toString());
-  await page.waitForTimeout(900 + Math.floor(Math.random() * 350));
-  const profileState = await pageState(page);
-  const profileBlockedByStatus = profileNavigation.response
-    ? [401, 403, 429].includes(profileNavigation.response.status()) && !profileState.hasReviewContent
-    : false;
-  if (profileState.blocked || profileBlockedByStatus) return profileNavigation;
-
-  const reviewNavigation = await clickResolvedReviewLink(page, reviewUrl.toString());
-  return {
-    ...reviewNavigation,
-    warning: [profileNavigation.warning, reviewNavigation.warning].filter(Boolean).join(" | ") || undefined,
-  };
-}
-
 async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; hasReviewContent: boolean; title: string; preview: string }> {
   let state: { title: string; text: string; iframeCount: number; elementCount: number; reviewMarkerCount: number } | undefined;
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -256,6 +241,39 @@ async function waitForChallenge(page: Page, initialState?: Awaited<ReturnType<ty
     state = await pageState(page);
   }
   return state;
+}
+
+async function waitForManualCapterraChallenge(
+  adapter: ReviewAdapter,
+  page: Page,
+  initialState: Awaited<ReturnType<typeof pageState>>,
+  options?: ReviewScrapeOptions,
+): Promise<{ state: Awaited<ReturnType<typeof pageState>>; attempted: boolean; solved: boolean }> {
+  if (adapter.source !== "capterra" || !initialState.blocked || !options?.challengeOwnerId || !options.onChallengeChange) {
+    return { state: initialState, attempted: false, solved: false };
+  }
+
+  const handle = registerReviewChallenge(options.challengeOwnerId, page);
+  options.onChallengeChange(handle.challenge);
+  let state = initialState;
+  let solved = false;
+  const deadline = Date.now() + MANUAL_CHALLENGE_WAIT_MS;
+  try {
+    while (Date.now() < deadline && !handle.isCancelled() && !page.isClosed()) {
+      await page.waitForTimeout(900);
+      state = await pageState(page);
+      if (!state.blocked) {
+        await waitForNavigationToSettle(page);
+        state = await pageState(page);
+        solved = !state.blocked;
+        if (solved) break;
+      }
+    }
+    return { state, attempted: true, solved };
+  } finally {
+    handle.close();
+    options.onChallengeChange(undefined);
+  }
 }
 
 async function resolveCapterraCandidates(page: Page, query: string): Promise<string[]> {
@@ -357,7 +375,7 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promi
   if (!await input.count()) return [];
   await input.fill(searchTerm);
   await page.waitForTimeout(900);
-  const candidateLabel = await page.evaluate(({ expectedName }) => {
+  const clicked = await page.evaluate(({ expectedName }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
     const expectedWords = expectedName.match(/[a-z0-9]+/g) ?? [];
     const options = Array.from(document.querySelectorAll<HTMLElement>("li > div.cursor-pointer"))
@@ -371,19 +389,16 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promi
       })
       .filter((option) => option.score > 0)
       .sort((left, right) => right.score - left.score);
-    return options[0]?.element.querySelector("p")?.textContent?.trim();
+    if (!options[0]) return false;
+    options[0].element.click();
+    return true;
   }, { expectedName: searchTerm });
-  if (!candidateLabel) return [];
-
-  const searchPageUrl = page.url();
-  const candidate = page.getByText(candidateLabel, { exact: true }).last();
-  if (!await candidate.count()) return [];
-  await candidate.click({ timeout: 8_000 });
+  if (!clicked) return [];
 
   await waitForNavigationToSettle(page);
   await page.waitForTimeout(500);
   const profileUrl = new URL(page.url());
-  if (profileUrl.hostname !== "www.softwareadvice.com" || profileUrl.pathname === "/" || page.url() === searchPageUrl) return [];
+  if (profileUrl.hostname !== "www.softwareadvice.com") return [];
   const basePath = profileUrl.pathname.endsWith("/") ? profileUrl.pathname : `${profileUrl.pathname}/`;
   const reviewsUrl = await page.evaluate(({ expectedPath }) => {
     const link = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
@@ -569,7 +584,7 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
     label: "Capterra",
     buildCandidates: buildCapterraCandidates,
     resolveCandidates: resolveCapterraCandidates,
-    openResolvedCandidate: openCapterraReviewLink,
+    openResolvedCandidate: clickResolvedReviewLink,
     prepare: prepareCapterraReviews,
     extract: extractCapterraReviews,
   },
@@ -769,14 +784,12 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
   }
 }
 
-async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings?: ReviewProxyCredentials): Promise<ReviewSourceResult> {
+async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings?: ReviewProxyCredentials, options?: ReviewScrapeOptions): Promise<ReviewSourceResult> {
   let candidates = adapter.buildCandidates(query);
   let resolvedCandidatePage: Page | undefined;
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
-  const created = adapter.source === "capterra"
-    ? await createCapterraBrowserContext(proxySettings)
-    : await createContext(proxySettings);
+  const created = await createContext(proxySettings);
   const { context, browser } = created;
   const record = (attempt: ReviewAttemptLog) => {
     attempts.push(attempt);
@@ -796,8 +809,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         const response = navigation.response;
         await searchPage.waitForTimeout(700);
         const initialState = await pageState(searchPage);
-        const state = initialState.notFound ? initialState : await waitForChallenge(searchPage, initialState);
-        const blockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound : false;
+        let state = initialState.notFound || adapter.source === "capterra" ? initialState : await waitForChallenge(searchPage, initialState);
+        const initialBlockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound : false;
+        const manualChallenge = await waitForManualCapterraChallenge(adapter, searchPage, state, options);
+        state = manualChallenge.state;
+        const blockedByStatus = initialBlockedByStatus && !manualChallenge.solved;
         if (state.blocked || blockedByStatus) {
           record({
             url: searchUrl,
@@ -807,7 +823,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             outcome: "blocked",
             durationMs: Date.now() - searchStartedAt,
             pagePreview: state.preview,
-            message: blockedByStatus
+            message: manualChallenge.attempted
+              ? "Ручная проверка Cloudflare не была завершена за 5 минут или была отменена."
+              : blockedByStatus
               ? `Источник вернул HTTP ${response?.status()} при поиске компании.`
               : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`,
           });
@@ -882,8 +900,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         const response = navigation.response;
         await page.waitForTimeout(700);
         const initialState = await pageState(page);
-        const state = initialState.notFound || initialState.hasReviewContent ? initialState : await waitForChallenge(page, initialState);
-        const blockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound && !state.hasReviewContent : false;
+        let state = initialState.notFound || initialState.hasReviewContent || adapter.source === "capterra" ? initialState : await waitForChallenge(page, initialState);
+        const initialBlockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound && !state.hasReviewContent : false;
+        const manualChallenge = await waitForManualCapterraChallenge(adapter, page, state, options);
+        state = manualChallenge.state;
+        const blockedByStatus = initialBlockedByStatus && !manualChallenge.solved;
         const firstAttempt: ReviewAttemptLog = {
           url: candidate,
           finalUrl: page.url(),
@@ -903,7 +924,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
           continue;
         }
         if (state.blocked || blockedByStatus) {
-          firstAttempt.message = blockedByStatus
+          firstAttempt.message = manualChallenge.attempted
+            ? "Ручная проверка Cloudflare не была завершена за 5 минут или была отменена."
+            : blockedByStatus
             ? `Источник вернул HTTP ${response?.status()} для IP сервера.`
             : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`;
           record(firstAttempt);
@@ -951,8 +974,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             const nextResponse = "response" in nextNavigation ? nextNavigation.response : undefined;
             await page.waitForTimeout(700);
             const initialNextState = await pageState(page);
-            const nextState = initialNextState.notFound || initialNextState.hasReviewContent ? initialNextState : await waitForChallenge(page, initialNextState);
-            const nextBlockedByStatus = nextResponse ? [401, 403, 429].includes(nextResponse.status()) && !nextState.notFound && !nextState.hasReviewContent : false;
+            let nextState = initialNextState.notFound || initialNextState.hasReviewContent || adapter.source === "capterra" ? initialNextState : await waitForChallenge(page, initialNextState);
+            const initialNextBlockedByStatus = nextResponse ? [401, 403, 429].includes(nextResponse.status()) && !nextState.notFound && !nextState.hasReviewContent : false;
+            const nextManualChallenge = await waitForManualCapterraChallenge(adapter, page, nextState, options);
+            nextState = nextManualChallenge.state;
+            const nextBlockedByStatus = initialNextBlockedByStatus && !nextManualChallenge.solved;
             currentAttempt = {
               url: target,
               finalUrl: page.url(),
@@ -964,7 +990,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
               ...("warning" in nextNavigation && nextNavigation.warning ? { message: `Chromium обработал автоматический редирект: ${nextNavigation.warning}` } : {}),
             };
             if (nextState.blocked || nextBlockedByStatus || nextResponse?.status() === 404 || nextState.notFound) {
-              currentAttempt.message = nextBlockedByStatus
+              currentAttempt.message = nextManualChallenge.attempted
+                ? "Ручная проверка Cloudflare не была завершена за 5 минут или была отменена."
+                : nextBlockedByStatus
                 ? `Источник вернул HTTP ${nextResponse?.status()} для IP сервера.`
                 : nextState.blocked
                   ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`
@@ -1046,6 +1074,7 @@ export async function searchCompanyReviews(
   sources: ReviewSource[],
   proxySettings?: ReviewProxyCredentials,
   onProgress?: (progress: ReviewSourceProgress) => void,
+  challengeOwnerId?: string,
 ): Promise<ReviewSearchResponse> {
   const results: ReviewSourceResult[] = [];
   for (const source of sources) {
@@ -1053,7 +1082,15 @@ export async function searchCompanyReviews(
     onProgress?.({ source, label: adapter.label, status: "running" });
     let result: ReviewSourceResult;
     try {
-      result = await scrapeSource(adapter, query, proxySettings);
+      result = await scrapeSource(adapter, query, proxySettings, {
+        challengeOwnerId,
+        onChallengeChange: (challenge) => onProgress?.({
+          source,
+          label: adapter.label,
+          status: "running",
+          ...(challenge ? { challenge } : {}),
+        }),
+      });
     } catch (error) {
       result = {
         source,

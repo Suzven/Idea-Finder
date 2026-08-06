@@ -1008,6 +1008,32 @@ body.modal-open { overflow: hidden; }
 .review-attempt-log pre { max-height: 150px; overflow: auto; margin: 7px 0 0; padding: 9px; color: #606b80; border-radius: 7px; background: #f0f2f6; font: 8.5px/1.5 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .review-log-empty { margin: 9px 0 0; color: #949cad; }
 
+.review-challenge-backdrop { position: fixed; z-index: 220; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(8,12,24,.82); backdrop-filter: blur(10px); }
+.review-challenge-modal { display: grid; width: min(1180px, 96vw); max-height: 96vh; overflow: hidden; border: 1px solid rgba(255,255,255,.18); border-radius: 18px; background: #fff; box-shadow: 0 36px 110px rgba(0,0,0,.48); }
+.review-challenge-modal > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 17px 19px; border-bottom: 1px solid #e6e9ef; }
+.review-challenge-modal > header > div { display: flex; align-items: center; gap: 12px; }
+.review-challenge-modal > header > div > span { display: grid; place-items: center; flex: 0 0 auto; width: 42px; height: 42px; color: #fff; border-radius: 11px; background: linear-gradient(145deg, #7659e4, #4f34c5); }
+.review-challenge-modal h2 { margin: 0; color: #2d374d; font-family: "Plus Jakarta Sans", "Manrope", sans-serif; font-size: 19px; }
+.review-challenge-modal header p { margin: 4px 0 0; color: #7f899d; font-size: 12px; }
+.review-challenge-modal > header > button { display: grid; place-items: center; flex: 0 0 auto; width: 36px; height: 36px; color: #6f798c; border: 1px solid #dfe3ea; border-radius: 10px; background: #fff; }
+.review-challenge-help { display: flex; align-items: flex-start; gap: 9px; padding: 11px 19px; color: #6552b9; border-bottom: 1px solid #e9e6f7; background: #f8f6ff; font-size: 12px; line-height: 1.5; }
+.review-challenge-help svg { flex: 0 0 auto; margin-top: 1px; }
+.review-challenge-screen { position: relative; display: grid; place-items: center; min-height: 320px; overflow: auto; background: #151a25; }
+.review-challenge-screen > img { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(96vh - 190px); object-fit: contain; cursor: crosshair; user-select: none; }
+.review-challenge-screen > div { display: grid; justify-items: center; gap: 10px; color: #cbd1de; font-size: 13px; }
+.review-challenge-screen > i { position: absolute; top: 13px; right: 13px; display: grid; place-items: center; width: 36px; height: 36px; color: #fff; border-radius: 10px; background: rgba(25,29,42,.78); }
+.review-challenge-error { display: flex; align-items: center; gap: 7px; margin: 0; padding: 9px 18px; color: #b84f5c; border-top: 1px solid #f0ced3; background: #fff4f5; font-size: 11px; }
+.review-challenge-modal > footer { display: flex; align-items: center; gap: 12px; padding: 12px 17px; border-top: 1px solid #e7e9ef; }
+.review-challenge-modal > footer > div { display: flex; gap: 8px; }
+.review-challenge-modal > footer > span { flex: 1; color: #8a93a4; font-size: 10px; text-align: center; }
+
+@media (max-width: 620px) {
+  .review-challenge-backdrop { padding: 0; }
+  .review-challenge-modal { width: 100vw; max-height: 100vh; min-height: 100vh; border-radius: 0; }
+  .review-challenge-modal > footer { flex-wrap: wrap; }
+  .review-challenge-modal > footer > span { order: -1; flex-basis: 100%; }
+}
+
 @media (max-width: 900px) {
   .review-results { grid-template-columns: 1fr; }
   .review-progress-sites { grid-template-columns: 1fr; }

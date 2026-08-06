@@ -1,7 +1,7 @@
-import { AlertTriangle, Building2, CalendarDays, Check, ExternalLink, FileDown, LoaderCircle, MessageSquareQuote, Search, ShieldCheck, Star, UserRound } from "lucide-react";
-import { useMemo, useState } from "react";
-import { ApiRequestError, searchCompanyReviews } from "../api";
-import type { ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../shared/types";
+import { AlertTriangle, ArrowDown, ArrowUp, Building2, CalendarDays, Check, ExternalLink, FileDown, LoaderCircle, MessageSquareQuote, MousePointerClick, Search, ShieldCheck, Star, UserRound, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ApiRequestError, cancelReviewChallenge, clickReviewChallenge, fetchReviewChallengeFrame, searchCompanyReviews, scrollReviewChallenge } from "../api";
+import type { ReviewManualChallenge, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../shared/types";
 
 const sourceOptions: Array<{ id: ReviewSource; label: string; hint: string }> = [
   { id: "trustpilot", label: "Trustpilot", hint: "Отзывы покупателей и пользователей" },
@@ -15,11 +15,120 @@ function sourceMark(source: ReviewSource): string {
 
 function progressCopy(item: ReviewSourceProgress): string {
   if (item.status === "queued") return "В очереди";
+  if (item.challenge) return "Нужна ручная проверка Cloudflare";
   if (item.status === "running") return "Собираем отзывы…";
   if (item.outcome === "found") return `Готово: ${item.reviewsFound ?? 0} отзывов · ${item.pagesCollected ?? 0} страниц`;
   if (item.outcome === "not_found") return "Компания не найдена";
   if (item.outcome === "blocked") return "Источник включил защиту";
   return "Сбор завершён с ошибкой";
+}
+
+function ManualChallengeModal({ challenge, onDismiss }: { challenge: ReviewManualChallenge; onDismiss: () => void }) {
+  const [frameUrl, setFrameUrl] = useState("");
+  const [frameError, setFrameError] = useState("");
+  const [inputBusy, setInputBusy] = useState(false);
+
+  useEffect(() => {
+    document.body.classList.add("modal-open");
+    return () => document.body.classList.remove("modal-open");
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer = 0;
+    let currentObjectUrl = "";
+    const refresh = async () => {
+      try {
+        const frame = await fetchReviewChallengeFrame(challenge.id);
+        if (stopped) return;
+        const nextObjectUrl = URL.createObjectURL(frame);
+        if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = nextObjectUrl;
+        setFrameUrl(nextObjectUrl);
+        setFrameError("");
+      } catch (error) {
+        if (!stopped && (!(error instanceof ApiRequestError) || error.status !== 409)) {
+          setFrameError(error instanceof Error ? error.message : "Не удалось получить кадр Chromium.");
+        }
+      } finally {
+        if (!stopped) timer = window.setTimeout(() => { void refresh(); }, 900);
+      }
+    };
+    void refresh();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+    };
+  }, [challenge.id]);
+
+  const clickFrame = async (event: React.MouseEvent<HTMLImageElement>) => {
+    if (inputBusy) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const imageRatio = challenge.width / challenge.height;
+    const boundsRatio = bounds.width / bounds.height;
+    const renderedWidth = boundsRatio > imageRatio ? bounds.height * imageRatio : bounds.width;
+    const renderedHeight = boundsRatio > imageRatio ? bounds.height : bounds.width / imageRatio;
+    const offsetX = (bounds.width - renderedWidth) / 2;
+    const offsetY = (bounds.height - renderedHeight) / 2;
+    const localX = event.clientX - bounds.left - offsetX;
+    const localY = event.clientY - bounds.top - offsetY;
+    if (localX < 0 || localY < 0 || localX > renderedWidth || localY > renderedHeight) return;
+    const x = (localX / renderedWidth) * challenge.width;
+    const y = (localY / renderedHeight) * challenge.height;
+    setInputBusy(true);
+    try {
+      await clickReviewChallenge(challenge.id, x, y);
+    } catch (error) {
+      setFrameError(error instanceof Error ? error.message : "Chromium не принял клик.");
+    } finally {
+      setInputBusy(false);
+    }
+  };
+
+  const scroll = async (deltaY: number) => {
+    if (inputBusy) return;
+    setInputBusy(true);
+    try {
+      await scrollReviewChallenge(challenge.id, deltaY);
+    } catch (error) {
+      setFrameError(error instanceof Error ? error.message : "Chromium не выполнил прокрутку.");
+    } finally {
+      setInputBusy(false);
+    }
+  };
+
+  const cancel = async () => {
+    try {
+      await cancelReviewChallenge(challenge.id);
+    } catch {
+      // Вкладка могла уже закрыться после успешной проверки.
+    } finally {
+      onDismiss();
+    }
+  };
+
+  return <div className="review-challenge-backdrop" role="dialog" aria-modal="true" aria-labelledby="review-challenge-title">
+    <section className="review-challenge-modal">
+      <header>
+        <div><span><ShieldCheck size={22} /></span><div><h2 id="review-challenge-title">Подтвердите, что вы человек</h2><p>Capterra открыта в серверном Chromium через настроенную прокси.</p></div></div>
+        <button type="button" title="Отменить ручную проверку" onClick={() => void cancel()}><X size={20} /></button>
+      </header>
+      <div className="review-challenge-help"><MousePointerClick size={18} /><span>Кликните по Cloudflare-проверке прямо на кадре. Это настоящая вкладка Chromium: после успешной проверки окно закроется автоматически, и сбор отзывов продолжится.</span></div>
+      <div className="review-challenge-screen">
+        {frameUrl
+          ? <img src={frameUrl} alt="Живой экран проверки Capterra" draggable={false} onClick={(event) => void clickFrame(event)} />
+          : <div><LoaderCircle className="spin" size={28} /><span>Получаем экран Chromium…</span></div>}
+        {inputBusy && <i><LoaderCircle className="spin" size={20} /></i>}
+      </div>
+      {frameError && <p className="review-challenge-error"><AlertTriangle size={15} />{frameError}</p>}
+      <footer>
+        <div><button className="button ghost" type="button" onClick={() => void scroll(-700)}><ArrowUp size={16} />Выше</button><button className="button ghost" type="button" onClick={() => void scroll(700)}><ArrowDown size={16} />Ниже</button></div>
+        <span>Окно доступно до {new Date(challenge.expiresAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</span>
+        <button className="button danger-outline" type="button" onClick={() => void cancel()}>Отменить</button>
+      </footer>
+    </section>
+  </div>;
 }
 
 function formatReviewDate(value?: string): string {
@@ -75,7 +184,7 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
       : <SourceStatus result={result} />}
     <details className="review-attempts" open={result.status === "blocked" || result.status === "error"}>
       <summary>Лог Chromium ({result.attempts.length} попыток)</summary>
-      {result.browser && <div className="review-browser-info"><span><b>Chromium:</b> {result.browser.version}</span><span><b>User-Agent:</b> {result.browser.userAgent}</span><span><b>Прокси:</b> {result.browser.proxy || "не используется"}</span>{result.browser.session && <span><b>Сессия:</b> {result.browser.session}</span>}</div>}
+      {result.browser && <div className="review-browser-info"><span><b>Chromium:</b> {result.browser.version}</span><span><b>User-Agent:</b> {result.browser.userAgent}</span><span><b>Прокси:</b> {result.browser.proxy || "не используется"}</span></div>}
       {result.attempts.length
         ? <div className="review-attempt-log">{result.attempts.map((attempt, index) => <article key={`${attempt.url}-${index}`} className={attempt.outcome}>
           <header><b>{index + 1}. {attemptLabels[attempt.outcome]}</b><span>{attempt.durationMs} мс</span></header>
@@ -101,8 +210,10 @@ export function ReviewAnalysisPanel() {
   const [progress, setProgress] = useState<ReviewSourceProgress[]>([]);
   const [result, setResult] = useState<ReviewSearchResponse | null>(null);
   const [error, setError] = useState<string>("");
+  const [dismissedChallengeId, setDismissedChallengeId] = useState("");
   const canSearch = query.trim().length >= 2 && selectedSources.size > 0 && !loading;
   const foundSources = useMemo(() => result?.sources.filter((source) => source.status === "found").length ?? 0, [result]);
+  const activeChallenge = useMemo(() => progress.find((item) => item.challenge)?.challenge, [progress]);
 
   const toggleSource = (source: ReviewSource) => {
     setSelectedSources((current) => {
@@ -115,6 +226,7 @@ export function ReviewAnalysisPanel() {
   const submit = async () => {
     if (!canSearch) return;
     setLoading(true);
+    setDismissedChallengeId("");
     setError("");
     setResult(null);
     const sources = [...selectedSources];
@@ -150,6 +262,7 @@ export function ReviewAnalysisPanel() {
   };
 
   return <div className="review-analysis-panel" id="review-analysis-print">
+    {loading && activeChallenge && activeChallenge.id !== dismissedChallengeId && <ManualChallengeModal challenge={activeChallenge} onDismiss={() => setDismissedChallengeId(activeChallenge.id)} />}
     <section className="review-search-card">
       <header><span><MessageSquareQuote size={22} /></span><div><h2>Анализ отзывов пользователей</h2><p>Chromium проверит варианты названия и домена, затем последовательно соберёт до шести доступных страниц каждого сервиса.</p></div></header>
       <div className="review-source-picker">

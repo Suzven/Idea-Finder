@@ -228,6 +228,39 @@ export async function searchCompanyReviews(
   );
 }
 
+export async function fetchReviewChallengeFrame(challengeId: string): Promise<Blob> {
+  const response = await fetch(`/api/review-analysis/challenges/${encodeURIComponent(challengeId)}/frame`, {
+    cache: "no-store",
+    headers: { "x-client-id": getClientId() },
+  });
+  if (!response.ok) {
+    throw new ApiRequestError(
+      response.status === 409 ? "Chromium обновляет страницу." : "Кадр ручной проверки уже недоступен.",
+      response.status,
+      response.status === 409 ? "REVIEW_CHALLENGE_FRAME_BUSY" : "REVIEW_CHALLENGE_FRAME_FAILED",
+    );
+  }
+  return response.blob();
+}
+
+export async function clickReviewChallenge(challengeId: string, x: number, y: number): Promise<void> {
+  await request(`/api/review-analysis/challenges/${encodeURIComponent(challengeId)}/click`, {
+    method: "POST",
+    body: JSON.stringify({ x, y }),
+  });
+}
+
+export async function scrollReviewChallenge(challengeId: string, deltaY: number): Promise<void> {
+  await request(`/api/review-analysis/challenges/${encodeURIComponent(challengeId)}/scroll`, {
+    method: "POST",
+    body: JSON.stringify({ deltaY }),
+  });
+}
+
+export async function cancelReviewChallenge(challengeId: string): Promise<void> {
+  await request(`/api/review-analysis/challenges/${encodeURIComponent(challengeId)}`, { method: "DELETE" });
+}
+
 export async function fetchReviewProxySettings(): Promise<ReviewProxySettings> {
   return request<ReviewProxySettings>("/api/settings/review-proxy");
 }

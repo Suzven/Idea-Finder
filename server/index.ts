@@ -15,6 +15,7 @@ import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
+import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
 import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
 
@@ -274,6 +275,11 @@ const reviewSearchSchema = z.object({
   query: z.string().trim().min(2).max(120),
   sources: z.array(z.enum(["trustpilot", "capterra", "softwareadvice"])).min(1).max(10),
 });
+const reviewChallengeClickSchema = z.object({
+  x: z.number().finite().min(0).max(2_500),
+  y: z.number().finite().min(0).max(2_500),
+});
+const reviewChallengeScrollSchema = z.object({ deltaY: z.number().finite().min(-1_500).max(1_500) });
 const reviewProxySettingsSchema = z.object({
   server: z.string().trim().min(1).max(500).refine((value) => {
     try {
@@ -632,7 +638,7 @@ app.post("/api/review-analysis", (request, response, next) => {
         job.result = await searchCompanyReviews(query, sources, proxySettings, (sourceProgress) => {
           job.progress = job.progress.map((item) => item.source === sourceProgress.source ? sourceProgress : item);
           job.updatedAt = Date.now();
-        });
+        }, clientId);
         job.status = "completed";
       } catch (error) {
         job.status = "failed";
@@ -655,6 +661,53 @@ app.get("/api/review-analysis/jobs/:jobId", (request, response, next) => {
       throw new AppError(404, "REVIEW_ANALYSIS_JOB_NOT_FOUND", "Задача поиска отзывов не найдена или уже удалена.");
     }
     response.json(publicReviewJob(job));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/review-analysis/challenges/:challengeId/frame", async (request, response, next) => {
+  try {
+    const challengeId = z.string().uuid().parse(request.params.challengeId);
+    const frame = await captureReviewChallengeFrame(challengeId, getClientId(request));
+    response.set({
+      "Cache-Control": "no-store, max-age=0",
+      "Content-Type": "image/jpeg",
+      "Content-Length": String(frame.byteLength),
+    });
+    response.send(frame);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/review-analysis/challenges/:challengeId/click", async (request, response, next) => {
+  try {
+    const challengeId = z.string().uuid().parse(request.params.challengeId);
+    const coordinates = reviewChallengeClickSchema.parse(request.body);
+    await clickReviewChallenge(challengeId, getClientId(request), coordinates.x, coordinates.y);
+    response.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/review-analysis/challenges/:challengeId/scroll", async (request, response, next) => {
+  try {
+    const challengeId = z.string().uuid().parse(request.params.challengeId);
+    const { deltaY } = reviewChallengeScrollSchema.parse(request.body);
+    await scrollReviewChallenge(challengeId, getClientId(request), deltaY);
+    response.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/review-analysis/challenges/:challengeId", (request, response, next) => {
+  try {
+    const challengeId = z.string().uuid().parse(request.params.challengeId);
+    cancelReviewChallenge(challengeId, getClientId(request));
+    response.status(204).end();
   } catch (error) {
     next(error);
   }
