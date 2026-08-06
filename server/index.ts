@@ -70,6 +70,7 @@ const REVIEW_SOURCE_LABELS: Record<ReviewSource, string> = {
   trustpilot: "Trustpilot",
   capterra: "Capterra",
   softwareadvice: "Software Advice",
+  producthunt: "Product Hunt",
 };
 
 function publicAIJob(job: StoredAIAnalysisJob): AIAnalysisJobResponse {
@@ -273,7 +274,7 @@ const aiNoteSchema = z.object({
 });
 const reviewSearchSchema = z.object({
   query: z.string().trim().min(2).max(120),
-  sources: z.array(z.enum(["trustpilot", "capterra", "softwareadvice"])).min(1).max(10),
+  sources: z.array(z.enum(["trustpilot", "capterra", "softwareadvice", "producthunt"])).min(1).max(10),
 });
 const reviewChallengeClickSchema = z.object({
   x: z.number().finite().min(0).max(2_500),

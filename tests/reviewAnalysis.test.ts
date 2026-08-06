@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCapterraCandidates,
+  buildProductHuntCandidates,
   buildSoftwareAdviceCandidates,
   buildTrustpilotCandidates,
   isSoftwareAdviceProfileUrl,
@@ -43,5 +44,17 @@ describe("review analysis URL adapters", () => {
     expect(isSoftwareAdviceProfileUrl("https://www.softwareadvice.com/mobile-marketing/appsflyer-profile/")).toBe(true);
     expect(isSoftwareAdviceProfileUrl("https://www.softwareadvice.com/product/548339-Perso-AI/")).toBe(true);
     expect(isSoftwareAdviceProfileUrl("https://www.softwareadvice.com/#reviews")).toBe(false);
+  });
+
+  it("builds Product Hunt review URLs from a name, domain, or product URL", () => {
+    expect(buildProductHuntCandidates("ElevenLabs")[0]).toBe(
+      "https://www.producthunt.com/products/elevenlabs/reviews?feed=single&filter=all",
+    );
+    expect(buildProductHuntCandidates("elevenlabs.io")[0]).toBe(
+      "https://www.producthunt.com/products/elevenlabs/reviews?feed=single&filter=all",
+    );
+    expect(buildProductHuntCandidates("https://www.producthunt.com/products/elevenlabs/reviews")[0]).toBe(
+      "https://www.producthunt.com/products/elevenlabs/reviews?feed=single&filter=all",
+    );
   });
 });

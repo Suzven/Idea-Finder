@@ -67,6 +67,23 @@ export function buildSoftwareAdviceCandidates(): string[] {
   return ["https://www.softwareadvice.com/"];
 }
 
+export function buildProductHuntCandidates(query: string): string[] {
+  const raw = query.trim().toLowerCase();
+  const productPath = raw.match(/producthunt\.com\/products\/([^/?#]+)/i)?.[1] ?? "";
+  const withoutProtocol = raw.replace(/^https?:\/\//, "").replace(/^www\./, "");
+  const companyValue = withoutProtocol.split(/[/?#]/, 1)[0] ?? "";
+  const withoutTld = companyValue.includes(".") ? companyValue.split(".")[0] ?? "" : companyValue;
+  const dashed = raw
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\.[a-z]{2,}(?:\.[a-z]{2})?$/i, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const compact = withoutTld.replace(/[^a-z0-9]+/g, "");
+  return unique([productPath, compact, dashed])
+    .map((slug) => `https://www.producthunt.com/products/${slug}/reviews?feed=single&filter=all`);
+}
+
 function normalizeSearchLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
@@ -218,7 +235,7 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
         text: document.body?.innerText.slice(0, 30_000) ?? "",
         iframeCount: document.querySelectorAll("iframe").length,
         elementCount: document.body?.querySelectorAll("*").length ?? 0,
-        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-'], div.mb-6.p-6 h3.typo-20.font-semibold, [data-testid='textReview']").length,
+        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-'], div.mb-6.p-6 h3.typo-20.font-semibold, [data-testid='textReview'], [id^='DetailedReview-']").length,
       }));
       break;
     } catch (error) {
@@ -452,6 +469,21 @@ async function prepareSoftwareAdviceReviews(page: Page): Promise<void> {
   if (expanded) await page.waitForTimeout(250);
 }
 
+async function prepareProductHuntReviews(page: Page): Promise<void> {
+  const cards = page.locator("[id^='DetailedReview-']");
+  const count = await cards.count();
+  let expanded = 0;
+  for (let index = 0; index < count; index += 1) {
+    const controls = await cards.nth(index).getByRole("button", { name: "Read more", exact: true }).all();
+    for (const control of controls) {
+      if (!await control.isVisible().catch(() => false)) continue;
+      await control.click({ timeout: 3_000 }).catch(() => undefined);
+      expanded += 1;
+    }
+  }
+  if (expanded) await page.waitForTimeout(250);
+}
+
 async function advanceSoftwareAdvicePage(page: Page): Promise<boolean> {
   const next = page.getByRole("button", { name: "Next", exact: true });
   if (!await next.count() || !await next.isVisible().catch(() => false) || !await next.isEnabled().catch(() => false)) return false;
@@ -518,6 +550,59 @@ async function extractSoftwareAdviceReviews(page: Page, pageNumber: number): Pro
         page: pageNumber,
       };
       return { id: reviewId(value), ...value };
+    }),
+  };
+}
+
+async function extractProductHuntReviews(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }> {
+  const raw = await page.evaluate(() => {
+    const compact = (value?: string | null) => value?.replace(/\s+/g, " ").trim() ?? "";
+    const companyName = compact(document.querySelector("h1")?.textContent).replace(/\s+Reviews?$/i, "") || undefined;
+    const cards = Array.from(document.querySelectorAll<HTMLElement>("[id^='DetailedReview-']"));
+    return {
+      companyName,
+      reviews: cards.map((card) => {
+        const authorLink = card.querySelector<HTMLAnchorElement>("a[href^='/@']");
+        const author = compact(authorLink?.textContent);
+        const time = card.querySelector<HTMLTimeElement>("time");
+        const date = time?.dateTime || compact(time?.textContent) || undefined;
+        const ratingGroup = card.querySelector("label[data-test='star-1-readonly']")?.parentElement;
+        const rating = ratingGroup?.querySelectorAll("svg[data-test$='-filled']").length;
+        const sections = Array.from(card.querySelectorAll<HTMLElement>("div.prose.prose-sm"))
+          .map((block) => {
+            const text = compact(block.textContent);
+            if (!text) return "";
+            const heading = compact(block.parentElement?.querySelector(":scope > h4")?.textContent);
+            return heading ? `${heading}:\n${text}` : text;
+          })
+          .filter(Boolean);
+        const text = [...new Set(sections)].join("\n\n");
+        return {
+          id: card.id,
+          author: author || "Anonymous user",
+          date,
+          text,
+          rating: typeof rating === "number" && rating > 0 ? rating : undefined,
+          reviewUrl: card.id ? `${location.origin}${location.pathname}${location.search}#${card.id}` : location.href,
+        };
+      }).filter((review) => Boolean(review.text)),
+    };
+  });
+
+  return {
+    companyName: raw.companyName,
+    reviews: raw.reviews.map((review) => {
+      const value: Omit<UserReview, "id"> = {
+        source: "producthunt",
+        author: review.author,
+        ...(review.date ? { date: review.date } : {}),
+        text: review.text,
+        ...(review.rating !== undefined ? { rating: review.rating } : {}),
+        maxRating: 5,
+        reviewUrl: review.reviewUrl,
+        page: pageNumber,
+      };
+      return { id: review.id.replace(/^DetailedReview-/, "") || reviewId(value), ...value };
     }),
   };
 }
@@ -625,6 +710,13 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
     advancePage: advanceSoftwareAdvicePage,
     prepare: prepareSoftwareAdviceReviews,
     extract: extractSoftwareAdviceReviews,
+  },
+  producthunt: {
+    source: "producthunt",
+    label: "Product Hunt",
+    buildCandidates: buildProductHuntCandidates,
+    prepare: prepareProductHuntReviews,
+    extract: extractProductHuntReviews,
   },
 };
 

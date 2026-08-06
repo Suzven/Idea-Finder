@@ -222,7 +222,7 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
     <nav className="ai-section-tabs" aria-label="Разделы AI Аналитики">
       <button className={activeSection === "campaigns" ? "active" : ""} onClick={() => setActiveSection("campaigns")}><BrainCircuit size={19} /><span><strong>Анализ рекламных кампаний</strong><small>Креативы, лендинги и перспективность ниши</small></span></button>
-      <button className={activeSection === "reviews" ? "active" : ""} onClick={() => setActiveSection("reviews")}><MessageSquareText size={19} /><span><strong>Анализ отзывов пользователей</strong><small>Trustpilot, Capterra и Software Advice</small></span></button>
+      <button className={activeSection === "reviews" ? "active" : ""} onClick={() => setActiveSection("reviews")}><MessageSquareText size={19} /><span><strong>Анализ отзывов пользователей</strong><small>Trustpilot, Capterra, Software Advice и Product Hunt</small></span></button>
     </nav>
 
     {activeSection === "campaigns" ? <div className="ai-campaign-section">

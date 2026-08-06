@@ -7,10 +7,11 @@ const sourceOptions: Array<{ id: ReviewSource; label: string; hint: string }> = 
   { id: "trustpilot", label: "Trustpilot", hint: "Отзывы покупателей и пользователей" },
   { id: "capterra", label: "Capterra", hint: "Отзывы о программах с оценками, плюсами и минусами" },
   { id: "softwareadvice", label: "Software Advice", hint: "Отзывы пользователей, рейтинги, плюсы и минусы" },
+  { id: "producthunt", label: "Product Hunt", hint: "Отзывы сообщества о цифровых продуктах" },
 ];
 
 function sourceMark(source: ReviewSource): string {
-  return source === "trustpilot" ? "★" : source === "capterra" ? "C" : "SA";
+  return source === "trustpilot" ? "★" : source === "capterra" ? "C" : source === "softwareadvice" ? "SA" : "PH";
 }
 
 function progressCopy(item: ReviewSourceProgress): string {
@@ -205,7 +206,7 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
 
 export function ReviewAnalysisPanel() {
   const [query, setQuery] = useState("");
-  const [selectedSources, setSelectedSources] = useState<Set<ReviewSource>>(new Set(["trustpilot", "capterra", "softwareadvice"]));
+  const [selectedSources, setSelectedSources] = useState<Set<ReviewSource>>(new Set(["trustpilot", "capterra", "softwareadvice", "producthunt"]));
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ReviewSourceProgress[]>([]);
   const [result, setResult] = useState<ReviewSearchResponse | null>(null);
@@ -278,7 +279,7 @@ export function ReviewAnalysisPanel() {
         <label><span>Название компании или домен</span><div><Building2 size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Например: appsflyer или appsflyer.com" maxLength={120} /></div></label>
         <button className="button primary" disabled={!canSearch}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}{loading ? "Собираем отзывы…" : "Найти отзывы"}</button>
       </form>
-      <footer><ShieldCheck size={15} /><span>Trustpilot проверяет варианты домена, а Capterra и Software Advice находят точный профиль через внутренний поиск. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
+      <footer><ShieldCheck size={15} /><span>Trustpilot проверяет варианты домена, Capterra и Software Advice находят профиль через внутренний поиск, а Product Hunt проверяет адрес продукта. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
     </section>
 
     {loading && <section className="review-progress detailed">
