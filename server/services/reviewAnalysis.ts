@@ -17,13 +17,14 @@ interface ReviewAdapter {
   label: string;
   buildCandidates(query: string): string[];
   resolveCandidates?: (page: Page, query: string) => Promise<string[]>;
+  openResolvedCandidate?: (page: Page, candidate: string) => Promise<{ response?: PlaywrightResponse; warning?: string }>;
   prepare?: (page: Page) => Promise<void>;
   extract(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }>;
 }
 
 const MAX_PAGES = 2;
 const NAVIGATION_TIMEOUT_MS = 35_000;
-const CHALLENGE_WAIT_MS = 15_000;
+const CHALLENGE_WAIT_MS = 45_000;
 
 export function normalizeCompanyQuery(value: string): { domain: string; slug: string } {
   let normalized = value.trim().toLowerCase();
@@ -117,6 +118,58 @@ async function navigateStable(page: Page, url: string): Promise<{ response?: Pla
   page.off("response", captureDocumentResponse);
   const finalResponse = response ?? latestDocumentResponse;
   return { ...(finalResponse ? { response: finalResponse } : {}), ...(warning ? { warning } : {}) };
+}
+
+async function clickCapterraReviewLink(page: Page, candidate: string): Promise<{ response?: PlaywrightResponse; warning?: string }> {
+  const url = new URL(candidate);
+  const absoluteHref = url.toString();
+  const relativeHref = `${url.pathname}${url.search}`;
+  const selector = `a[href='${absoluteHref}'], a[href='${relativeHref}']`;
+  const links = page.locator(selector);
+  const count = await links.count();
+  let linkIndex = -1;
+  for (let index = 0; index < count; index += 1) {
+    if (await links.nth(index).isVisible().catch(() => false)) {
+      linkIndex = index;
+      break;
+    }
+  }
+  if (linkIndex < 0) {
+    return navigateStable(page, candidate);
+  }
+
+  let latestDocumentResponse: PlaywrightResponse | undefined;
+  let warning: string | undefined;
+  const captureDocumentResponse = (response: PlaywrightResponse) => {
+    if (response.request().resourceType() === "document") latestDocumentResponse = response;
+  };
+  page.on("response", captureDocumentResponse);
+  try {
+    await links.nth(linkIndex).click({ timeout: 8_000 });
+  } catch (error) {
+    warning = error instanceof Error ? error.message : String(error);
+    let reachedCandidate = page.url() === url.toString();
+    try {
+      const current = new URL(page.url());
+      reachedCandidate ||= current.origin === url.origin && current.pathname === url.pathname;
+    } catch {
+      reachedCandidate = false;
+    }
+    if (!reachedCandidate) {
+      page.off("response", captureDocumentResponse);
+      const fallback = await navigateStable(page, candidate);
+      return {
+        ...fallback,
+        warning: [warning, fallback.warning].filter(Boolean).join(" | "),
+      };
+    }
+  }
+  await waitForNavigationToSettle(page);
+  page.off("response", captureDocumentResponse);
+  return {
+    ...(latestDocumentResponse ? { response: latestDocumentResponse } : {}),
+    ...(warning ? { warning } : {}),
+  };
 }
 
 async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; hasReviewContent: boolean; title: string; preview: string }> {
@@ -360,6 +413,7 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
     label: "Capterra",
     buildCandidates: buildCapterraCandidates,
     resolveCandidates: resolveCapterraCandidates,
+    openResolvedCandidate: clickCapterraReviewLink,
     prepare: prepareCapterraReviews,
     extract: extractCapterraReviews,
   },
@@ -551,6 +605,7 @@ export async function testReviewProxyConnection(proxySettings?: ReviewProxyCrede
 
 async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings?: ReviewProxyCredentials): Promise<ReviewSourceResult> {
   let candidates = adapter.buildCandidates(query);
+  let resolvedCandidatePage: Page | undefined;
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
   const created = await createContext(proxySettings);
@@ -564,6 +619,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
     if (adapter.resolveCandidates) {
       const searchUrl = candidates[0];
       const searchPage = await context.newPage();
+      let keepSearchPage = false;
       searchPage.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
       attemptedUrls.push(searchUrl);
       const searchStartedAt = Date.now();
@@ -601,6 +657,10 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
           };
         }
         candidates = response?.status() === 404 || state.notFound ? [] : await adapter.resolveCandidates(searchPage, query);
+        if (candidates.length && adapter.openResolvedCandidate) {
+          resolvedCandidatePage = searchPage;
+          keepSearchPage = true;
+        }
         record({
           url: searchUrl,
           finalUrl: searchPage.url(),
@@ -624,7 +684,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         });
         candidates = [];
       } finally {
-        await searchPage.close().catch(() => undefined);
+        if (!keepSearchPage) await searchPage.close().catch(() => undefined);
       }
       if (!candidates.length) {
         return {
@@ -641,12 +701,16 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       }
     }
     for (const candidate of candidates) {
-      const page = await context.newPage();
+      const page = resolvedCandidatePage ?? await context.newPage();
+      const shouldOpenFromResolvedPage = page === resolvedCandidatePage && Boolean(adapter.openResolvedCandidate);
+      resolvedCandidatePage = undefined;
       page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
       attemptedUrls.push(candidate);
       const startedAt = Date.now();
       try {
-        const navigation = await navigateStable(page, candidate);
+        const navigation = shouldOpenFromResolvedPage
+          ? await adapter.openResolvedCandidate!(page, candidate)
+          : await navigateStable(page, candidate);
         const response = navigation.response;
         await page.waitForTimeout(700);
         const initialState = await pageState(page);
@@ -660,7 +724,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
           outcome: response?.status() === 404 || state.notFound ? "not_found" : state.blocked || blockedByStatus ? "blocked" : "loaded",
           durationMs: Date.now() - startedAt,
           pagePreview: state.preview,
-          ...(navigation.warning ? { message: `Chromium обработал автоматический редирект: ${navigation.warning}` } : {}),
+          ...(navigation.warning
+            ? { message: `Chromium обработал автоматический редирект: ${navigation.warning}` }
+            : shouldOpenFromResolvedPage
+              ? { message: "Переход выполнен кликом из результатов поиска Capterra в той же вкладке." }
+              : {}),
         };
         if (response?.status() === 404 || state.notFound) {
           record(firstAttempt);
