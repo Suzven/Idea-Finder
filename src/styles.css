@@ -914,7 +914,7 @@ body.modal-open { overflow: hidden; }
 .review-search-card header p { margin: 4px 0 0; color: #8c95a7; font-size: 10.5px; line-height: 1.5; }
 .review-source-picker { padding: 4px 23px 16px; }
 .review-source-picker > span, .review-search-card form label > span { display: block; margin-bottom: 8px; color: #657087; font-size: 10px; font-weight: 800; }
-.review-source-picker > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.review-source-picker > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .review-source-picker button { display: flex; align-items: center; gap: 10px; padding: 12px; color: #727d92; border: 1px solid #e0e4eb; border-radius: 11px; background: #fbfcfd; text-align: left; }
 .review-source-picker button.selected { color: #684fd1; border-color: #9a85e9; background: #f7f4ff; }
 .review-source-picker button > i { display: grid; place-items: center; flex: 0 0 auto; width: 20px; height: 20px; border: 1.5px solid #c7cdd9; border-radius: 6px; }
@@ -933,6 +933,21 @@ body.modal-open { overflow: hidden; }
 .review-progress > svg { color: #7257de; }
 .review-progress strong, .review-global-error strong { color: #3b465d; font-size: 12px; }
 .review-progress p, .review-global-error p { margin: 4px 0 0; color: #828ca0; font-size: 10px; line-height: 1.55; }
+.review-progress.detailed { display: grid; align-items: stretch; gap: 15px; }
+.review-progress.detailed > header { display: flex; align-items: center; gap: 13px; }
+.review-progress.detailed > header > svg { flex: 0 0 auto; color: #7257de; }
+.review-progress-sites { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.review-progress-sites article { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px; border: 1px solid #e1e3ec; border-radius: 11px; background: rgba(255,255,255,.82); }
+.review-progress-sites article.running { border-color: #a998e8; background: #f8f5ff; box-shadow: 0 6px 18px rgba(87,61,180,.08); }
+.review-progress-sites article.completed.found { border-color: #b9dfd0; background: #f4fcf8; }
+.review-progress-sites article.completed.blocked, .review-progress-sites article.completed.error { border-color: #efcbd0; background: #fff7f8; }
+.review-progress-sites article > div { display: grid; min-width: 0; gap: 3px; }
+.review-progress-sites article > div strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-progress-sites article small { overflow: hidden; color: #8b94a6; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.review-progress-sites article > i { display: grid; place-items: center; flex: 0 0 auto; width: 22px; height: 22px; margin-left: auto; color: #7559de; font-style: normal; }
+.review-progress-sites article.completed.found > i, .review-progress-sites article.completed.not_found > i { color: #27a373; }
+.review-progress-sites article.completed.blocked > i, .review-progress-sites article.completed.error > i { color: #c85f6a; }
+.review-progress-sites article.queued > i > span { width: 8px; height: 8px; border-radius: 50%; background: #c7ccd6; }
 .review-global-error { color: #bb5662; border-color: #efcbd0; background: #fff5f6; }
 .review-global-error > div { flex: 1; }
 .review-global-error p { color: #a96972; }
@@ -947,6 +962,7 @@ body.modal-open { overflow: hidden; }
 .review-source-result > header > div:first-child { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .review-source-logo { display: grid; place-items: center; flex: 0 0 auto; width: 38px; height: 38px; color: #fff; border-radius: 10px; background: #169b68; font-size: 18px; font-weight: 900; }
 .review-source-logo.capterra { background: linear-gradient(145deg, #1967d2, #0b4ca8); font-size: 13px; }
+.review-source-logo.softwareadvice { background: linear-gradient(145deg, #3f176f, #6b35a8); font-size: 11px; }
 .review-source-result h2 { margin: 0; color: #344057; font-size: 15px; }
 .review-source-result header p { overflow: hidden; margin: 3px 0 0; color: #8d96a7; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .review-source-count { display: grid; justify-items: end; }
@@ -994,6 +1010,7 @@ body.modal-open { overflow: hidden; }
 
 @media (max-width: 900px) {
   .review-results { grid-template-columns: 1fr; }
+  .review-progress-sites { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 620px) {

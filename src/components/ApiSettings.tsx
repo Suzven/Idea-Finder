@@ -179,7 +179,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
 
       {activeTab === "proxy" && <div className="api-settings-pane" role="tabpanel">
         <div className="setting-block review-proxy-block">
-          <span className="setting-label">Прокси для Trustpilot и Capterra</span>
+          <span className="setting-label">Прокси для сайтов с отзывами</span>
           <p>Chromium использует эту прокси только при сборе пользовательских отзывов. Проверка выполняется в фоне и не оборвётся из-за таймаута веб-сервера.</p>
           {proxyLoading
             ? <div className="proxy-settings-loading"><LoaderCircle className="spin" size={18} />Загружаем настройки…</div>

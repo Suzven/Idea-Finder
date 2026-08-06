@@ -135,8 +135,18 @@ export interface AIAnalysisJobResponse {
   error?: AIAnalysisJobError;
 }
 
-export type ReviewSource = "trustpilot" | "capterra";
+export type ReviewSource = "trustpilot" | "capterra" | "softwareadvice";
 export type ReviewSourceStatus = "found" | "not_found" | "blocked" | "error";
+export type ReviewSourceProgressState = "queued" | "running" | "completed";
+
+export interface ReviewSourceProgress {
+  source: ReviewSource;
+  label: string;
+  status: ReviewSourceProgressState;
+  outcome?: ReviewSourceStatus;
+  reviewsFound?: number;
+  pagesCollected?: number;
+}
 
 export interface UserReview {
   id: string;
@@ -235,6 +245,7 @@ export interface ReviewSearchResponse {
 export interface ReviewSearchJobResponse {
   jobId: string;
   status: AIAnalysisJobState;
+  progress?: ReviewSourceProgress[];
   result?: ReviewSearchResponse;
   error?: AIAnalysisJobError;
 }

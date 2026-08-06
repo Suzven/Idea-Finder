@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
-import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 import { createAuthenticatedSocks5Bridge, type SocksProxyBridge } from "./socksProxyBridge.js";
@@ -18,6 +18,7 @@ interface ReviewAdapter {
   buildCandidates(query: string): string[];
   resolveCandidates?: (page: Page, query: string) => Promise<string[]>;
   openResolvedCandidate?: (page: Page, candidate: string) => Promise<{ response?: PlaywrightResponse; warning?: string }>;
+  advancePage?: (page: Page, pageNumber: number) => Promise<boolean>;
   prepare?: (page: Page) => Promise<void>;
   extract(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }>;
 }
@@ -53,6 +54,10 @@ export function buildCapterraCandidates(query: string): string[] {
   const normalized = normalizeCompanyQuery(query);
   const searchTerm = normalized.slug || normalized.domain || query.trim();
   return [`https://www.capterra.com/search/?query=${encodeURIComponent(searchTerm)}`];
+}
+
+export function buildSoftwareAdviceCandidates(): string[] {
+  return ["https://www.softwareadvice.com/"];
 }
 
 function pageUrl(baseUrl: string, pageNumber: number): string {
@@ -120,10 +125,10 @@ async function navigateStable(page: Page, url: string): Promise<{ response?: Pla
   return { ...(finalResponse ? { response: finalResponse } : {}), ...(warning ? { warning } : {}) };
 }
 
-async function clickCapterraReviewLink(page: Page, candidate: string): Promise<{ response?: PlaywrightResponse; warning?: string }> {
+async function clickResolvedReviewLink(page: Page, candidate: string): Promise<{ response?: PlaywrightResponse; warning?: string }> {
   const url = new URL(candidate);
   const absoluteHref = url.toString();
-  const relativeHref = `${url.pathname}${url.search}`;
+  const relativeHref = `${url.pathname}${url.search}${url.hash}`;
   const selector = `a[href='${absoluteHref}'], a[href='${relativeHref}']`;
   const links = page.locator(selector);
   const count = await links.count();
@@ -181,7 +186,7 @@ async function pageState(page: Page): Promise<{ blocked: boolean; notFound: bool
         text: document.body?.innerText.slice(0, 30_000) ?? "",
         iframeCount: document.querySelectorAll("iframe").length,
         elementCount: document.body?.querySelectorAll("*").length ?? 0,
-        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-'], div.mb-6.p-6 h3.typo-20.font-semibold").length,
+        reviewMarkerCount: document.querySelectorAll("[data-service-review-card-paper], [itemprop='review'], [data-review-id], div[id^='survey-response-'], div.mb-6.p-6 h3.typo-20.font-semibold, [data-testid='textReview']").length,
       }));
       break;
     } catch (error) {
@@ -323,6 +328,132 @@ async function extractCapterraReviews(page: Page, pageNumber: number): Promise<{
   };
 }
 
+async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promise<string[]> {
+  const normalized = normalizeCompanyQuery(query);
+  const searchTerm = query.includes(".") ? normalized.slug : query.trim();
+  const input = page.getByRole("textbox", { name: "Search for products or categories" });
+  if (!await input.count()) return [];
+  await input.fill(searchTerm);
+  await page.waitForTimeout(900);
+  const clicked = await page.evaluate(({ expectedName }) => {
+    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const expectedWords = expectedName.match(/[a-z0-9]+/g) ?? [];
+    const options = Array.from(document.querySelectorAll<HTMLElement>("li > div.cursor-pointer"))
+      .map((element) => {
+        const label = element.querySelector("p")?.textContent?.trim() ?? "";
+        const normalizedLabel = normalize(label);
+        const exact = normalizedLabel === normalize(expectedName);
+        const contains = normalizedLabel.includes(normalize(expectedName)) || normalize(expectedName).includes(normalizedLabel);
+        const overlap = expectedWords.filter((word) => normalizedLabel.includes(word)).length;
+        return { element, score: exact ? 100 : contains ? 80 : overlap * 10 };
+      })
+      .filter((option) => option.score > 0)
+      .sort((left, right) => right.score - left.score);
+    if (!options[0]) return false;
+    options[0].element.click();
+    return true;
+  }, { expectedName: searchTerm });
+  if (!clicked) return [];
+
+  await waitForNavigationToSettle(page);
+  await page.waitForTimeout(500);
+  const profileUrl = new URL(page.url());
+  if (profileUrl.hostname !== "www.softwareadvice.com") return [];
+  const basePath = profileUrl.pathname.endsWith("/") ? profileUrl.pathname : `${profileUrl.pathname}/`;
+  const reviewsUrl = await page.evaluate(({ expectedPath }) => {
+    const link = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
+      .find((anchor) => new URL(anchor.href, location.href).pathname === `${expectedPath}reviews/`);
+    return link ? new URL(link.href, location.href).toString() : undefined;
+  }, { expectedPath: basePath });
+  return [reviewsUrl ?? `${profileUrl.origin}${basePath}#reviews`];
+}
+
+async function prepareSoftwareAdviceReviews(page: Page): Promise<void> {
+  const cards = page.locator("[data-testid='textReview']");
+  const count = await cards.count();
+  let expanded = 0;
+  for (let index = 0; index < count; index += 1) {
+    const controls = await cards.nth(index).getByText("Read More", { exact: true }).all();
+    for (const control of controls) {
+      if (await control.isVisible().catch(() => false)) {
+        await control.dispatchEvent("click").catch(() => undefined);
+        expanded += 1;
+      }
+    }
+  }
+  if (expanded) await page.waitForTimeout(250);
+}
+
+async function advanceSoftwareAdvicePage(page: Page): Promise<boolean> {
+  const next = page.getByRole("button", { name: "Next", exact: true });
+  if (!await next.count() || !await next.isVisible().catch(() => false) || !await next.isEnabled().catch(() => false)) return false;
+  const pageStatus = page.getByText(/^Showing \d+\s*-\s*\d+ of \d+ Reviews$/).last();
+  const before = await pageStatus.textContent().catch(() => "");
+  await next.click({ timeout: 5_000 }).catch(() => undefined);
+  const deadline = Date.now() + 12_000;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(350);
+    const after = await pageStatus.textContent().catch(() => "");
+    if (after && after !== before) return true;
+  }
+  return false;
+}
+
+async function extractSoftwareAdviceReviews(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }> {
+  const raw = await page.evaluate(() => {
+    const compact = (value?: string | null) => value?.replace(/\s+/g, " ").trim() ?? "";
+    const heading = compact(document.querySelector("h1")?.textContent);
+    const companyName = heading
+      .replace(/\s+(?:software\s+)?reviews?.*$/i, "")
+      .replace(/\s+review$/i, "") || undefined;
+    const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='textReview']"));
+    return {
+      companyName,
+      reviews: cards.map((card) => {
+        const author = compact(card.querySelector("[data-testid='reviewer-first-name']")?.textContent);
+        const dateElement = card.querySelector("[data-testid='reviewed-date']");
+        const date = compact(dateElement?.textContent).replace(/^Reviewed\s+/i, "");
+        const title = compact(dateElement?.nextElementSibling?.textContent);
+        const ratingText = compact(card.querySelector("[data-testid='review-overall-rating-value']")?.textContent);
+        const rating = Number(ratingText.match(/[0-5](?:[.,]\d+)?/)?.[0]?.replace(",", "."));
+        const content = dateElement?.parentElement;
+        const overview = Array.from(content?.querySelectorAll<HTMLParagraphElement>("p.text-sm.text-grey-91:not([data-testid])") ?? [])
+          .map((paragraph) => compact(paragraph.textContent))
+          .find(Boolean);
+        const pros = compact(card.querySelector("[data-testid='review-pros-text']")?.textContent);
+        const cons = compact(card.querySelector("[data-testid='review-cons-text']")?.textContent);
+        const text = [overview, pros ? `Плюсы: ${pros}` : "", cons ? `Минусы: ${cons}` : ""].filter(Boolean).join("\n\n");
+        return {
+          author: author || "Анонимный пользователь",
+          date: date || undefined,
+          title: title || undefined,
+          text,
+          rating: Number.isFinite(rating) ? rating : undefined,
+          reviewUrl: location.href,
+        };
+      }).filter((review) => Boolean(review.text || review.title)),
+    };
+  });
+
+  return {
+    companyName: raw.companyName,
+    reviews: raw.reviews.map((review) => {
+      const value: Omit<UserReview, "id"> = {
+        source: "softwareadvice",
+        author: review.author,
+        ...(review.date ? { date: review.date } : {}),
+        ...(review.title ? { title: review.title } : {}),
+        text: review.text,
+        ...(review.rating !== undefined ? { rating: review.rating } : {}),
+        maxRating: 5,
+        reviewUrl: review.reviewUrl,
+        page: pageNumber,
+      };
+      return { id: reviewId(value), ...value };
+    }),
+  };
+}
+
 async function extractReviews(page: Page, source: ReviewSource, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }> {
   const raw = await page.evaluate(({ currentSource }) => {
     const compact = (value?: string | null) => value?.replace(/\s+/g, " ").trim() ?? "";
@@ -413,9 +544,19 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
     label: "Capterra",
     buildCandidates: buildCapterraCandidates,
     resolveCandidates: resolveCapterraCandidates,
-    openResolvedCandidate: clickCapterraReviewLink,
+    openResolvedCandidate: clickResolvedReviewLink,
     prepare: prepareCapterraReviews,
     extract: extractCapterraReviews,
+  },
+  softwareadvice: {
+    source: "softwareadvice",
+    label: "Software Advice",
+    buildCandidates: buildSoftwareAdviceCandidates,
+    resolveCandidates: resolveSoftwareAdviceCandidates,
+    openResolvedCandidate: clickResolvedReviewLink,
+    advancePage: advanceSoftwareAdvicePage,
+    prepare: prepareSoftwareAdviceReviews,
+    extract: extractSoftwareAdviceReviews,
   },
 };
 
@@ -727,7 +868,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
           ...(navigation.warning
             ? { message: `Chromium обработал автоматический редирект: ${navigation.warning}` }
             : shouldOpenFromResolvedPage
-              ? { message: "Переход выполнен кликом из результатов поиска Capterra в той же вкладке." }
+              ? { message: `Переход выполнен кликом из результатов поиска ${adapter.label} в той же вкладке.` }
               : {}),
         };
         if (response?.status() === 404 || state.notFound) {
@@ -758,13 +899,29 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         let companyName: string | undefined;
         let profileUrl = page.url();
         for (let currentPage = 1; currentPage <= MAX_PAGES; currentPage += 1) {
-          const target = pageUrl(candidate, currentPage);
+          const target = adapter.advancePage && currentPage > 1
+            ? `${candidate.replace(/#.*$/, "")}#page-${currentPage}`
+            : pageUrl(candidate, currentPage);
           let currentAttempt = firstAttempt;
           if (currentPage > 1) {
             attemptedUrls.push(target);
             const pageStartedAt = Date.now();
-            const nextNavigation = await navigateStable(page, target);
-            const nextResponse = nextNavigation.response;
+            const nextNavigation = adapter.advancePage
+              ? { advanced: await adapter.advancePage(page, currentPage) }
+              : { advanced: true, ...await navigateStable(page, target) };
+            if (!nextNavigation.advanced) {
+              currentAttempt = {
+                url: target,
+                finalUrl: page.url(),
+                title: await page.title().catch(() => undefined),
+                outcome: "not_found",
+                durationMs: Date.now() - pageStartedAt,
+                message: `Страница ${currentPage} отсутствует или кнопка перехода больше недоступна.`,
+              };
+              record(currentAttempt);
+              break;
+            }
+            const nextResponse = "response" in nextNavigation ? nextNavigation.response : undefined;
             await page.waitForTimeout(700);
             const initialNextState = await pageState(page);
             const nextState = initialNextState.notFound || initialNextState.hasReviewContent ? initialNextState : await waitForChallenge(page, initialNextState);
@@ -777,7 +934,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
               outcome: nextResponse?.status() === 404 || nextState.notFound ? "not_found" : nextState.blocked || nextBlockedByStatus ? "blocked" : "loaded",
               durationMs: Date.now() - pageStartedAt,
               pagePreview: nextState.preview,
-              ...(nextNavigation.warning ? { message: `Chromium обработал автоматический редирект: ${nextNavigation.warning}` } : {}),
+              ...("warning" in nextNavigation && nextNavigation.warning ? { message: `Chromium обработал автоматический редирект: ${nextNavigation.warning}` } : {}),
             };
             if (nextState.blocked || nextBlockedByStatus || nextResponse?.status() === 404 || nextState.notFound) {
               currentAttempt.message = nextBlockedByStatus
@@ -857,23 +1014,41 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
   }
 }
 
-export async function searchCompanyReviews(query: string, sources: ReviewSource[], proxySettings?: ReviewProxyCredentials): Promise<ReviewSearchResponse> {
-  const results = await Promise.all(sources.map(async (source) => {
+export async function searchCompanyReviews(
+  query: string,
+  sources: ReviewSource[],
+  proxySettings?: ReviewProxyCredentials,
+  onProgress?: (progress: ReviewSourceProgress) => void,
+): Promise<ReviewSearchResponse> {
+  const results: ReviewSourceResult[] = [];
+  for (const source of sources) {
+    const adapter = adapters[source];
+    onProgress?.({ source, label: adapter.label, status: "running" });
+    let result: ReviewSourceResult;
     try {
-      return await scrapeSource(adapters[source], query, proxySettings);
+      result = await scrapeSource(adapter, query, proxySettings);
     } catch (error) {
-      return {
+      result = {
         source,
-        label: adapters[source].label,
+        label: adapter.label,
         status: "error" as const,
         query,
-        attemptedUrls: adapters[source].buildCandidates(query),
+        attemptedUrls: adapter.buildCandidates(query),
         attempts: [],
         reviews: [],
         message: error instanceof Error ? error.message : "Неизвестная ошибка браузерного сбора.",
       };
     }
-  }));
+    results.push(result);
+    onProgress?.({
+      source,
+      label: adapter.label,
+      status: "completed",
+      outcome: result.status,
+      reviewsFound: result.reviews.length,
+      pagesCollected: result.reviews.reduce((maximum, review) => Math.max(maximum, review.page), 0),
+    });
+  }
   return {
     query,
     sources: results,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCapterraCandidates, buildTrustpilotCandidates, normalizeCompanyQuery } from "../server/services/reviewAnalysis";
+import { buildCapterraCandidates, buildSoftwareAdviceCandidates, buildTrustpilotCandidates, normalizeCompanyQuery } from "../server/services/reviewAnalysis";
 
 describe("review analysis URL adapters", () => {
   it("normalizes a company URL into domain and product slug", () => {
@@ -21,5 +21,9 @@ describe("review analysis URL adapters", () => {
     expect(buildCapterraCandidates("www.appsflyer.com")).toEqual([
       "https://www.capterra.com/search/?query=appsflyer",
     ]);
+  });
+
+  it("opens Software Advice search because profile URLs use internal product identifiers", () => {
+    expect(buildSoftwareAdviceCandidates()).toEqual(["https://www.softwareadvice.com/"]);
   });
 });

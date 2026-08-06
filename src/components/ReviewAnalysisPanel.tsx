@@ -1,12 +1,26 @@
 import { AlertTriangle, Building2, CalendarDays, Check, ExternalLink, FileDown, LoaderCircle, MessageSquareQuote, Search, ShieldCheck, Star, UserRound } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ApiRequestError, searchCompanyReviews } from "../api";
-import type { ReviewSearchResponse, ReviewSource, ReviewSourceResult, UserReview } from "../shared/types";
+import type { ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../shared/types";
 
 const sourceOptions: Array<{ id: ReviewSource; label: string; hint: string }> = [
   { id: "trustpilot", label: "Trustpilot", hint: "Отзывы покупателей и пользователей" },
   { id: "capterra", label: "Capterra", hint: "Отзывы о программах с оценками, плюсами и минусами" },
+  { id: "softwareadvice", label: "Software Advice", hint: "Отзывы пользователей, рейтинги, плюсы и минусы" },
 ];
+
+function sourceMark(source: ReviewSource): string {
+  return source === "trustpilot" ? "★" : source === "capterra" ? "C" : "SA";
+}
+
+function progressCopy(item: ReviewSourceProgress): string {
+  if (item.status === "queued") return "В очереди";
+  if (item.status === "running") return "Собираем отзывы…";
+  if (item.outcome === "found") return `Готово: ${item.reviewsFound ?? 0} отзывов · ${item.pagesCollected ?? 0} страниц`;
+  if (item.outcome === "not_found") return "Компания не найдена";
+  if (item.outcome === "blocked") return "Источник включил защиту";
+  return "Сбор завершён с ошибкой";
+}
 
 function formatReviewDate(value?: string): string {
   if (!value) return "Дата не указана";
@@ -47,7 +61,7 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
   const collectedPages = result.reviews.reduce((maximum, review) => Math.max(maximum, review.page), 0);
   return <section className="review-source-result">
     <header>
-      <div><span className={`review-source-logo ${result.source}`}>{result.source === "trustpilot" ? "★" : "C"}</span><div><h2>{result.label}</h2><p>{result.companyName || result.query}</p></div></div>
+      <div><span className={`review-source-logo ${result.source}`}>{sourceMark(result.source)}</span><div><h2>{result.label}</h2><p>{result.companyName || result.query}</p></div></div>
       <div className="review-source-count"><strong>{result.reviews.length}</strong><span>{collectedPages ? `страниц собрано: ${collectedPages}` : "до 6 страниц"}</span></div>
       {result.profileUrl && <a href={result.profileUrl} target="_blank" rel="noreferrer">Открыть профиль <ExternalLink size={14} /></a>}
     </header>
@@ -82,8 +96,9 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
 
 export function ReviewAnalysisPanel() {
   const [query, setQuery] = useState("");
-  const [selectedSources, setSelectedSources] = useState<Set<ReviewSource>>(new Set(["trustpilot", "capterra"]));
+  const [selectedSources, setSelectedSources] = useState<Set<ReviewSource>>(new Set(["trustpilot", "capterra", "softwareadvice"]));
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<ReviewSourceProgress[]>([]);
   const [result, setResult] = useState<ReviewSearchResponse | null>(null);
   const [error, setError] = useState<string>("");
   const canSearch = query.trim().length >= 2 && selectedSources.size > 0 && !loading;
@@ -102,8 +117,14 @@ export function ReviewAnalysisPanel() {
     setLoading(true);
     setError("");
     setResult(null);
+    const sources = [...selectedSources];
+    setProgress(sources.map((source) => ({
+      source,
+      label: sourceOptions.find((option) => option.id === source)?.label ?? source,
+      status: "queued",
+    })));
     try {
-      setResult(await searchCompanyReviews(query.trim(), [...selectedSources]));
+      setResult(await searchCompanyReviews(query.trim(), sources, setProgress));
     } catch (searchError) {
       setError(searchError instanceof ApiRequestError
         ? `${searchError.message}${searchError.action ? ` ${searchError.action}` : ""}`
@@ -144,10 +165,17 @@ export function ReviewAnalysisPanel() {
         <label><span>Название компании или домен</span><div><Building2 size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Например: appsflyer или appsflyer.com" maxLength={120} /></div></label>
         <button className="button primary" disabled={!canSearch}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}{loading ? "Собираем отзывы…" : "Найти отзывы"}</button>
       </form>
-      <footer><ShieldCheck size={15} /><span>Trustpilot проверяет варианты домена, а Capterra сначала ищет точный профиль компании во внутреннем поиске. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
+      <footer><ShieldCheck size={15} /><span>Trustpilot проверяет варианты домена, а Capterra и Software Advice находят точный профиль через внутренний поиск. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
     </section>
 
-    {loading && <section className="review-progress"><LoaderCircle className="spin" size={28} /><div><strong>Chromium собирает отзывы</strong><p>Открываем Trustpilot и Capterra. Собираем страницы по очереди и останавливаемся, когда новые отзывы заканчиваются, но не позднее шестой страницы.</p></div></section>}
+    {loading && <section className="review-progress detailed">
+      <header><LoaderCircle className="spin" size={28} /><div><strong>Chromium собирает отзывы</strong><p>Источники обрабатываются по очереди. Для каждого собирается до шести страниц без повторов.</p></div></header>
+      <div className="review-progress-sites">{progress.map((item) => <article key={item.source} className={`${item.status} ${item.outcome ?? ""}`}>
+        <span className={`review-source-logo ${item.source}`}>{sourceMark(item.source)}</span>
+        <div><strong>{item.label}</strong><small>{progressCopy(item)}</small></div>
+        <i>{item.status === "running" ? <LoaderCircle className="spin" size={18} /> : item.status === "completed" && (item.outcome === "found" || item.outcome === "not_found") ? <Check size={18} /> : item.status === "completed" ? <AlertTriangle size={18} /> : <span />}</i>
+      </article>)}</div>
+    </section>}
     {error && <div className="review-global-error"><AlertTriangle size={20} /><div><strong>Сбор отзывов не завершён</strong><p>{error}</p></div><button className="button ghost" onClick={() => void submit()}>Повторить</button></div>}
 
     {result && <>

@@ -43,7 +43,7 @@ pnpm build
 - `.env.example` — все переменные среды;
 - `db/migrations/001_initial.sql` — MySQL/MariaDB-схема для phpMyAdmin;
 - `db/migrations/002_integration_logs.sql` — таблица подробных логов Meta/TikTok;
-- `db/migrations/005_review_proxy_settings.sql` — зашифрованные настройки прокси для Trustpilot/Capterra;
+- `db/migrations/005_review_proxy_settings.sql` — зашифрованные настройки прокси для сайтов с отзывами;
 - `docs/API_ACCESS.md` — получение и подключение API-токенов;
 - `docs/DEPLOY_HESTIA.md` — пошаговое production-развёртывание с объяснением роли каждого компонента.
 

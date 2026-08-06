@@ -16,7 +16,7 @@ import { filterAds } from "./services/filterAds.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -44,6 +44,7 @@ interface StoredReviewSearchJob {
   status: "queued" | "running" | "completed" | "failed";
   createdAt: number;
   updatedAt: number;
+  progress: ReviewSourceProgress[];
   result?: ReviewSearchResponse;
   error?: AIAnalysisJobError;
 }
@@ -64,6 +65,11 @@ const AI_JOB_TTL_MS = 30 * 60_000;
 const MAX_ACTIVE_AI_JOBS = 2;
 const MAX_ACTIVE_REVIEW_JOBS = 2;
 const MAX_ACTIVE_PROXY_TEST_JOBS = 2;
+const REVIEW_SOURCE_LABELS: Record<ReviewSource, string> = {
+  trustpilot: "Trustpilot",
+  capterra: "Capterra",
+  softwareadvice: "Software Advice",
+};
 
 function publicAIJob(job: StoredAIAnalysisJob): AIAnalysisJobResponse {
   return {
@@ -78,6 +84,7 @@ function publicReviewJob(job: StoredReviewSearchJob): ReviewSearchJobResponse {
   return {
     jobId: job.jobId,
     status: job.status,
+    progress: job.progress,
     ...(job.result ? { result: job.result } : {}),
     ...(job.error ? { error: job.error } : {}),
   };
@@ -265,7 +272,7 @@ const aiNoteSchema = z.object({
 });
 const reviewSearchSchema = z.object({
   query: z.string().trim().min(2).max(120),
-  sources: z.array(z.enum(["trustpilot", "capterra"])).min(1).max(10),
+  sources: z.array(z.enum(["trustpilot", "capterra", "softwareadvice"])).min(1).max(10),
 });
 const reviewProxySettingsSchema = z.object({
   server: z.string().trim().min(1).max(500).refine((value) => {
@@ -612,6 +619,7 @@ app.post("/api/review-analysis", (request, response, next) => {
       status: "queued",
       createdAt: now,
       updatedAt: now,
+      progress: sources.map((source) => ({ source, label: REVIEW_SOURCE_LABELS[source], status: "queued" })),
     };
     reviewSearchJobs.set(job.jobId, job);
     response.status(202).json(publicReviewJob(job));
@@ -621,7 +629,10 @@ app.post("/api/review-analysis", (request, response, next) => {
       job.updatedAt = Date.now();
       try {
         const proxySettings = await getReviewProxyCredentials(clientId);
-        job.result = await searchCompanyReviews(query, sources, proxySettings);
+        job.result = await searchCompanyReviews(query, sources, proxySettings, (sourceProgress) => {
+          job.progress = job.progress.map((item) => item.source === sourceProgress.source ? sourceProgress : item);
+          job.updatedAt = Date.now();
+        });
         job.status = "completed";
       } catch (error) {
         job.status = "failed";
