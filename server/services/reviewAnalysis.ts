@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
-import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewManualChallenge, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
+import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewManualChallenge, ReviewProgressOperation, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 import { registerReviewChallenge } from "./reviewChallenge.js";
@@ -32,6 +32,7 @@ const MANUAL_CHALLENGE_WAIT_MS = 5 * 60_000;
 interface ReviewScrapeOptions {
   challengeOwnerId?: string;
   onChallengeChange?: (challenge?: ReviewManualChallenge) => void;
+  onActivity?: (activity: Omit<ReviewProgressOperation, "at" | "elapsedMs">) => void;
 }
 
 export function normalizeCompanyQuery(value: string): { domain: string; slug: string } {
@@ -452,20 +453,19 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promi
 }
 
 async function prepareSoftwareAdviceReviews(page: Page): Promise<void> {
-  const cards = page.locator("[data-testid='textReview']");
-  const count = await cards.count();
-  let expanded = 0;
-  for (let index = 0; index < count; index += 1) {
-    const controls = await cards.nth(index).getByText("Read More", { exact: true }).all();
-    for (const control of controls) {
-      if (await control.isVisible().catch(() => false)) {
-        await control.click({ timeout: 3_000 })
-          .catch(() => control.dispatchEvent("click"))
-          .catch(() => undefined);
-        expanded += 1;
-      }
+  const expanded = await page.evaluate(() => {
+    let count = 0;
+    const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='textReview']"));
+    for (const card of cards) {
+      const label = Array.from(card.querySelectorAll<HTMLElement>("p, button, [role='button']"))
+        .find((element) => element.textContent?.trim() === "Read More");
+      const control = label?.closest<HTMLElement>(".cursor-pointer, button, [role='button']") ?? label;
+      if (!control || control.getClientRects().length === 0) continue;
+      control.click();
+      count += 1;
     }
-  }
+    return count;
+  }).catch(() => 0);
   if (expanded) await page.waitForTimeout(250);
 }
 
@@ -909,8 +909,13 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
   let resolvedCandidatePage: Page | undefined;
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
+  const activity = (stage: string, message: string, details?: Omit<ReviewProgressOperation, "stage" | "message" | "at" | "elapsedMs">) => {
+    options?.onActivity?.({ stage, message, ...details });
+  };
+  activity("browser_start", "Запускаем отдельный Chromium и подключаем прокси.");
   const created = await createContext(proxySettings);
   const { context, browser } = created;
+  activity("browser_ready", `Chromium ${browser.version} запущен.`, { url: candidates[0] });
   const record = (attempt: ReviewAttemptLog) => {
     attempts.push(attempt);
     console.info(`[review-analysis:${adapter.source}]`, JSON.stringify(attempt));
@@ -925,9 +930,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       attemptedUrls.push(searchUrl);
       const searchStartedAt = Date.now();
       try {
+        activity("search_open", `Открываем поиск ${adapter.label}.`, { url: searchUrl });
         const navigation = await navigateStable(searchPage, searchUrl);
         const response = navigation.response;
         await searchPage.waitForTimeout(700);
+        activity("access_check", `Страница поиска загружена${response ? `: HTTP ${response.status()}` : ""}. Проверяем защиту.`, { url: searchPage.url() });
         const initialState = await pageState(searchPage);
         let state = initialState.notFound || adapter.source === "capterra" ? initialState : await waitForChallenge(searchPage, initialState);
         const initialBlockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound : false;
@@ -962,7 +969,11 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             message: `${adapter.label} не отдала страницу поиска серверу. Подробности находятся в логе Chromium ниже.`,
           };
         }
+        activity("profile_search", `Ищем точный профиль «${query}» в ${adapter.label}.`, { url: searchPage.url() });
         candidates = response?.status() === 404 || state.notFound ? [] : await adapter.resolveCandidates(searchPage, query);
+        activity(candidates.length ? "profile_found" : "profile_not_found", candidates.length
+          ? `Профиль найден: ${candidates[0]}`
+          : "Подходящий профиль не найден.", candidates.length ? { url: candidates[0] } : undefined);
         if (candidates.length && adapter.openResolvedCandidate) {
           resolvedCandidatePage = searchPage;
           keepSearchPage = true;
@@ -981,6 +992,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         });
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
+        activity("search_error", `Ошибка поиска профиля: ${lastError}`, { url: searchPage.url() });
         record({
           url: searchUrl,
           finalUrl: searchPage.url(),
@@ -1014,11 +1026,13 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
       attemptedUrls.push(candidate);
       const startedAt = Date.now();
       try {
+        activity("profile_open", `Открываем страницу отзывов ${adapter.label}.`, { url: candidate });
         const navigation = shouldOpenFromResolvedPage
           ? await adapter.openResolvedCandidate!(page, candidate)
           : await navigateStable(page, candidate);
         const response = navigation.response;
         await page.waitForTimeout(700);
+        activity("access_check", `Страница загружена${response ? `: HTTP ${response.status()}` : ""}. Проверяем доступ и наличие отзывов.`, { url: page.url() });
         const initialState = await pageState(page);
         let state = initialState.notFound || initialState.hasReviewContent || adapter.source === "capterra" ? initialState : await waitForChallenge(page, initialState);
         const initialBlockedByStatus = response ? [401, 403, 429].includes(response.status()) && !state.notFound && !state.hasReviewContent : false;
@@ -1040,6 +1054,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
               : {}),
         };
         if (response?.status() === 404 || state.notFound) {
+          activity("profile_not_found", "Страница профиля не найдена, проверяем следующий вариант.", { url: page.url() });
           record(firstAttempt);
           continue;
         }
@@ -1049,6 +1064,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             : blockedByStatus
             ? `Источник вернул HTTP ${response?.status()} для IP сервера.`
             : `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`;
+          activity("access_blocked", firstAttempt.message, { url: page.url() });
           record(firstAttempt);
           return {
             source: adapter.source,
@@ -1074,6 +1090,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             : pageUrl(candidate, currentPage);
           let currentAttempt = firstAttempt;
           if (currentPage > 1) {
+            activity("page_open", `Открываем страницу ${currentPage} из ${MAX_PAGES}.`, { page: currentPage, reviewsFound: allReviews.length, url: target });
             attemptedUrls.push(target);
             const pageStartedAt = Date.now();
             const nextNavigation = adapter.advancePage
@@ -1088,6 +1105,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
                 durationMs: Date.now() - pageStartedAt,
                 message: `Страница ${currentPage} отсутствует или кнопка перехода больше недоступна.`,
               };
+              activity("pagination_end", `Страница ${currentPage} недоступна — сбор источника завершён.`, { page: currentPage, reviewsFound: allReviews.length, url: page.url() });
               record(currentAttempt);
               break;
             }
@@ -1122,7 +1140,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             }
           }
           const extractionStartedAt = Date.now();
+          activity("reviews_expand", `Страница ${currentPage}: раскрываем полный текст отзывов.`, { page: currentPage, reviewsFound: allReviews.length, url: page.url() });
           await adapter.prepare?.(page);
+          activity("reviews_extract", `Страница ${currentPage}: читаем карточки из DOM.`, { page: currentPage, reviewsFound: allReviews.length, url: page.url() });
           const extracted = await adapter.extract(page, currentPage);
           const knownReviewIds = new Set(allReviews.map((review) => review.id));
           const newReviews = extracted.reviews.filter((review) => {
@@ -1141,13 +1161,26 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             currentAttempt.message = "Страница повторяет уже собранные отзывы — дальнейший обход остановлен.";
           }
           record(currentAttempt);
+          activity(newReviews.length ? "page_complete" : "page_empty", newReviews.length
+            ? `Страница ${currentPage} готова: +${newReviews.length}, всего ${allReviews.length} отзывов.`
+            : `На странице ${currentPage} новых отзывов нет — сбор источника завершён.`, {
+            page: currentPage,
+            reviewsFound: allReviews.length,
+            url: page.url(),
+          });
           if (!newReviews.length) break;
         }
         const reviews = deduplicateReviews(allReviews);
         if (!reviews.length) {
           lastError = `Страница ${adapter.label} открылась, но отзывы не найдены в текущей разметке.`;
+          activity("no_reviews", lastError, { url: page.url() });
           continue;
         }
+        activity("source_complete", `${adapter.label}: собрано ${reviews.length} отзывов.`, {
+          reviewsFound: reviews.length,
+          page: reviews.reduce((maximum, review) => Math.max(maximum, review.page), 0),
+          url: profileUrl,
+        });
         return {
           source: adapter.source,
           label: adapter.label,
@@ -1162,6 +1195,7 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
         };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
+        activity("candidate_error", `Ошибка обработки страницы: ${lastError}`, { url: page.url() });
         record({
           url: candidate,
           finalUrl: page.url(),
@@ -1189,6 +1223,10 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
   }
 }
 
+export function shouldRetryReviewSource(result: Pick<ReviewSourceResult, "status">): boolean {
+  return result.status === "error" || result.status === "blocked";
+}
+
 export async function searchCompanyReviews(
   query: string,
   sources: ReviewSource[],
@@ -1196,20 +1234,56 @@ export async function searchCompanyReviews(
   onProgress?: (progress: ReviewSourceProgress) => void,
   challengeOwnerId?: string,
 ): Promise<ReviewSearchResponse> {
-  const results: ReviewSourceResult[] = [];
-  for (const source of sources) {
+  const results = new Map<ReviewSource, ReviewSourceResult>();
+  const operationsBySource = new Map<ReviewSource, ReviewProgressOperation[]>();
+
+  const runSource = async (source: ReviewSource, attemptNumber: 1 | 2): Promise<ReviewSourceResult> => {
     const adapter = adapters[source];
-    onProgress?.({ source, label: adapter.label, status: "running" });
+    const sourceStartedAt = Date.now();
+    const operations = operationsBySource.get(source) ?? [];
+    operationsBySource.set(source, operations);
+    let activeChallenge: ReviewManualChallenge | undefined;
+    const reportActivity = (activity: Omit<ReviewProgressOperation, "at" | "elapsedMs">) => {
+      const operation: ReviewProgressOperation = {
+        ...activity,
+        attempt: attemptNumber,
+        at: new Date().toISOString(),
+        elapsedMs: Date.now() - sourceStartedAt,
+      };
+      operations.push(operation);
+      onProgress?.({
+        source,
+        label: adapter.label,
+        status: "running",
+        activity: operation.message,
+        attempt: attemptNumber,
+        ...(operation.page !== undefined ? { currentPage: operation.page } : {}),
+        ...(operation.reviewsFound !== undefined ? { reviewsFound: operation.reviewsFound } : {}),
+        ...(activeChallenge ? { challenge: activeChallenge } : {}),
+        operations: [...operations],
+      });
+    };
+    reportActivity({
+      stage: attemptNumber === 1 ? "initial_attempt" : "retry_attempt",
+      message: attemptNumber === 1
+        ? "Подготавливаем сборщик. Попытка 1 из 2."
+        : "Повторная попытка 2 из 2 после завершения остальных источников.",
+    });
     let result: ReviewSourceResult;
     try {
       result = await scrapeSource(adapter, query, proxySettings, {
         challengeOwnerId,
-        onChallengeChange: (challenge) => onProgress?.({
-          source,
-          label: adapter.label,
-          status: "running",
-          ...(challenge ? { challenge } : {}),
-        }),
+        onActivity: reportActivity,
+        onChallengeChange: (challenge) => {
+          activeChallenge = challenge;
+          reportActivity({
+            stage: challenge ? "manual_verification" : "manual_verification_complete",
+            message: challenge
+              ? "Cloudflare ждёт ручного подтверждения в окне Chromium."
+              : "Ручная проверка завершена, продолжаем сбор.",
+            ...(challenge ? { url: challenge.pageUrl } : {}),
+          });
+        },
       });
     } catch (error) {
       result = {
@@ -1223,20 +1297,53 @@ export async function searchCompanyReviews(
         message: error instanceof Error ? error.message : "Неизвестная ошибка браузерного сбора.",
       };
     }
-    results.push(result);
+    const needsRetry = attemptNumber === 1 && (result.status === "error" || result.status === "blocked");
+    const finalActivity = needsRetry
+      ? `${result.message || "Источник завершился с ошибкой."} Повторим после завершения остальных источников.`
+      : result.status === "found"
+      ? `Готово: собрано ${result.reviews.length} отзывов.`
+      : result.message || "Сбор источника завершён.";
+    if (operations.at(-1)?.message !== finalActivity) {
+      operations.push({
+        stage: `completed_${result.status}`,
+        message: finalActivity,
+        at: new Date().toISOString(),
+        elapsedMs: Date.now() - sourceStartedAt,
+        attempt: attemptNumber,
+        reviewsFound: result.reviews.length,
+      });
+    }
     onProgress?.({
       source,
       label: adapter.label,
       status: "completed",
       outcome: result.status,
+      activity: finalActivity,
+      attempt: attemptNumber,
       reviewsFound: result.reviews.length,
       pagesCollected: result.reviews.reduce((maximum, review) => Math.max(maximum, review.page), 0),
+      operations: [...operations],
     });
+    return result;
+  };
+
+  for (const source of sources) {
+    results.set(source, await runSource(source, 1));
   }
+
+  const retrySources = sources.filter((source) => {
+    const result = results.get(source);
+    return result ? shouldRetryReviewSource(result) : false;
+  });
+  for (const source of retrySources) {
+    results.set(source, await runSource(source, 2));
+  }
+
+  const orderedResults = sources.map((source) => results.get(source)).filter((result): result is ReviewSourceResult => Boolean(result));
   return {
     query,
-    sources: results,
-    totalReviews: results.reduce((total, result) => total + result.reviews.length, 0),
+    sources: orderedResults,
+    totalReviews: orderedResults.reduce((total, result) => total + result.reviews.length, 0),
     createdAt: new Date().toISOString(),
   };
 }

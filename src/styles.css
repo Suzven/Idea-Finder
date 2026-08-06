@@ -948,6 +948,20 @@ body.modal-open { overflow: hidden; }
 .review-progress-sites article.completed.found > i, .review-progress-sites article.completed.not_found > i { color: #27a373; }
 .review-progress-sites article.completed.blocked > i, .review-progress-sites article.completed.error > i { color: #c85f6a; }
 .review-progress-sites article.queued > i > span { width: 8px; height: 8px; border-radius: 50%; background: #c7ccd6; }
+.review-live-operations { overflow: hidden; border: 1px solid #e0e3ec; border-radius: 12px; background: rgba(255,255,255,.9); }
+.review-live-operations > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #e7e9ef; }
+.review-live-operations > header strong { color: #465168; font-size: 13px; }
+.review-live-operations > header span { color: #949cad; font-size: 11px; }
+.review-live-operations > div { display: grid; max-height: 300px; overflow-y: auto; }
+.review-live-operations section { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; padding: 11px 12px; border-bottom: 1px solid #eef0f4; }
+.review-live-operations section:last-child { border-bottom: 0; }
+.review-live-operations h3 { display: flex; align-items: center; gap: 8px; margin: 0; color: #465168; font-size: 11.5px; }
+.review-live-operations h3 .review-source-logo { width: 25px; height: 25px; border-radius: 7px; font-size: 8px; }
+.review-live-operations ol { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.review-live-operations li { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; align-items: baseline; gap: 8px; color: #667187; font-size: 11px; line-height: 1.45; }
+.review-live-operations li time { color: #9ba3b2; font-variant-numeric: tabular-nums; }
+.review-live-operations li span { overflow-wrap: anywhere; }
+.review-live-operations li small { color: #8e79dc; font-size: 10px; white-space: nowrap; }
 .review-global-error { color: #bb5662; border-color: #efcbd0; background: #fff5f6; }
 .review-global-error > div { flex: 1; }
 .review-global-error p { color: #a96972; }

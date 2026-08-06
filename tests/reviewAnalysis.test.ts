@@ -7,6 +7,7 @@ import {
   isSoftwareAdviceProfileUrl,
   normalizeCompanyQuery,
   scoreSoftwareAdviceResult,
+  shouldRetryReviewSource,
 } from "../server/services/reviewAnalysis";
 
 describe("review analysis URL adapters", () => {
@@ -56,5 +57,12 @@ describe("review analysis URL adapters", () => {
     expect(buildProductHuntCandidates("https://www.producthunt.com/products/elevenlabs/reviews")[0]).toBe(
       "https://www.producthunt.com/products/elevenlabs/reviews?feed=single&filter=all",
     );
+  });
+
+  it("retries only transient source failures after the first pass", () => {
+    expect(shouldRetryReviewSource({ status: "error" })).toBe(true);
+    expect(shouldRetryReviewSource({ status: "blocked" })).toBe(true);
+    expect(shouldRetryReviewSource({ status: "found" })).toBe(false);
+    expect(shouldRetryReviewSource({ status: "not_found" })).toBe(false);
   });
 });

@@ -17,7 +17,7 @@ function sourceMark(source: ReviewSource): string {
 function progressCopy(item: ReviewSourceProgress): string {
   if (item.status === "queued") return "В очереди";
   if (item.challenge) return "Нужна ручная проверка Cloudflare";
-  if (item.status === "running") return "Собираем отзывы…";
+  if (item.status === "running") return item.activity || "Собираем отзывы…";
   if (item.outcome === "found") return `Готово: ${item.reviewsFound ?? 0} отзывов · ${item.pagesCollected ?? 0} страниц`;
   if (item.outcome === "not_found") return "Компания не найдена";
   if (item.outcome === "blocked") return "Источник включил защиту";
@@ -289,6 +289,17 @@ export function ReviewAnalysisPanel() {
         <div><strong>{item.label}</strong><small>{progressCopy(item)}</small></div>
         <i>{item.status === "running" ? <LoaderCircle className="spin" size={18} /> : item.status === "completed" && (item.outcome === "found" || item.outcome === "not_found") ? <Check size={18} /> : item.status === "completed" ? <AlertTriangle size={18} /> : <span />}</i>
       </article>)}</div>
+      <div className="review-live-operations">
+        <header><strong>Живой лог операций</strong><span>Обновляется во время работы Chromium</span></header>
+        <div>{progress.filter((item) => item.operations?.length).map((item) => <section key={item.source}>
+          <h3><span className={`review-source-logo ${item.source}`}>{sourceMark(item.source)}</span>{item.label}</h3>
+          <ol>{item.operations?.slice(-12).map((operation, index) => <li key={`${operation.at}-${operation.stage}-${index}`}>
+            <time>{new Date(operation.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+            <span>{operation.message}</span>
+            <small>{operation.attempt === 2 ? "повтор · " : ""}{(operation.elapsedMs / 1000).toFixed(1)} с{operation.reviewsFound !== undefined ? ` · ${operation.reviewsFound} отзывов` : ""}</small>
+          </li>)}</ol>
+        </section>)}</div>
+      </div>
     </section>}
     {error && <div className="review-global-error"><AlertTriangle size={20} /><div><strong>Сбор отзывов не завершён</strong><p>{error}</p></div><button className="button ghost" onClick={() => void submit()}>Повторить</button></div>}
 

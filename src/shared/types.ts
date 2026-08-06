@@ -153,9 +153,24 @@ export interface ReviewSourceProgress {
   label: string;
   status: ReviewSourceProgressState;
   outcome?: ReviewSourceStatus;
+  activity?: string;
+  attempt?: number;
+  currentPage?: number;
   reviewsFound?: number;
   pagesCollected?: number;
   challenge?: ReviewManualChallenge;
+  operations?: ReviewProgressOperation[];
+}
+
+export interface ReviewProgressOperation {
+  stage: string;
+  message: string;
+  at: string;
+  elapsedMs: number;
+  attempt?: number;
+  page?: number;
+  reviewsFound?: number;
+  url?: string;
 }
 
 export interface UserReview {
