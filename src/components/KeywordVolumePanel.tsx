@@ -1,7 +1,6 @@
 import { AlertTriangle, BarChart3, Check, CheckCircle2, ChevronDown, CircleGauge, Copy, FileDown, Globe2, KeyRound, LoaderCircle, Plus, Search, Settings2, Table2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ApiRequestError, collectKeywordVolumes, fetchKeywordSurferExtensionInfo } from "../api";
-import { getKeywordProviderSettings, hasGoogleAdsKeywordSettings } from "../keywordSettings";
+import { ApiRequestError, collectKeywordVolumes, fetchKeywordSurferExtensionInfo, fetchPrivateSettings } from "../api";
 import { parseKeywordSurferCsv } from "../keywordSurferCsv";
 import { META_COUNTRIES } from "../shared/filterOptions";
 import type { FilterOption } from "../shared/filterOptions";
@@ -84,10 +83,13 @@ export function KeywordVolumePanel({ onOpenSettings, settingsRevision }: Keyword
   const [error, setError] = useState("");
   const [result, setResult] = useState<KeywordVolumeResponse | null>(null);
   const [surferExtension, setSurferExtension] = useState<KeywordSurferExtensionInfo>({ configured: false });
-  const googleConfigured = useMemo(() => hasGoogleAdsKeywordSettings(), [settingsRevision]);
+  const [googleConfigured, setGoogleConfigured] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    void fetchPrivateSettings()
+      .then((settings) => { if (!cancelled) setGoogleConfigured(settings.googleAds.configured); })
+      .catch(() => { if (!cancelled) setGoogleConfigured(false); });
     void fetchKeywordSurferExtensionInfo()
       .then((info) => { if (!cancelled) setSurferExtension(info); })
       .catch(() => { if (!cancelled) setSurferExtension({ configured: false }); });
@@ -129,20 +131,11 @@ export function KeywordVolumePanel({ onOpenSettings, settingsRevision }: Keyword
     setLoading(true);
     setError("");
     setResult(null);
-    const settings = getKeywordProviderSettings();
     try {
       setResult(await collectKeywordVolumes({
         keywords,
         countries,
         sources,
-        credentials: {
-          ...(sources.includes("google_ads") && googleConfigured ? { googleAds: {
-            developerToken: settings.googleAds.developerToken,
-            customerId: settings.googleAds.customerId,
-            serviceAccountJson: settings.googleAds.serviceAccountJson,
-            ...(settings.googleAds.loginCustomerId ? { loginCustomerId: settings.googleAds.loginCustomerId } : {}),
-          } } : {}),
-        },
         ...(sources.includes("keyword_surfer") ? { surferRows } : {}),
       }));
     } catch (requestError) {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -14,12 +14,20 @@ const configuredStorageRoot = process.env.SPYSERVICE_KEYWORD_SURFER_DIR?.trim();
 const STORAGE_ROOT = configuredStorageRoot
   ? resolve(configuredStorageRoot)
   : join(homedir(), ".spyservice", "keyword-surfer");
-const ACTIVE_EXTENSION = join(STORAGE_ROOT, "active");
+const LEGACY_ACTIVE_EXTENSION = join(STORAGE_ROOT, "active");
 const SURFER_API_URL = "https://db3.keywordsur.fr/api/ks/keywords";
 const MAX_ARCHIVE_ENTRIES = 2_000;
 const MAX_ARCHIVE_SIZE = 80 * 1024 * 1024;
 const MAX_EXTRACTED_SIZE = 200 * 1024 * 1024;
-let surferCollectionActive = false;
+const activeSurferCollections = new Set<string>();
+
+function safeScope(scope: string): string {
+  return scope.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100) || "anonymous";
+}
+
+function activeExtension(scope: string): string {
+  return join(STORAGE_ROOT, "users", safeScope(scope), "active");
+}
 
 interface KeywordSurferManifest {
   name?: string;
@@ -129,7 +137,7 @@ async function findManifestRoot(directory: string, depth = 0): Promise<string | 
   return undefined;
 }
 
-async function readManifest(root = ACTIVE_EXTENSION): Promise<KeywordSurferManifest> {
+async function readManifest(root: string): Promise<KeywordSurferManifest> {
   const raw = await readFile(join(root, "manifest.json"), "utf8");
   const manifest = JSON.parse(raw) as KeywordSurferManifest;
   const googleScript = manifest.content_scripts?.some((script) => script.js?.includes("injectGoogleKeywordSurfer.js"));
@@ -139,23 +147,26 @@ async function readManifest(root = ACTIVE_EXTENSION): Promise<KeywordSurferManif
   return manifest;
 }
 
-export async function getKeywordSurferExtensionInfo(): Promise<KeywordSurferExtensionInfo> {
+export async function getKeywordSurferExtensionInfo(scope: string): Promise<KeywordSurferExtensionInfo> {
+  const active = activeExtension(scope);
   try {
-    const manifest = await readManifest();
-    const file = await stat(join(ACTIVE_EXTENSION, "manifest.json"));
+    const manifest = await readManifest(active);
+    const file = await stat(join(active, "manifest.json"));
     return { configured: true, name: manifest.name, version: manifest.version, updatedAt: file.mtime.toISOString() };
   } catch {
     return { configured: false };
   }
 }
 
-export async function installKeywordSurferExtension(archive: Buffer): Promise<KeywordSurferExtensionInfo> {
+export async function installKeywordSurferExtension(scope: string, archive: Buffer): Promise<KeywordSurferExtensionInfo> {
   if (!archive.length || archive.length > MAX_ARCHIVE_SIZE) {
     throw new AppError(400, "KEYWORD_SURFER_ARCHIVE_SIZE", "ZIP Keyword Surfer пуст или превышает 80 МБ.");
   }
-  await mkdir(STORAGE_ROOT, { recursive: true });
+  const userRoot = dirname(activeExtension(scope));
+  const active = activeExtension(scope);
+  await mkdir(userRoot, { recursive: true });
   const id = randomUUID();
-  const extractionPath = join(STORAGE_ROOT, `extract-${id}`);
+  const extractionPath = join(userRoot, `extract-${id}`);
   await mkdir(extractionPath, { recursive: true });
   try {
     console.info(`[keyword-surfer-upload] Распаковываем ZIP (${archive.length} байт) в ${extractionPath}.`);
@@ -165,18 +176,25 @@ export async function installKeywordSurferExtension(archive: Buffer): Promise<Ke
     if (!manifestRoot) throw new AppError(400, "KEYWORD_SURFER_MANIFEST_MISSING", "В ZIP не найден manifest.json расширения.");
     const manifest = await readManifest(manifestRoot);
     console.info(`[keyword-surfer-upload] Проверен Keyword Surfer ${manifest.version ?? "?"}.`);
-    await rm(ACTIVE_EXTENSION, { recursive: true, force: true });
-    await rename(manifestRoot, ACTIVE_EXTENSION);
-    const info = await getKeywordSurferExtensionInfo();
-    console.info(`[keyword-surfer-upload] Расширение установлено в ${ACTIVE_EXTENSION}.`);
+    await rm(active, { recursive: true, force: true });
+    await rename(manifestRoot, active);
+    const info = await getKeywordSurferExtensionInfo(scope);
+    console.info(`[keyword-surfer-upload] Расширение установлено в пользовательскую папку ${active}.`);
     return info;
   } finally {
     await rm(extractionPath, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
-export async function deleteKeywordSurferExtension(): Promise<void> {
-  await rm(ACTIVE_EXTENSION, { recursive: true, force: true });
+export async function deleteKeywordSurferExtension(scope: string): Promise<void> {
+  await rm(activeExtension(scope), { recursive: true, force: true });
+}
+
+export async function adoptLegacyKeywordSurferExtension(scope: string): Promise<void> {
+  const target = activeExtension(scope);
+  if (existsSync(target) || !existsSync(join(LEGACY_ACTIVE_EXTENSION, "manifest.json"))) return;
+  await mkdir(dirname(target), { recursive: true });
+  await cp(LEGACY_ACTIVE_EXTENSION, target, { recursive: true, errorOnExist: false });
 }
 
 function chunks<T>(items: T[], size: number): T[][] {
@@ -206,16 +224,17 @@ export function parseKeywordSurferPayload(payload: unknown, country: string, req
 }
 
 export async function collectKeywordSurferRows(
+  scope: string,
   keywords: string[],
   countries: string[],
   log: KeywordSurferLogger,
 ): Promise<KeywordSurferImportRow[]> {
-  if (surferCollectionActive) {
+  if (activeSurferCollections.has(scope)) {
     throw new AppError(429, "KEYWORD_SURFER_BUSY", "Keyword Surfer уже собирает другой запрос. Дождитесь его завершения.");
   }
-  surferCollectionActive = true;
+  activeSurferCollections.add(scope);
   try {
-    const info = await getKeywordSurferExtensionInfo();
+    const info = await getKeywordSurferExtensionInfo(scope);
     if (!info.configured) {
       throw new AppError(400, "KEYWORD_SURFER_EXTENSION_REQUIRED", "Загрузите ZIP расширения Keyword Surfer в Настройках → Ключи.");
     }
@@ -291,6 +310,6 @@ export async function collectKeywordSurferRows(
     }
     return rows;
   } finally {
-    surferCollectionActive = false;
+    activeSurferCollections.delete(scope);
   }
 }

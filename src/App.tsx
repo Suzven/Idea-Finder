@@ -1,6 +1,6 @@
-import { Bookmark, Menu, Settings2, Sparkles, X } from "lucide-react";
+import { Bookmark, LogOut, Menu, Settings2, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createCollection, deleteCollection, fetchAds, fetchCollections, fetchFavoriteAds, setFavorite } from "./api";
+import { createCollection, deleteCollection, fetchAds, fetchCollections, fetchCurrentSession, fetchFavoriteAds, logout, setFavorite } from "./api";
 import { AdCard } from "./components/AdCard";
 import { AIAnalyticsPage } from "./components/AIAnalyticsPage";
 import { ApiSettings } from "./components/ApiSettings";
@@ -9,9 +9,10 @@ import { CollectionsPanel } from "./components/CollectionsPanel";
 import { CreativeModal } from "./components/CreativeModal";
 import { FilterPanel } from "./components/FilterPanel";
 import { LogsPage } from "./components/LogsPage";
+import { LoginPage } from "./components/LoginPage";
 import { Sidebar } from "./components/Sidebar";
 import { ViewSettings } from "./components/ViewSettings";
-import { EMPTY_FILTERS, type AdCreative, type AdFilters, type AdSource, type CreativeCollection } from "./shared/types";
+import { EMPTY_FILTERS, type AdCreative, type AdFilters, type AdSource, type AuthUser, type CreativeCollection } from "./shared/types";
 
 function isFiltered(filters: AdFilters): boolean {
   return Object.entries(filters).some(([key, value]) => {
@@ -20,7 +21,7 @@ function isFiltered(filters: AdFilters): boolean {
   }) || filters.mediaType !== "all";
 }
 
-export default function App() {
+function WorkspaceApp({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const [activeView, setActiveView] = useState<"ads" | "logs" | "analytics">("ads");
   const [source, setSource] = useState<AdSource>("meta");
   const [draftFilters, setDraftFilters] = useState<AdFilters>({ ...EMPTY_FILTERS });
@@ -190,6 +191,7 @@ export default function App() {
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Открыть меню"><Menu size={21} /></button>
           <div className="breadcrumb"><span>{activeView === "logs" ? "Система" : activeView === "analytics" ? "Рабочее пространство" : "Библиотека рекламы"}</span><span>/</span><strong>{activeView === "logs" ? "Логи интеграций" : activeView === "analytics" ? "AI Аналитика" : source === "meta" ? "Meta Ads" : "TikTok Ads"}</strong></div>
+          <div className="topbar-user"><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><button type="button" onClick={onLogout} aria-label="Выйти"><LogOut size={17} /></button></div>
         </header>
 
         {activeView === "logs" ? <LogsPage /> : activeView === "analytics" ? <AIAnalyticsPage onOpenSettings={() => setApiSettingsOpen(true)} settingsRevision={settingsRevision} /> : <div className="page-wrap">
@@ -238,4 +240,28 @@ export default function App() {
       <ApiSettings open={apiSettingsOpen} onClose={() => setApiSettingsOpen(false)} onSaved={() => setSettingsRevision((value) => value + 1)} />
     </div>
   );
+}
+
+export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCurrentSession()
+      .then((session) => { if (!cancelled) setUser(session.user); })
+      .catch(() => { if (!cancelled) setUser(null); })
+      .finally(() => { if (!cancelled) setCheckingSession(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const unauthorized = () => setUser(null);
+    window.addEventListener("spyservice:unauthorized", unauthorized);
+    return () => window.removeEventListener("spyservice:unauthorized", unauthorized);
+  }, []);
+
+  if (checkingSession) return <main className="session-loading"><span className="loader"><i /><i /><i /></span><p>Проверяем сессию…</p></main>;
+  if (!user) return <LoginPage onAuthenticated={setUser} />;
+  return <WorkspaceApp user={user} onLogout={() => { void logout().finally(() => setUser(null)); }} />;
 }

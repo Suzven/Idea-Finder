@@ -40,6 +40,25 @@ export interface StoredReviewProxySettings {
   updatedAt?: string;
 }
 
+export interface StoredUser {
+  id: string;
+  username: string;
+  passwordHash: string;
+  displayName: string;
+  role: "admin" | "user";
+  isActive: boolean;
+}
+
+export interface StoredPrivateSettings {
+  openaiApiKey?: string | null;
+  googleAds?: {
+    developerToken?: string | null;
+    customerId?: string | null;
+    loginCustomerId?: string | null;
+    serviceAccountJson?: string | null;
+  };
+}
+
 function proxyEncryptionKey(): Buffer {
   const secret = databaseConfig.password;
   if (!secret) throw new Error("DB_PASSWORD недоступен для шифрования пароля прокси.");
@@ -64,6 +83,177 @@ function decryptProxyPassword(value: unknown): string | undefined {
   const decipher = createDecipheriv("aes-256-gcm", proxyEncryptionKey(), Buffer.from(ivValue, "base64url"));
   decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
   return Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]).toString("utf8");
+}
+
+function privateSettingsEncryptionKey(): Buffer {
+  const secret = databaseConfig.password;
+  if (!secret) throw new Error("DB_PASSWORD недоступен для шифрования пользовательских настроек.");
+  return createHash("sha256").update(`spyservice:user-private-settings:v1:${secret}`).digest();
+}
+
+function encryptPrivateValue(value?: string | null): string | null {
+  if (!value) return null;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", privateSettingsEncryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1.${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+
+function decryptPrivateValue(value: unknown): string | undefined {
+  if (!value) return undefined;
+  const encoded = String(value);
+  if (!encoded.startsWith("v1.")) return encoded;
+  const [, ivValue, tagValue, encryptedValue] = encoded.split(".");
+  if (!ivValue || !tagValue || !encryptedValue) throw new Error("Повреждены зашифрованные настройки пользователя.");
+  const decipher = createDecipheriv("aes-256-gcm", privateSettingsEncryptionKey(), Buffer.from(ivValue, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]).toString("utf8");
+}
+
+function mapStoredUser(row: mysql.RowDataPacket): StoredUser {
+  return {
+    id: String(row.id),
+    username: String(row.username),
+    passwordHash: String(row.password_hash),
+    displayName: String(row.display_name),
+    role: row.role === "admin" ? "admin" : "user",
+    isActive: Boolean(row.is_active),
+  };
+}
+
+export function userDataScope(userId: string): string {
+  return `user:${userId}`;
+}
+
+export async function findUserByUsername(username: string): Promise<StoredUser | null> {
+  if (!pool) return null;
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT id, username, password_hash, display_name, role, is_active
+     FROM users WHERE username = ? LIMIT 1`,
+    [username],
+  );
+  return rows[0] ? mapStoredUser(rows[0]) : null;
+}
+
+export async function findUserBySessionHash(tokenHash: string): Promise<StoredUser | null> {
+  if (!pool) return null;
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT u.id, u.username, u.password_hash, u.display_name, u.role, u.is_active
+     FROM user_sessions s
+     INNER JOIN users u ON u.id = s.user_id
+     WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.is_active = 1
+     LIMIT 1`,
+    [tokenHash],
+  );
+  if (!rows[0]) return null;
+  await pool.execute("UPDATE user_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?", [tokenHash]);
+  return mapStoredUser(rows[0]);
+}
+
+export async function createUserSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
+  if (!pool) throw new Error("База данных не подключена.");
+  await pool.execute(
+    "INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+    [tokenHash, userId, expiresAt],
+  );
+  await pool.execute("DELETE FROM user_sessions WHERE expires_at <= CURRENT_TIMESTAMP");
+}
+
+export async function deleteUserSession(tokenHash: string): Promise<void> {
+  if (!pool) return;
+  await pool.execute("DELETE FROM user_sessions WHERE token_hash = ?", [tokenHash]);
+}
+
+export async function getPrivateSettingsCredentials(userId: string): Promise<StoredPrivateSettings> {
+  if (!pool) return {};
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    `SELECT openai_api_key, google_ads_developer_token, google_ads_customer_id,
+            google_ads_login_customer_id, google_ads_service_account_json
+     FROM user_private_settings WHERE user_id = ?`,
+    [userId],
+  );
+  const row = rows[0];
+  if (!row) return {};
+  const developerToken = decryptPrivateValue(row.google_ads_developer_token);
+  const serviceAccountJson = decryptPrivateValue(row.google_ads_service_account_json);
+  const customerId = nullableString(row.google_ads_customer_id) ?? undefined;
+  const loginCustomerId = nullableString(row.google_ads_login_customer_id) ?? undefined;
+  return {
+    openaiApiKey: decryptPrivateValue(row.openai_api_key),
+    googleAds: developerToken || serviceAccountJson || customerId || loginCustomerId ? {
+      developerToken,
+      customerId,
+      loginCustomerId,
+      serviceAccountJson,
+    } : undefined,
+  };
+}
+
+export async function savePrivateSettings(userId: string, input: StoredPrivateSettings): Promise<void> {
+  if (!pool) throw new Error("База данных не подключена.");
+  const current = await getPrivateSettingsCredentials(userId);
+  const googleAds = { ...(current.googleAds ?? {}), ...(input.googleAds ?? {}) };
+  const openaiApiKey = input.openaiApiKey === undefined ? current.openaiApiKey : input.openaiApiKey;
+  await pool.execute(
+    `INSERT INTO user_private_settings
+      (user_id, openai_api_key, google_ads_developer_token, google_ads_customer_id,
+       google_ads_login_customer_id, google_ads_service_account_json)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       openai_api_key = VALUES(openai_api_key),
+       google_ads_developer_token = VALUES(google_ads_developer_token),
+       google_ads_customer_id = VALUES(google_ads_customer_id),
+       google_ads_login_customer_id = VALUES(google_ads_login_customer_id),
+       google_ads_service_account_json = VALUES(google_ads_service_account_json),
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      userId,
+      encryptPrivateValue(openaiApiKey),
+      encryptPrivateValue(googleAds.developerToken),
+      googleAds.customerId || null,
+      googleAds.loginCustomerId || null,
+      encryptPrivateValue(googleAds.serviceAccountJson),
+    ],
+  );
+}
+
+export async function claimLegacyClientData(legacyClientId: string, userId: string): Promise<void> {
+  if (!pool || !/^[0-9a-f-]{20,100}$/i.test(legacyClientId)) return;
+  const target = userDataScope(userId);
+  if (legacyClientId === target) return;
+  const connection = await pool.getConnection();
+  try {
+    const [sourceRows] = await connection.execute<mysql.RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM favorites WHERE client_id = ?) +
+         (SELECT COUNT(*) FROM collections WHERE client_id = ?) +
+         (SELECT COUNT(*) FROM ai_analysis_reports WHERE client_id = ?) +
+         (SELECT COUNT(*) FROM review_proxy_settings WHERE client_id = ?) +
+         (SELECT COUNT(*) FROM saved_searches WHERE client_id = ?) AS total`,
+      [legacyClientId, legacyClientId, legacyClientId, legacyClientId, legacyClientId],
+    );
+    if (!Number(sourceRows[0]?.total ?? 0)) return;
+    const [targetRows] = await connection.execute<mysql.RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM favorites WHERE client_id = ?) +
+         (SELECT COUNT(*) FROM collections WHERE client_id = ?) AS total`,
+      [target, target],
+    );
+    if (Number(targetRows[0]?.total ?? 0)) return;
+    await connection.query("SET FOREIGN_KEY_CHECKS = 0");
+    await connection.beginTransaction();
+    for (const table of ["favorites", "collections", "favorite_collections", "creative_notes", "ai_analysis_reports", "review_proxy_settings", "saved_searches"]) {
+      await connection.execute(`UPDATE ${table} SET client_id = ? WHERE client_id = ?`, [target, legacyClientId]);
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback().catch(() => undefined);
+    throw error;
+  } finally {
+    await connection.query("SET FOREIGN_KEY_CHECKS = 1").catch(() => undefined);
+    connection.release();
+  }
 }
 
 export interface CollectedAdEntry {
@@ -691,16 +881,17 @@ export async function getAIAnalysisReport(clientId: string, reportId: string): P
   return { ...mapAIReportSummary(row), result: { ...result, landings } };
 }
 
-export async function getAIAnalysisLandingScreenshot(token: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+export async function getAIAnalysisLandingScreenshot(clientId: string, token: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
   if (!pool) {
     const asset = memoryAILandingScreenshots.get(token);
-    return asset ? { buffer: asset.buffer, mimeType: asset.mimeType } : null;
+    return asset && memoryAIReports.get(clientId)?.has(asset.reportId) ? { buffer: asset.buffer, mimeType: asset.mimeType } : null;
   }
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    `SELECT screenshot, screenshot_mime
-     FROM ai_analysis_report_landings
-     WHERE access_token = ? AND screenshot IS NOT NULL`,
-    [token],
+    `SELECT l.screenshot, l.screenshot_mime
+     FROM ai_analysis_report_landings l
+     INNER JOIN ai_analysis_reports r ON r.id = l.report_id
+     WHERE l.access_token = ? AND r.client_id = ? AND l.screenshot IS NOT NULL`,
+    [token, clientId],
   );
   const row = rows[0];
   if (!row) return null;

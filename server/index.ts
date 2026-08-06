@@ -10,16 +10,17 @@ import { fetchMetaAds } from "./adapters/meta.js";
 import { fetchTikTokAds } from "./adapters/tiktok.js";
 import { config } from "./config.js";
 import { demoAds } from "./data/demoAds.js";
-import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, deleteReviewProxySettings, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, getReviewProxyCredentials, getReviewProxySettings, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, saveReviewProxySettings, setCreativeAnalysisNotes } from "./db.js";
+import { addFavorite, claimLegacyClientData, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, deleteReviewProxySettings, findUserByUsername, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, getPrivateSettingsCredentials, getReviewProxyCredentials, getReviewProxySettings, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, savePrivateSettings, saveReviewProxySettings, setCreativeAnalysisNotes, userDataScope } from "./db.js";
+import { assertLoginAllowed, clearFailedLogins, endSession, getAuthenticatedUser, loginThrottleKey, optionalAuthentication, recordFailedLogin, requireAuthentication, startSession, verifyPassword } from "./auth.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
-import { deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
+import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, PrivateSettingsSummary, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -180,7 +181,7 @@ const adCreativeSchema = z.object({
 });
 
 function getClientId(request: express.Request): string {
-  return String(request.header("x-client-id") ?? "anonymous").slice(0, 100);
+  return userDataScope(getAuthenticatedUser(request).id);
 }
 
 function shouldUseLive(source: AdSource): boolean {
@@ -191,6 +192,142 @@ function shouldUseLive(source: AdSource): boolean {
 
 app.get("/api/health", async (_request, response) => {
   response.json({ status: "ok", apiMode: config.apiMode, database: await healthcheckDatabase() });
+});
+
+const loginSchema = z.object({
+  username: z.string().trim().min(3).max(64),
+  password: z.string().min(8).max(200),
+  legacy: z.object({
+    clientId: z.string().max(100).optional(),
+    openaiApiKey: z.string().max(500).optional(),
+    googleAds: z.object({
+      developerToken: z.string().max(200),
+      customerId: z.string().max(20),
+      loginCustomerId: z.string().max(20).optional(),
+      serviceAccountJson: z.string().max(20_000),
+    }).optional(),
+  }).optional(),
+});
+
+app.post("/api/auth/login", async (request, response, next) => {
+  try {
+    const parsed = loginSchema.parse(request.body);
+    const throttleKey = loginThrottleKey(request, parsed.username);
+    assertLoginAllowed(throttleKey);
+    const user = await findUserByUsername(parsed.username);
+    if (!user || !user.isActive || !await verifyPassword(parsed.password, user.passwordHash)) {
+      recordFailedLogin(throttleKey);
+      throw new AppError(401, "LOGIN_INVALID", "Неверный логин или пароль.");
+    }
+    clearFailedLogins(throttleKey);
+    if (parsed.legacy?.clientId) await claimLegacyClientData(parsed.legacy.clientId, user.id);
+    const importedOpenAI = parsed.legacy?.openaiApiKey?.trim();
+    const importedGoogle = parsed.legacy?.googleAds;
+    if (importedOpenAI || importedGoogle?.developerToken || importedGoogle?.serviceAccountJson) {
+      await savePrivateSettings(user.id, {
+        ...(importedOpenAI ? { openaiApiKey: importedOpenAI } : {}),
+        ...(importedGoogle ? { googleAds: {
+          developerToken: importedGoogle.developerToken.trim(),
+          customerId: importedGoogle.customerId.replace(/\D/g, ""),
+          loginCustomerId: importedGoogle.loginCustomerId?.replace(/\D/g, "") || null,
+          serviceAccountJson: importedGoogle.serviceAccountJson.trim(),
+        } } : {}),
+      });
+    }
+    if (user.role === "admin") {
+      await adoptLegacyKeywordSurferExtension(userDataScope(user.id)).catch((error) => {
+        console.error("Не удалось перенести старую установку Keyword Surfer в профиль admin:", error);
+      });
+    }
+    response.json({ user: await startSession(request, response, user) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/auth/me", async (request, response, next) => {
+  try {
+    const user = await optionalAuthentication(request);
+    if (!user) throw new AppError(401, "AUTH_REQUIRED", "Войдите в аккаунт.");
+    response.json({ user });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auth/logout", async (request, response, next) => {
+  try {
+    await endSession(request, response);
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.use("/api", requireAuthentication);
+
+const privateSettingsSchema = z.object({
+  openaiApiKey: z.string().trim().max(500).nullable().optional(),
+  googleAds: z.object({
+    developerToken: z.string().trim().max(200).nullable().optional(),
+    customerId: z.string().trim().max(20).nullable().optional(),
+    loginCustomerId: z.string().trim().max(20).nullable().optional(),
+    serviceAccountJson: z.string().trim().max(20_000).nullable().optional(),
+  }).optional(),
+});
+
+function privateSettingsSummary(settings: Awaited<ReturnType<typeof getPrivateSettingsCredentials>>): PrivateSettingsSummary {
+  let serviceAccountEmail: string | undefined;
+  try {
+    const account = JSON.parse(settings.googleAds?.serviceAccountJson ?? "{}") as { client_email?: unknown };
+    if (typeof account.client_email === "string") serviceAccountEmail = account.client_email;
+  } catch { /* invalid JSON is rejected while saving */ }
+  return {
+    openai: { configured: Boolean(settings.openaiApiKey) },
+    googleAds: {
+      configured: Boolean(settings.googleAds?.developerToken && settings.googleAds.customerId && settings.googleAds.serviceAccountJson),
+      customerId: settings.googleAds?.customerId ?? "",
+      loginCustomerId: settings.googleAds?.loginCustomerId ?? "",
+      hasDeveloperToken: Boolean(settings.googleAds?.developerToken),
+      hasServiceAccount: Boolean(settings.googleAds?.serviceAccountJson),
+      ...(serviceAccountEmail ? { serviceAccountEmail } : {}),
+    },
+  };
+}
+
+app.get("/api/settings/private", async (request, response, next) => {
+  try {
+    response.json(privateSettingsSummary(await getPrivateSettingsCredentials(getAuthenticatedUser(request).id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/settings/private", async (request, response, next) => {
+  try {
+    const parsed = privateSettingsSchema.parse(request.body);
+    if (parsed.googleAds?.serviceAccountJson) {
+      try {
+        const account = JSON.parse(parsed.googleAds.serviceAccountJson) as Record<string, unknown>;
+        if (!account.client_email || !account.private_key) throw new Error("missing credentials");
+      } catch {
+        throw new AppError(400, "GOOGLE_SERVICE_ACCOUNT_INVALID", "JSON Google должен содержать client_email и private_key.");
+      }
+    }
+    const userId = getAuthenticatedUser(request).id;
+    await savePrivateSettings(userId, {
+      ...(parsed.openaiApiKey !== undefined ? { openaiApiKey: parsed.openaiApiKey } : {}),
+      ...(parsed.googleAds ? { googleAds: {
+        ...(parsed.googleAds.developerToken !== undefined ? { developerToken: parsed.googleAds.developerToken } : {}),
+        ...(parsed.googleAds.customerId !== undefined ? { customerId: parsed.googleAds.customerId?.replace(/\D/g, "") ?? null } : {}),
+        ...(parsed.googleAds.loginCustomerId !== undefined ? { loginCustomerId: parsed.googleAds.loginCustomerId?.replace(/\D/g, "") ?? null } : {}),
+        ...(parsed.googleAds.serviceAccountJson !== undefined ? { serviceAccountJson: parsed.googleAds.serviceAccountJson } : {}),
+      } } : {}),
+    });
+    response.json(privateSettingsSummary(await getPrivateSettingsCredentials(userId)));
+  } catch (error) {
+    next(error);
+  }
 });
 
 const logQuerySchema = z.object({
@@ -386,7 +523,9 @@ app.delete("/api/collections/:collectionId", async (request, response, next) => 
 
 app.post("/api/ai-analysis", async (request, response, next) => {
   try {
-    const apiKey = String(request.header("x-openai-api-key") ?? "").trim();
+    const user = getAuthenticatedUser(request);
+    const storedSettings = await getPrivateSettingsCredentials(user.id);
+    const apiKey = String(request.header("x-openai-api-key") ?? storedSettings.openaiApiKey ?? "").trim();
     if (!apiKey || apiKey.length > 500) {
       throw new AppError(400, "OPENAI_KEY_REQUIRED", "Добавьте OpenAI API-ключ в Настройках.");
     }
@@ -503,7 +642,7 @@ app.delete("/api/ai-analysis/reports/:reportId", async (request, response, next)
 app.get("/api/ai-analysis/landing-screenshots/:token", async (request, response, next) => {
   try {
     const token = z.string().uuid().parse(request.params.token);
-    const screenshot = await getAIAnalysisLandingScreenshot(token);
+    const screenshot = await getAIAnalysisLandingScreenshot(getClientId(request), token);
     if (!screenshot) throw new AppError(404, "AI_LANDING_SCREENSHOT_NOT_FOUND", "Скриншот лендинга не найден.");
     response.set({
       "Content-Type": screenshot.mimeType,
@@ -620,21 +759,32 @@ app.get("/api/settings/review-proxy/test/:jobId", (request, response, next) => {
 app.post("/api/keyword-volume", async (request, response, next) => {
   try {
     const parsed = keywordVolumeSchema.parse(request.body);
+    const user = getAuthenticatedUser(request);
+    const storedSettings = await getPrivateSettingsCredentials(user.id);
+    const storedGoogle = storedSettings.googleAds;
+    const storedCredentials = storedGoogle?.developerToken && storedGoogle.customerId && storedGoogle.serviceAccountJson
+      ? { googleAds: {
+          developerToken: storedGoogle.developerToken,
+          customerId: storedGoogle.customerId,
+          ...(storedGoogle.loginCustomerId ? { loginCustomerId: storedGoogle.loginCustomerId } : {}),
+          serviceAccountJson: storedGoogle.serviceAccountJson,
+        } }
+      : undefined;
     response.json(await collectKeywordVolume({
       keywords: [...new Set(parsed.keywords.map((keyword) => keyword.trim()))],
       countries: [...new Set(parsed.countries)],
       sources: [...new Set(parsed.sources)],
-      ...(parsed.credentials ? { credentials: parsed.credentials } : {}),
+      ...(parsed.credentials ? { credentials: parsed.credentials } : storedCredentials ? { credentials: storedCredentials } : {}),
       ...(parsed.surferRows ? { surferRows: parsed.surferRows } : {}),
-    }));
+    }, userDataScope(user.id)));
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/api/settings/keyword-surfer-extension", async (_request, response, next) => {
+app.get("/api/settings/keyword-surfer-extension", async (request, response, next) => {
   try {
-    response.json(await getKeywordSurferExtensionInfo());
+    response.json(await getKeywordSurferExtensionInfo(getClientId(request)));
   } catch (error) {
     next(error);
   }
@@ -647,7 +797,7 @@ app.post(
     try {
       if (!Buffer.isBuffer(request.body)) throw new AppError(400, "KEYWORD_SURFER_ZIP_REQUIRED", "Выберите ZIP расширения Keyword Surfer.");
       console.info(`[keyword-surfer-upload] Получен архив ${request.body.length} байт.`);
-      const info = await installKeywordSurferExtension(request.body);
+      const info = await installKeywordSurferExtension(getClientId(request), request.body);
       response.status(201).json(info);
     } catch (error) {
       next(error);
@@ -655,9 +805,9 @@ app.post(
   },
 );
 
-app.delete("/api/settings/keyword-surfer-extension", async (_request, response, next) => {
+app.delete("/api/settings/keyword-surfer-extension", async (request, response, next) => {
   try {
-    await deleteKeywordSurferExtension();
+    await deleteKeywordSurferExtension(getClientId(request));
     response.json({ ok: true });
   } catch (error) {
     next(error);

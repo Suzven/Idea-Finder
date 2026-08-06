@@ -1,8 +1,7 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, ExternalLink, FileDown, FileText, FlaskConical, Folder, Gauge, History, Image, KeyRound, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw, Rocket, Save, SearchCheck, ShieldAlert, Sparkles, Target, Trash2, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { analyzeCreativeCollection, ApiRequestError, deleteAIAnalysisReport, fetchAIAnalysisCreatives, fetchAIAnalysisReport, fetchAIAnalysisReports, fetchCollections, saveCreativeAnalysisNotes } from "../api";
-import { getOpenAIKey, hasOpenAIKey } from "../openaiSettings";
+import { analyzeCreativeCollection, ApiRequestError, deleteAIAnalysisReport, fetchAIAnalysisCreatives, fetchAIAnalysisReport, fetchAIAnalysisReports, fetchCollections, fetchPrivateSettings, saveCreativeAnalysisNotes } from "../api";
 import type { AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection } from "../shared/types";
 import { KeywordVolumePanel } from "./KeywordVolumePanel";
 import { ReviewAnalysisPanel } from "./ReviewAnalysisPanel";
@@ -82,9 +81,17 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   const [savingNote, setSavingNote] = useState(false);
   const [noteMessage, setNoteMessage] = useState("");
   const [exportingPdf, setExportingPdf] = useState(false);
-  const keyConfigured = useMemo(() => hasOpenAIKey(), [settingsRevision]);
+  const [keyConfigured, setKeyConfigured] = useState(false);
   const selected = collections.find((collection) => collection.id === selectedId);
   const noteCreatives = creativeNotes;
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPrivateSettings()
+      .then((settings) => { if (!cancelled) setKeyConfigured(settings.openai.configured); })
+      .catch(() => { if (!cancelled) setKeyConfigured(false); });
+    return () => { cancelled = true; };
+  }, [settingsRevision]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,14 +138,13 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
   const analyze = async () => {
     if (!selectedId) return;
-    const apiKey = getOpenAIKey();
-    if (!apiKey) { onOpenSettings(); return; }
+    if (!keyConfigured) { onOpenSettings(); return; }
     setAnalyzing(true);
     setProgressIndex(0);
     setError(null);
     setResult(null);
     try {
-      const analysis = await analyzeCreativeCollection(selectedId, apiKey);
+      const analysis = await analyzeCreativeCollection(selectedId);
       setResult(analysis);
       setActiveReportId("");
       setReports(await fetchAIAnalysisReports());

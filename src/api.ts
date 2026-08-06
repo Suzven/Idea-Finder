@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -33,7 +33,7 @@ export class ApiRequestError extends Error {
   }
 }
 
-function getClientId(): string {
+export function getLegacyClientId(): string {
   let clientId = localStorage.getItem(clientIdKey);
   if (!clientId) {
     clientId = crypto.randomUUID();
@@ -49,7 +49,6 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: {
         "Content-Type": "application/json",
-        "x-client-id": getClientId(),
         ...init?.headers,
       },
     });
@@ -65,6 +64,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     );
   }
   if (!response.ok) {
+    if (response.status === 401 && url !== "/api/auth/me" && url !== "/api/auth/login") {
+      window.dispatchEvent(new Event("spyservice:unauthorized"));
+    }
     const rawBody = await response.text();
     let payload: ApiErrorPayload;
     try {
@@ -92,6 +94,32 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     );
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+}
+
+export async function fetchCurrentSession(): Promise<AuthSessionResponse> {
+  return request<AuthSessionResponse>("/api/auth/me", { cache: "no-store" });
+}
+
+export async function login(username: string, password: string, legacy?: LegacyBrowserImport): Promise<AuthSessionResponse> {
+  return request<AuthSessionResponse>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password, ...(legacy ? { legacy } : {}) }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  await request("/api/auth/logout", { method: "POST" });
+}
+
+export async function fetchPrivateSettings(): Promise<PrivateSettingsSummary> {
+  return request<PrivateSettingsSummary>("/api/settings/private", { cache: "no-store" });
+}
+
+export async function savePrivateSettings(settings: PrivateSettingsInput): Promise<PrivateSettingsSummary> {
+  return request<PrivateSettingsSummary>("/api/settings/private", {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchAds(source: AdSource, filters: AdFilters, cursor?: string): Promise<AdsResponse> {
@@ -137,10 +165,10 @@ export async function deleteCollection(collectionId: string): Promise<{ ok: true
   });
 }
 
-export async function analyzeCreativeCollection(collectionId: string, apiKey: string): Promise<AIAnalysisResponse> {
+export async function analyzeCreativeCollection(collectionId: string, apiKey?: string): Promise<AIAnalysisResponse> {
   const started = await request<AIAnalysisJobResponse>("/api/ai-analysis", {
     method: "POST",
-    headers: { "x-openai-api-key": apiKey },
+    ...(apiKey ? { headers: { "x-openai-api-key": apiKey } } : {}),
     body: JSON.stringify({ collectionId }),
   });
   const startedAt = Date.now();
@@ -230,6 +258,10 @@ export async function searchCompanyReviews(
   );
 }
 
+export function clearLegacyClientId(): void {
+  localStorage.removeItem(clientIdKey);
+}
+
 export async function collectKeywordVolumes(payload: KeywordVolumeRequest): Promise<KeywordVolumeResponse> {
   return request<KeywordVolumeResponse>("/api/keyword-volume", {
     method: "POST",
@@ -256,7 +288,6 @@ export async function removeKeywordSurferExtension(): Promise<void> {
 export async function fetchReviewChallengeFrame(challengeId: string): Promise<Blob> {
   const response = await fetch(`/api/review-analysis/challenges/${encodeURIComponent(challengeId)}/frame`, {
     cache: "no-store",
-    headers: { "x-client-id": getClientId() },
   });
   if (!response.ok) {
     throw new ApiRequestError(

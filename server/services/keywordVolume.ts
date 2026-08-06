@@ -308,7 +308,7 @@ function sourceResult(
   return { source, status, message, received, ...(logs.length ? { logs } : {}) };
 }
 
-export async function collectKeywordVolume(request: KeywordVolumeRequest): Promise<KeywordVolumeResponse> {
+export async function collectKeywordVolume(request: KeywordVolumeRequest, userScope = "anonymous"): Promise<KeywordVolumeResponse> {
   const rows: KeywordVolumeRow[] = request.countries.flatMap((country) => request.keywords.map((keyword) => ({
     keyword,
     country,
@@ -342,7 +342,7 @@ export async function collectKeywordVolume(request: KeywordVolumeRequest): Promi
       } else {
         const importedRows = request.surferRows?.length
           ? request.surferRows
-          : await collectKeywordSurferRows(request.keywords, request.countries, log);
+          : await collectKeywordSurferRows(userScope, request.keywords, request.countries, log);
         const received = applyMetrics(rows, source, collectSurfer(importedRows));
         const mode = request.surferRows?.length ? "CSV" : "Keyword Surfer";
         log("surfer_complete", received ? "success" : "info", `${mode}: получено ${received} из ${rows.length} значений.`);

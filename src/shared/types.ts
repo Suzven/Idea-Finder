@@ -1,6 +1,45 @@
 export type AdSource = "meta" | "tiktok";
 export type MediaType = "image" | "video" | "carousel";
 
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: "admin" | "user";
+}
+
+export interface AuthSessionResponse {
+  user: AuthUser;
+}
+
+export interface PrivateSettingsSummary {
+  openai: { configured: boolean };
+  googleAds: {
+    configured: boolean;
+    customerId: string;
+    loginCustomerId: string;
+    hasDeveloperToken: boolean;
+    hasServiceAccount: boolean;
+    serviceAccountEmail?: string;
+  };
+}
+
+export interface PrivateSettingsInput {
+  openaiApiKey?: string | null;
+  googleAds?: {
+    developerToken?: string | null;
+    customerId?: string | null;
+    loginCustomerId?: string | null;
+    serviceAccountJson?: string | null;
+  };
+}
+
+export interface LegacyBrowserImport {
+  clientId?: string;
+  openaiApiKey?: string;
+  googleAds?: GoogleAdsKeywordCredentials;
+}
+
 export interface AdCreative {
   id: string;
   source: AdSource;

@@ -1,10 +1,8 @@
 import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchReviewProxySettings, removeKeywordSurferExtension, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
-import { getOpenAIKey, saveOpenAIKey } from "../openaiSettings";
-import { clearKeywordProviderSettings, getKeywordProviderSettings, saveKeywordProviderSettings } from "../keywordSettings";
+import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchPrivateSettings, fetchReviewProxySettings, removeKeywordSurferExtension, savePrivateSettings, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
 import type { KeywordProviderSettings } from "../keywordSettings";
-import type { KeywordSurferExtensionInfo, ReviewProxyTestResult } from "../shared/types";
+import type { KeywordSurferExtensionInfo, PrivateSettingsSummary, ReviewProxyTestResult } from "../shared/types";
 
 interface ApiSettingsProps {
   open: boolean;
@@ -41,7 +39,10 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [value, setValue] = useState("");
   const [visible, setVisible] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>(() => getKeywordProviderSettings());
+  const [privateSummary, setPrivateSummary] = useState<PrivateSettingsSummary | null>(null);
+  const [privateLoading, setPrivateLoading] = useState(false);
+  const [privateError, setPrivateError] = useState("");
+  const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
   const [keywordSaved, setKeywordSaved] = useState(false);
   const [keywordError, setKeywordError] = useState("");
   const [surferInfo, setSurferInfo] = useState<KeywordSurferExtensionInfo>({ configured: false });
@@ -64,10 +65,11 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
 
   useEffect(() => {
     if (!open) return;
-    setValue(getOpenAIKey());
+    setValue("");
     setSaved(false);
+    setPrivateError("");
     setVisible(false);
-    setKeywordSettings(getKeywordProviderSettings());
+    setKeywordSettings({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
     setKeywordSaved(false);
     setKeywordError("");
     setSurferError("");
@@ -77,6 +79,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setProxyMessage("");
     setProxyError("");
     setProxyLoading(true);
+    setPrivateLoading(true);
     let cancelled = false;
     void fetchReviewProxySettings()
       .then((settings) => {
@@ -95,23 +98,53 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       .then((info) => { if (!cancelled) setSurferInfo(info); })
       .catch((error) => { if (!cancelled) setSurferError(error instanceof Error ? error.message : "Не удалось проверить расширение Keyword Surfer."); })
       .finally(() => { if (!cancelled) setSurferLoading(false); });
+    void fetchPrivateSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setPrivateSummary(settings);
+        setKeywordSettings((current) => ({ googleAds: {
+          ...current.googleAds,
+          customerId: settings.googleAds.customerId,
+          loginCustomerId: settings.googleAds.loginCustomerId,
+        } }));
+      })
+      .catch((error) => { if (!cancelled) setKeywordError(error instanceof Error ? error.message : "Не удалось загрузить защищённые настройки."); })
+      .finally(() => { if (!cancelled) setPrivateLoading(false); });
     return () => { cancelled = true; };
   }, [open]);
 
-  const persist = () => {
-    saveOpenAIKey(value);
-    setSaved(true);
-    onSaved();
+  const persist = async () => {
+    if (!value.trim()) return;
+    setPrivateLoading(true);
+    setPrivateError("");
+    try {
+      setPrivateSummary(await savePrivateSettings({ openaiApiKey: value.trim() }));
+      setValue("");
+      setSaved(true);
+      onSaved();
+    } catch (error) {
+      setPrivateError(error instanceof Error ? error.message : "Не удалось сохранить OpenAI-ключ.");
+    } finally {
+      setPrivateLoading(false);
+    }
   };
 
-  const clear = () => {
-    saveOpenAIKey("");
-    setValue("");
-    setSaved(false);
-    onSaved();
+  const clear = async () => {
+    setPrivateLoading(true);
+    setPrivateError("");
+    try {
+      setPrivateSummary(await savePrivateSettings({ openaiApiKey: null }));
+      setValue("");
+      setSaved(false);
+      onSaved();
+    } catch (error) {
+      setPrivateError(error instanceof Error ? error.message : "Не удалось удалить OpenAI-ключ.");
+    } finally {
+      setPrivateLoading(false);
+    }
   };
 
-  const persistKeywordSettings = () => {
+  const persistKeywordSettings = async () => {
     setKeywordError("");
     if (keywordSettings.googleAds.serviceAccountJson.trim()) {
       try {
@@ -122,17 +155,38 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
         return;
       }
     }
-    saveKeywordProviderSettings(keywordSettings);
-    setKeywordSaved(true);
-    onSaved();
+    setPrivateLoading(true);
+    try {
+      setPrivateSummary(await savePrivateSettings({ googleAds: {
+        ...(keywordSettings.googleAds.developerToken.trim() ? { developerToken: keywordSettings.googleAds.developerToken.trim() } : {}),
+        customerId: keywordSettings.googleAds.customerId.replace(/\D/g, ""),
+        loginCustomerId: keywordSettings.googleAds.loginCustomerId?.replace(/\D/g, "") ?? "",
+        ...(keywordSettings.googleAds.serviceAccountJson.trim() ? { serviceAccountJson: keywordSettings.googleAds.serviceAccountJson.trim() } : {}),
+      } }));
+      setKeywordSettings((current) => ({ googleAds: { ...current.googleAds, developerToken: "", serviceAccountJson: "" } }));
+      setKeywordSaved(true);
+      onSaved();
+    } catch (error) {
+      setKeywordError(error instanceof Error ? error.message : "Не удалось сохранить Google Ads.");
+    } finally {
+      setPrivateLoading(false);
+    }
   };
 
-  const clearKeywordSettings = () => {
-    clearKeywordProviderSettings();
-    setKeywordSettings(getKeywordProviderSettings());
-    setKeywordSaved(false);
+  const clearKeywordSettings = async () => {
+    setPrivateLoading(true);
     setKeywordError("");
-    onSaved();
+    try {
+      setPrivateSummary(await savePrivateSettings({ googleAds: { developerToken: null, customerId: null, loginCustomerId: null, serviceAccountJson: null } }));
+      setKeywordSettings({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
+      setKeywordSaved(false);
+      setKeywordError("");
+      onSaved();
+    } catch (error) {
+      setKeywordError(error instanceof Error ? error.message : "Не удалось удалить настройки Google Ads.");
+    } finally {
+      setPrivateLoading(false);
+    }
   };
 
   const uploadSurfer = async (file?: File) => {
@@ -249,16 +303,17 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
           <p>Ключ нужен только для запуска AI-аналитики коллекций.</p>
           <div className="api-key-input">
             <KeyRound size={18} />
-            <input type={visible ? "text" : "password"} value={value} onChange={(event) => { setValue(event.target.value); setSaved(false); }} autoComplete="off" spellCheck={false} placeholder="sk-proj-…" />
+            <input type={visible ? "text" : "password"} value={value} onChange={(event) => { setValue(event.target.value); setSaved(false); }} autoComplete="off" spellCheck={false} placeholder={privateSummary?.openai.configured ? "Ключ уже сохранён — введите новый для замены" : "sk-proj-…"} />
             <button type="button" onClick={() => setVisible((current) => !current)} aria-label={visible ? "Скрыть ключ" : "Показать ключ"}>{visible ? <EyeOff size={18} /> : <Eye size={18} />}</button>
           </div>
-          {saved && <div className="api-key-saved"><CheckCircle2 size={16} />Ключ сохранён в этом браузере</div>}
+          {(saved || privateSummary?.openai.configured) && <div className="api-key-saved"><CheckCircle2 size={16} />OpenAI-ключ защищён и закреплён за вашим пользователем</div>}
+          {privateError && <div className="proxy-settings-error">{privateError}</div>}
           <div className="api-key-actions">
-            <button className="button primary grow" disabled={!value.trim()} onClick={persist}>Сохранить ключ</button>
-            <button className="button danger-outline" disabled={!value} onClick={clear}><Trash2 size={16} />Удалить</button>
+            <button className="button primary grow" disabled={privateLoading || !value.trim()} onClick={() => void persist()}>Сохранить ключ</button>
+            <button className="button danger-outline" disabled={privateLoading || !privateSummary?.openai.configured} onClick={() => void clear()}><Trash2 size={16} />Удалить</button>
           </div>
         </div>
-        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Временный режим хранения</strong><p>Ключ хранится только в localStorage этого браузера. Во время анализа он передаётся вашему серверу по HTTPS для одного запроса к OpenAI и не сохраняется сервером.</p></div></div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Защищённое хранение</strong><p>Ключ зашифрован AES-256-GCM в MySQL и доступен только вашему пользователю. Он никогда не возвращается обратно в браузер или логи.</p></div></div>
         <div className="setting-block api-model-note"><span className="setting-label">Модель</span><strong>GPT-5.6</strong><p>Vision-анализ креативов и полных скриншотов лендингов через Responses API.</p></div>
       </div>}
 
@@ -267,12 +322,12 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
           <span className="setting-label">Google Ads Keyword Planner</span>
           <p>Официальные исторические метрики Google: средний месячный объём, CPC и конкуренция. Нужны developer token, рекламный customer ID и JSON сервисного аккаунта.</p>
           <div className="keyword-settings-fields">
-            <label><span>Developer token</span><input value={keywordSettings.googleAds.developerToken} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, developerToken: event.target.value } }))} placeholder="22-значный токен Google Ads" autoComplete="off" spellCheck={false} /></label>
+            <label><span>Developer token</span><input value={keywordSettings.googleAds.developerToken} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, developerToken: event.target.value } }))} placeholder={privateSummary?.googleAds.hasDeveloperToken ? "Токен уже сохранён — введите новый для замены" : "22-значный токен Google Ads"} autoComplete="off" spellCheck={false} /></label>
             <div className="keyword-settings-row">
               <label><span>Customer ID</span><input inputMode="numeric" value={keywordSettings.googleAds.customerId} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, customerId: event.target.value } }))} placeholder="123-456-7890" autoComplete="off" /></label>
               <label><span>Manager ID <small>необязательно</small></span><input inputMode="numeric" value={keywordSettings.googleAds.loginCustomerId} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, loginCustomerId: event.target.value } }))} placeholder="123-456-7890" autoComplete="off" /></label>
             </div>
-            <label><span>Service account JSON</span><textarea value={keywordSettings.googleAds.serviceAccountJson} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, serviceAccountJson: event.target.value } }))} placeholder={'{\n  "client_email": "...",\n  "private_key": "..."\n}'} spellCheck={false} /></label>
+            <label><span>Service account JSON</span><textarea value={keywordSettings.googleAds.serviceAccountJson} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, serviceAccountJson: event.target.value } }))} placeholder={privateSummary?.googleAds.hasServiceAccount ? `JSON уже сохранён${privateSummary.googleAds.serviceAccountEmail ? ` · ${privateSummary.googleAds.serviceAccountEmail}` : ""}` : '{\n  "client_email": "...",\n  "private_key": "..."\n}'} spellCheck={false} /></label>
           </div>
         </div>
         <div className="setting-block keyword-provider-block surfer-extension-settings">
@@ -287,13 +342,13 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
           </div>
           {surferError && <div className="proxy-settings-error surfer-upload-error">{surferError}</div>}
         </div>
-        {keywordSaved && <div className="api-key-saved"><CheckCircle2 size={16} />Настройки источников сохранены в этом браузере</div>}
+        {(keywordSaved || privateSummary?.googleAds.configured) && <div className="api-key-saved"><CheckCircle2 size={16} />Google Ads закреплён за вашим пользователем</div>}
         {keywordError && <div className="proxy-settings-error">{keywordError}</div>}
         <div className="api-key-actions">
-          <button className="button primary grow" onClick={persistKeywordSettings}>Сохранить источники</button>
-          <button className="button danger-outline" onClick={clearKeywordSettings}><Trash2 size={16} />Очистить</button>
+          <button className="button primary grow" disabled={privateLoading} onClick={() => void persistKeywordSettings()}>Сохранить источники</button>
+          <button className="button danger-outline" disabled={privateLoading || !privateSummary?.googleAds.configured} onClick={() => void clearKeywordSettings()}><Trash2 size={16} />Очистить</button>
         </div>
-        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Реквизиты остаются в браузере</strong><p>Google-реквизиты сервер получает только во время конкретного запроса метрик и не пишет в MySQL или логи. Keyword Surfer работает через загруженное расширение Chromium; CSV остаётся резервным способом импорта.</p></div></div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Персональные подключения</strong><p>Google-реквизиты зашифрованы в MySQL, а Keyword Surfer хранится в отдельной серверной папке вашего пользователя. На телефоне повторная настройка не нужна.</p></div></div>
       </div>}
 
       {activeTab === "proxy" && <div className="api-settings-pane" role="tabpanel">

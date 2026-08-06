@@ -121,9 +121,9 @@ describe("favorites storage", () => {
     expect(opened?.result.landings?.[0].landingUrl).toBe(creative.landingUrl);
     const token = opened?.result.landings?.[0].screenshotUrl?.split("/").at(-1);
     expect(token).toBeTruthy();
-    expect((await getAIAnalysisLandingScreenshot(token!))?.buffer).toEqual(screenshot);
+    expect((await getAIAnalysisLandingScreenshot(clientId, token!))?.buffer).toEqual(screenshot);
     expect(await deleteAIAnalysisReport(clientId, saved.id)).toBe(true);
-    expect(await getAIAnalysisLandingScreenshot(token!)).toBeNull();
+    expect(await getAIAnalysisLandingScreenshot(clientId, token!)).toBeNull();
     expect(await getAIAnalysisReports(clientId)).toEqual([]);
   });
 });
