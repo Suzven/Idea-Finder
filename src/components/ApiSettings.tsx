@@ -1,7 +1,9 @@
-import { CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, ShieldAlert, Trash2, X } from "lucide-react";
+import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, ShieldAlert, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { deleteReviewProxyConfiguration, fetchReviewProxySettings, saveReviewProxyConfiguration, testReviewProxyConfiguration } from "../api";
 import { getOpenAIKey, saveOpenAIKey } from "../openaiSettings";
+import { clearKeywordProviderSettings, getKeywordProviderSettings, saveKeywordProviderSettings } from "../keywordSettings";
+import type { KeywordProviderSettings } from "../keywordSettings";
 import type { ReviewProxyTestResult } from "../shared/types";
 
 interface ApiSettingsProps {
@@ -10,7 +12,7 @@ interface ApiSettingsProps {
   onSaved: () => void;
 }
 
-type SettingsTab = "openai" | "proxy";
+type SettingsTab = "openai" | "keywords" | "proxy";
 
 const proxyStageLabels = {
   browser: "Chromium",
@@ -25,6 +27,9 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [value, setValue] = useState("");
   const [visible, setVisible] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>(() => getKeywordProviderSettings());
+  const [keywordSaved, setKeywordSaved] = useState(false);
+  const [keywordError, setKeywordError] = useState("");
   const [proxyServer, setProxyServer] = useState("");
   const [proxyUsername, setProxyUsername] = useState("");
   const [proxyPassword, setProxyPassword] = useState("");
@@ -44,6 +49,9 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setValue(getOpenAIKey());
     setSaved(false);
     setVisible(false);
+    setKeywordSettings(getKeywordProviderSettings());
+    setKeywordSaved(false);
+    setKeywordError("");
     setProxyPassword("");
     setProxyPasswordVisible(false);
     setProxyMessage("");
@@ -76,6 +84,30 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     saveOpenAIKey("");
     setValue("");
     setSaved(false);
+    onSaved();
+  };
+
+  const persistKeywordSettings = () => {
+    setKeywordError("");
+    if (keywordSettings.googleAds.serviceAccountJson.trim()) {
+      try {
+        const parsed = JSON.parse(keywordSettings.googleAds.serviceAccountJson) as Record<string, unknown>;
+        if (!parsed.client_email || !parsed.private_key) throw new Error();
+      } catch {
+        setKeywordError("JSON сервисного аккаунта Google должен содержать client_email и private_key.");
+        return;
+      }
+    }
+    saveKeywordProviderSettings(keywordSettings);
+    setKeywordSaved(true);
+    onSaved();
+  };
+
+  const clearKeywordSettings = () => {
+    clearKeywordProviderSettings();
+    setKeywordSettings(getKeywordProviderSettings());
+    setKeywordSaved(false);
+    setKeywordError("");
     onSaved();
   };
 
@@ -155,6 +187,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
 
       <div className="api-settings-tabs" role="tablist" aria-label="Разделы настроек">
         <button type="button" role="tab" aria-selected={activeTab === "openai"} className={activeTab === "openai" ? "active" : ""} onClick={() => setActiveTab("openai")}><KeyRound size={17} />OpenAI</button>
+        <button type="button" role="tab" aria-selected={activeTab === "keywords"} className={activeTab === "keywords" ? "active" : ""} onClick={() => setActiveTab("keywords")}><BarChart3 size={17} />Ключи</button>
         <button type="button" role="tab" aria-selected={activeTab === "proxy"} className={activeTab === "proxy" ? "active" : ""} onClick={() => setActiveTab("proxy")}><Network size={17} />Прокси</button>
       </div>
 
@@ -175,6 +208,33 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
         </div>
         <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Временный режим хранения</strong><p>Ключ хранится только в localStorage этого браузера. Во время анализа он передаётся вашему серверу по HTTPS для одного запроса к OpenAI и не сохраняется сервером.</p></div></div>
         <div className="setting-block api-model-note"><span className="setting-label">Модель</span><strong>GPT-5.6</strong><p>Vision-анализ креативов и полных скриншотов лендингов через Responses API.</p></div>
+      </div>}
+
+      {activeTab === "keywords" && <div className="api-settings-pane keyword-settings-pane" role="tabpanel">
+        <div className="setting-block keyword-provider-block">
+          <span className="setting-label">Google Ads Keyword Planner</span>
+          <p>Официальные исторические метрики Google: средний месячный объём, CPC и конкуренция. Нужны developer token, рекламный customer ID и JSON сервисного аккаунта.</p>
+          <div className="keyword-settings-fields">
+            <label><span>Developer token</span><input value={keywordSettings.googleAds.developerToken} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, developerToken: event.target.value } }))} placeholder="22-значный токен Google Ads" autoComplete="off" spellCheck={false} /></label>
+            <div className="keyword-settings-row">
+              <label><span>Customer ID</span><input inputMode="numeric" value={keywordSettings.googleAds.customerId} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, customerId: event.target.value } }))} placeholder="123-456-7890" autoComplete="off" /></label>
+              <label><span>Manager ID <small>необязательно</small></span><input inputMode="numeric" value={keywordSettings.googleAds.loginCustomerId} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, loginCustomerId: event.target.value } }))} placeholder="123-456-7890" autoComplete="off" /></label>
+            </div>
+            <label><span>Service account JSON</span><textarea value={keywordSettings.googleAds.serviceAccountJson} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, serviceAccountJson: event.target.value } }))} placeholder={'{\n  "client_email": "...",\n  "private_key": "..."\n}'} spellCheck={false} /></label>
+          </div>
+        </div>
+        <div className="setting-block keyword-provider-block compact">
+          <span className="setting-label">Keywords For Free</span>
+          <p>Дополнительная приблизительная оценка объёма. Сервис даёт 10 бесплатных API-запросов после регистрации; один запрос принимает до 30 ключей.</p>
+          <div className="keyword-settings-fields"><label><span>API key</span><input type="password" value={keywordSettings.keywordsForFreeApiKey} onChange={(event) => setKeywordSettings((current) => ({ ...current, keywordsForFreeApiKey: event.target.value }))} placeholder="kff_…" autoComplete="off" spellCheck={false} /></label></div>
+        </div>
+        {keywordSaved && <div className="api-key-saved"><CheckCircle2 size={16} />Настройки источников сохранены в этом браузере</div>}
+        {keywordError && <div className="proxy-settings-error">{keywordError}</div>}
+        <div className="api-key-actions">
+          <button className="button primary grow" onClick={persistKeywordSettings}>Сохранить источники</button>
+          <button className="button danger-outline" onClick={clearKeywordSettings}><Trash2 size={16} />Очистить</button>
+        </div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Реквизиты остаются в браузере</strong><p>Сервер получает их только во время конкретного запроса метрик и не пишет в MySQL или логи. Keyword Surfer подключается отдельно импортом CSV и ключа не требует.</p></div></div>
       </div>}
 
       {activeTab === "proxy" && <div className="api-settings-pane" role="tabpanel">

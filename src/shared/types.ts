@@ -275,6 +275,66 @@ export interface ReviewSearchJobResponse {
   error?: AIAnalysisJobError;
 }
 
+export type KeywordVolumeSource = "google_ads" | "keyword_surfer" | "keywords_for_free";
+export type KeywordVolumeMetricStatus = "ok" | "no_data" | "error";
+export type KeywordVolumeSourceStatus = "completed" | "partial" | "not_configured" | "error";
+
+export interface GoogleAdsKeywordCredentials {
+  developerToken: string;
+  customerId: string;
+  loginCustomerId?: string;
+  serviceAccountJson: string;
+}
+
+export interface KeywordVolumeCredentials {
+  googleAds?: GoogleAdsKeywordCredentials;
+  keywordsForFreeApiKey?: string;
+}
+
+export interface KeywordSurferImportRow {
+  country: string;
+  keyword: string;
+  volume: number;
+  cpc?: number;
+}
+
+export interface KeywordVolumeRequest {
+  keywords: string[];
+  countries: string[];
+  sources: KeywordVolumeSource[];
+  credentials?: KeywordVolumeCredentials;
+  surferRows?: KeywordSurferImportRow[];
+}
+
+export interface KeywordVolumeMetric {
+  status: KeywordVolumeMetricStatus;
+  volume?: number;
+  volumeRange?: string;
+  cpc?: number;
+  competition?: number;
+  message?: string;
+}
+
+export interface KeywordVolumeRow {
+  keyword: string;
+  country: string;
+  countryName: string;
+  metrics: Partial<Record<KeywordVolumeSource, KeywordVolumeMetric>>;
+}
+
+export interface KeywordVolumeSourceResult {
+  source: KeywordVolumeSource;
+  status: KeywordVolumeSourceStatus;
+  message: string;
+  received: number;
+}
+
+export interface KeywordVolumeResponse {
+  rows: KeywordVolumeRow[];
+  sources: KeywordVolumeSourceResult[];
+  createdAt: string;
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

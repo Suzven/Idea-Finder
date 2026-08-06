@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordVolumeRequest, KeywordVolumeResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -226,6 +226,13 @@ export async function searchCompanyReviews(
     "Повторите запрос позже: фоновая задача на сервере могла продолжить выполнение.",
     started.jobId,
   );
+}
+
+export async function collectKeywordVolumes(payload: KeywordVolumeRequest): Promise<KeywordVolumeResponse> {
+  return request<KeywordVolumeResponse>("/api/keyword-volume", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function fetchReviewChallengeFrame(challengeId: string): Promise<Blob> {

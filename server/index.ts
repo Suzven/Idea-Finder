@@ -13,6 +13,7 @@ import { demoAds } from "./data/demoAds.js";
 import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, deleteAIAnalysisReport, deleteCollection, deleteExpiredIntegrationLogs, deleteReviewProxySettings, getAIAnalysisLandingScreenshot, getAIAnalysisReport, getAIAnalysisReports, getCollections, getFavoriteAds, getFavoriteIds, getIntegrationLogById, getIntegrationLogs, getReviewProxyCredentials, getReviewProxySettings, healthcheckDatabase, removeFavorite, saveAIAnalysisReport, saveReviewProxySettings, setCreativeAnalysisNotes } from "./db.js";
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
+import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
@@ -275,6 +276,26 @@ const aiNoteSchema = z.object({
 const reviewSearchSchema = z.object({
   query: z.string().trim().min(2).max(120),
   sources: z.array(z.enum(["trustpilot", "capterra", "softwareadvice", "producthunt"])).min(1).max(10),
+});
+const keywordVolumeSchema = z.object({
+  keywords: z.array(z.string().trim().min(1).max(120).refine((value) => !/[;\u0000-\u001f]/.test(value), "Ключ содержит недопустимый символ.")).min(1).max(30),
+  countries: z.array(z.string().regex(/^[A-Z]{2}$/)).min(1).max(20),
+  sources: z.array(z.enum(["google_ads", "keyword_surfer", "keywords_for_free"])).min(1).max(3),
+  credentials: z.object({
+    googleAds: z.object({
+      developerToken: z.string().trim().min(1).max(200),
+      customerId: z.string().regex(/^\d{10}$/),
+      loginCustomerId: z.string().regex(/^\d{10}$/).optional(),
+      serviceAccountJson: z.string().min(10).max(20_000),
+    }).optional(),
+    keywordsForFreeApiKey: z.string().trim().min(1).max(500).optional(),
+  }).optional(),
+  surferRows: z.array(z.object({
+    country: z.string().regex(/^[A-Z]{2}$/),
+    keyword: z.string().trim().min(1).max(120),
+    volume: z.number().finite().nonnegative(),
+    cpc: z.number().finite().nonnegative().optional(),
+  })).max(600).optional(),
 });
 const reviewChallengeClickSchema = z.object({
   x: z.number().finite().min(0).max(2_500),
@@ -591,6 +612,21 @@ app.get("/api/settings/review-proxy/test/:jobId", (request, response, next) => {
       throw new AppError(404, "REVIEW_PROXY_TEST_JOB_NOT_FOUND", "Задача проверки прокси не найдена или уже удалена.");
     }
     response.json(publicReviewProxyTestJob(job));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/keyword-volume", async (request, response, next) => {
+  try {
+    const parsed = keywordVolumeSchema.parse(request.body);
+    response.json(await collectKeywordVolume({
+      keywords: [...new Set(parsed.keywords.map((keyword) => keyword.trim()))],
+      countries: [...new Set(parsed.countries)],
+      sources: [...new Set(parsed.sources)],
+      ...(parsed.credentials ? { credentials: parsed.credentials } : {}),
+      ...(parsed.surferRows ? { surferRows: parsed.surferRows } : {}),
+    }));
   } catch (error) {
     next(error);
   }
