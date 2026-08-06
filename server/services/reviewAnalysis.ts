@@ -177,6 +177,26 @@ async function clickResolvedReviewLink(page: Page, candidate: string): Promise<{
   };
 }
 
+async function openCapterraReviewLink(page: Page, candidate: string): Promise<{ response?: PlaywrightResponse; warning?: string }> {
+  const reviewUrl = new URL(candidate);
+  const profileUrl = new URL(reviewUrl.toString());
+  profileUrl.pathname = profileUrl.pathname.replace(/\/reviews\/?$/i, "/");
+
+  const profileNavigation = await clickResolvedReviewLink(page, profileUrl.toString());
+  await page.waitForTimeout(700);
+  const profileState = await pageState(page);
+  const profileBlockedByStatus = profileNavigation.response
+    ? [401, 403, 429].includes(profileNavigation.response.status()) && !profileState.hasReviewContent
+    : false;
+  if (profileState.blocked || profileBlockedByStatus) return profileNavigation;
+
+  const reviewNavigation = await clickResolvedReviewLink(page, reviewUrl.toString());
+  return {
+    ...reviewNavigation,
+    warning: [profileNavigation.warning, reviewNavigation.warning].filter(Boolean).join(" | ") || undefined,
+  };
+}
+
 async function pageState(page: Page): Promise<{ blocked: boolean; notFound: boolean; hasReviewContent: boolean; title: string; preview: string }> {
   let state: { title: string; text: string; iframeCount: number; elementCount: number; reviewMarkerCount: number } | undefined;
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -335,7 +355,7 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promi
   if (!await input.count()) return [];
   await input.fill(searchTerm);
   await page.waitForTimeout(900);
-  const clicked = await page.evaluate(({ expectedName }) => {
+  const candidateLabel = await page.evaluate(({ expectedName }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
     const expectedWords = expectedName.match(/[a-z0-9]+/g) ?? [];
     const options = Array.from(document.querySelectorAll<HTMLElement>("li > div.cursor-pointer"))
@@ -349,16 +369,19 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promi
       })
       .filter((option) => option.score > 0)
       .sort((left, right) => right.score - left.score);
-    if (!options[0]) return false;
-    options[0].element.click();
-    return true;
+    return options[0]?.element.querySelector("p")?.textContent?.trim();
   }, { expectedName: searchTerm });
-  if (!clicked) return [];
+  if (!candidateLabel) return [];
+
+  const searchPageUrl = page.url();
+  const candidate = page.getByText(candidateLabel, { exact: true }).last();
+  if (!await candidate.count()) return [];
+  await candidate.click({ timeout: 8_000 });
 
   await waitForNavigationToSettle(page);
   await page.waitForTimeout(500);
   const profileUrl = new URL(page.url());
-  if (profileUrl.hostname !== "www.softwareadvice.com") return [];
+  if (profileUrl.hostname !== "www.softwareadvice.com" || profileUrl.pathname === "/" || page.url() === searchPageUrl) return [];
   const basePath = profileUrl.pathname.endsWith("/") ? profileUrl.pathname : `${profileUrl.pathname}/`;
   const reviewsUrl = await page.evaluate(({ expectedPath }) => {
     const link = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
@@ -544,7 +567,7 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
     label: "Capterra",
     buildCandidates: buildCapterraCandidates,
     resolveCandidates: resolveCapterraCandidates,
-    openResolvedCandidate: clickResolvedReviewLink,
+    openResolvedCandidate: openCapterraReviewLink,
     prepare: prepareCapterraReviews,
     extract: extractCapterraReviews,
   },
