@@ -177,6 +177,7 @@ export interface ReviewBrowserInfo {
   version: string;
   userAgent: string;
   proxy?: string;
+  session?: string;
 }
 
 export interface ReviewProxySettings {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { BrowserContext, Page, Response as PlaywrightResponse } from "playwright";
 import type { ReviewAttemptLog, ReviewBrowserInfo, ReviewProxyTestLog, ReviewProxyTestResult, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ReviewSourceResult, UserReview } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
+import { createCapterraBrowserContext } from "./capterraBrowser.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 import { createAuthenticatedSocks5Bridge, type SocksProxyBridge } from "./socksProxyBridge.js";
 
@@ -182,8 +183,9 @@ async function openCapterraReviewLink(page: Page, candidate: string): Promise<{ 
   const profileUrl = new URL(reviewUrl.toString());
   profileUrl.pathname = profileUrl.pathname.replace(/\/reviews\/?$/i, "/");
 
+  await page.waitForTimeout(700 + Math.floor(Math.random() * 350));
   const profileNavigation = await clickResolvedReviewLink(page, profileUrl.toString());
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(900 + Math.floor(Math.random() * 350));
   const profileState = await pageState(page);
   const profileBlockedByStatus = profileNavigation.response
     ? [401, 403, 429].includes(profileNavigation.response.status()) && !profileState.hasReviewContent
@@ -772,7 +774,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
   let resolvedCandidatePage: Page | undefined;
   const attemptedUrls: string[] = [];
   const attempts: ReviewAttemptLog[] = [];
-  const created = await createContext(proxySettings);
+  const created = adapter.source === "capterra"
+    ? await createCapterraBrowserContext(proxySettings)
+    : await createContext(proxySettings);
   const { context, browser } = created;
   const record = (attempt: ReviewAttemptLog) => {
     attempts.push(attempt);

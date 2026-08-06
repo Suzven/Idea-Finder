@@ -75,7 +75,7 @@ function SourceResult({ result }: { result: ReviewSourceResult }) {
       : <SourceStatus result={result} />}
     <details className="review-attempts" open={result.status === "blocked" || result.status === "error"}>
       <summary>Лог Chromium ({result.attempts.length} попыток)</summary>
-      {result.browser && <div className="review-browser-info"><span><b>Chromium:</b> {result.browser.version}</span><span><b>User-Agent:</b> {result.browser.userAgent}</span><span><b>Прокси:</b> {result.browser.proxy || "не используется"}</span></div>}
+      {result.browser && <div className="review-browser-info"><span><b>Chromium:</b> {result.browser.version}</span><span><b>User-Agent:</b> {result.browser.userAgent}</span><span><b>Прокси:</b> {result.browser.proxy || "не используется"}</span>{result.browser.session && <span><b>Сессия:</b> {result.browser.session}</span>}</div>}
       {result.attempts.length
         ? <div className="review-attempt-log">{result.attempts.map((attempt, index) => <article key={`${attempt.url}-${index}`} className={attempt.outcome}>
           <header><b>{index + 1}. {attemptLabels[attempt.outcome]}</b><span>{attempt.durationMs} мс</span></header>
