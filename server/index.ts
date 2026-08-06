@@ -646,7 +646,9 @@ app.post(
   async (request, response, next) => {
     try {
       if (!Buffer.isBuffer(request.body)) throw new AppError(400, "KEYWORD_SURFER_ZIP_REQUIRED", "Выберите ZIP расширения Keyword Surfer.");
-      response.status(201).json(await installKeywordSurferExtension(request.body));
+      console.info(`[keyword-surfer-upload] Получен архив ${request.body.length} байт.`);
+      const info = await installKeywordSurferExtension(request.body);
+      response.status(201).json(info);
     } catch (error) {
       next(error);
     }

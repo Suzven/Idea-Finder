@@ -75,6 +75,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
         code: "NON_JSON_RESPONSE",
         details: {
           endpoint: url,
+          httpStatus: response.status,
+          statusText: response.statusText,
           contentType: response.headers.get("content-type"),
           responsePreview: rawBody.replace(/\s+/g, " ").slice(0, 500),
         },

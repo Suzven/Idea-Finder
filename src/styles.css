@@ -529,6 +529,7 @@ body.modal-open { overflow: hidden; }
 .surfer-extension-actions label { display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
 .surfer-extension-actions label.disabled { cursor: wait; opacity: .65; }
 .surfer-extension-actions input { display: none; }
+.surfer-upload-error { white-space: pre-wrap; overflow-wrap: anywhere; }
 .proxy-test-log { margin-top: 22px; overflow: hidden; border: 1px solid #e0e4ec; border-radius: 14px; background: #fff; box-shadow: 0 9px 28px rgba(35,43,72,.055); }
 .proxy-test-log.success { border-color: #cbe9dc; }
 .proxy-test-log.error { border-color: #efd1d5; }

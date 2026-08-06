@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, normalize } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
 import { inflateRaw } from "node:zlib";
 import { chromium } from "playwright";
@@ -12,7 +12,10 @@ import { getMetaChromiumExecutablePath } from "./metaSnapshot.js";
 
 const inflateRawAsync = promisify(inflateRaw);
 const EXTENSION_ID = "bafijghppfhdpldihckdcadbcobikaca";
-const STORAGE_ROOT = join(homedir(), ".spyservice", "keyword-surfer");
+const configuredStorageRoot = process.env.SPYSERVICE_KEYWORD_SURFER_DIR?.trim();
+const STORAGE_ROOT = configuredStorageRoot
+  ? resolve(configuredStorageRoot)
+  : join(homedir(), ".spyservice", "keyword-surfer");
 const ACTIVE_EXTENSION = join(STORAGE_ROOT, "active");
 const SESSION_ROOT = join(STORAGE_ROOT, "sessions");
 const MAX_ARCHIVE_ENTRIES = 2_000;
@@ -157,13 +160,18 @@ export async function installKeywordSurferExtension(archive: Buffer): Promise<Ke
   const extractionPath = join(STORAGE_ROOT, `extract-${id}`);
   await mkdir(extractionPath, { recursive: true });
   try {
+    console.info(`[keyword-surfer-upload] Распаковываем ZIP (${archive.length} байт) в ${extractionPath}.`);
     await extractZip(archive, extractionPath);
+    console.info("[keyword-surfer-upload] ZIP распакован, ищем manifest.json.");
     const manifestRoot = await findManifestRoot(extractionPath);
     if (!manifestRoot) throw new AppError(400, "KEYWORD_SURFER_MANIFEST_MISSING", "В ZIP не найден manifest.json расширения.");
-    await readManifest(manifestRoot);
+    const manifest = await readManifest(manifestRoot);
+    console.info(`[keyword-surfer-upload] Проверен Keyword Surfer ${manifest.version ?? "?"}.`);
     await rm(ACTIVE_EXTENSION, { recursive: true, force: true });
     await rename(manifestRoot, ACTIVE_EXTENSION);
-    return await getKeywordSurferExtensionInfo();
+    const info = await getKeywordSurferExtensionInfo();
+    console.info(`[keyword-surfer-upload] Расширение установлено в ${ACTIVE_EXTENSION}.`);
+    return info;
   } finally {
     await rm(extractionPath, { recursive: true, force: true }).catch(() => undefined);
   }

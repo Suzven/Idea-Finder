@@ -1,6 +1,6 @@
 import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchReviewProxySettings, removeKeywordSurferExtension, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
+import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchReviewProxySettings, removeKeywordSurferExtension, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
 import { getOpenAIKey, saveOpenAIKey } from "../openaiSettings";
 import { clearKeywordProviderSettings, getKeywordProviderSettings, saveKeywordProviderSettings } from "../keywordSettings";
 import type { KeywordProviderSettings } from "../keywordSettings";
@@ -21,6 +21,20 @@ const proxyStageLabels = {
   response: "Ответ",
   cleanup: "Завершение",
 } as const;
+
+function formatSurferUploadError(error: unknown): string {
+  if (!(error instanceof ApiRequestError)) return error instanceof Error ? error.message : "Не удалось загрузить ZIP Keyword Surfer.";
+  const lines = [error.message, `HTTP: ${error.status || "нет ответа"}`, `Код: ${error.code}`];
+  const contentType = typeof error.details?.contentType === "string" ? error.details.contentType : "";
+  const preview = typeof error.details?.responsePreview === "string" ? error.details.responsePreview : "";
+  if (error.status === 413) lines.push("Прокси-сервер отклонил размер ZIP. Нужно увеличить client_max_body_size для домена.");
+  else if ([404, 405].includes(error.status)) lines.push("На сервере ещё работает версия без обработчика загрузки. Пересоберите проект и перезапустите spyservice.");
+  else if ([502, 503, 504].includes(error.status)) lines.push("Прокси потерял соединение с Node во время обработки. Проверьте journalctl -u spyservice.");
+  if (contentType) lines.push(`Content-Type: ${contentType}`);
+  if (preview) lines.push(`Ответ: ${preview}`);
+  if (error.traceId) lines.push(`Trace ID: ${error.traceId}`);
+  return lines.join("\n");
+}
 
 export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("openai");
@@ -129,7 +143,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       setSurferInfo(await uploadKeywordSurferExtension(file));
       onSaved();
     } catch (error) {
-      setSurferError(error instanceof Error ? error.message : "Не удалось загрузить ZIP Keyword Surfer.");
+      setSurferError(formatSurferUploadError(error));
     } finally {
       setSurferUploading(false);
     }
@@ -271,7 +285,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
             <label className={`button primary ${surferUploading ? "disabled" : ""}`}><Upload size={15} />{surferUploading ? "Загружаем…" : surferInfo.configured ? "Обновить ZIP" : "Загрузить ZIP"}<input type="file" accept=".zip,application/zip" disabled={surferUploading} onChange={(event) => { void uploadSurfer(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
             <button type="button" className="button danger-outline" disabled={surferUploading || !surferInfo.configured} onClick={() => void removeSurfer()}><Trash2 size={15} />Удалить</button>
           </div>
-          {surferError && <div className="proxy-settings-error">{surferError}</div>}
+          {surferError && <div className="proxy-settings-error surfer-upload-error">{surferError}</div>}
         </div>
         {keywordSaved && <div className="api-key-saved"><CheckCircle2 size={16} />Настройки источников сохранены в этом браузере</div>}
         {keywordError && <div className="proxy-settings-error">{keywordError}</div>}

@@ -356,7 +356,15 @@ export async function collectKeywordVolume(request: KeywordVolumeRequest): Promi
         log("failed", "error", message, { errorType: error instanceof Error ? error.name : "UnknownError" });
       }
       if (source === "google_ads" && /permission|PERMISSION_DENIED|USER_PERMISSION_DENIED/i.test(message)) {
-        log("permission_hint", "info", "Проверьте: service account добавлен пользователем в Google Ads, Customer ID принадлежит рекламному аккаунту, а Manager ID — управляющему аккаунту с developer token.");
+        const adsError = logs.map((entry) => entry.details?.googleAdsError).find((value) => typeof value === "string");
+        if (typeof adsError === "string" && adsError.includes("DEVELOPER_TOKEN_NOT_APPROVED")) {
+          log("permission_hint", "info", "Developer token пока работает только с test accounts. Укажите Customer ID тестового клиента из отдельной test manager и Manager ID этой test manager либо запросите Basic Access для боевого аккаунта.", {
+            accessRequired: "Basic Access",
+            testAccountAllowed: true,
+          });
+        } else {
+          log("permission_hint", "info", "Проверьте: service account добавлен пользователем в Google Ads, Customer ID принадлежит рекламному аккаунту, а Manager ID — управляющему аккаунту с developer token.");
+        }
       }
       for (const row of rows) row.metrics[source] = { status: "error", message };
       sourceResults.push(sourceResult(source, "error", message, 0, logs));
