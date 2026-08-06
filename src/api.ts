@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -267,6 +267,41 @@ export async function collectKeywordVolumes(payload: KeywordVolumeRequest): Prom
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function collectGoogleTrendsReport(
+  payload: GoogleTrendsRequest,
+  onProgress?: (progress: GoogleTrendsProgress) => void,
+): Promise<GoogleTrendsReport> {
+  const started = await request<GoogleTrendsJobResponse>("/api/google-trends", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  onProgress?.(started.progress ?? { stage: "queued", activity: "Отчёт поставлен в очередь.", completedSteps: 0, totalSteps: 1, logs: [] });
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10 * 60_000) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+    const job = await request<GoogleTrendsJobResponse>(`/api/google-trends/jobs/${encodeURIComponent(started.jobId)}`);
+    if (job.progress) onProgress?.(job.progress);
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed" && job.error) {
+      throw new ApiRequestError(
+        job.error.message,
+        job.error.httpStatus,
+        job.error.code,
+        job.error.action,
+        job.error.traceId,
+        job.error.details,
+      );
+    }
+  }
+  throw new ApiRequestError(
+    "Сбор Google Trends выполняется слишком долго.",
+    504,
+    "GOOGLE_TRENDS_TIMEOUT",
+    "Повторите запрос позже: фоновая задача на сервере могла продолжить выполнение.",
+    started.jobId,
+  );
 }
 
 export async function fetchKeywordSurferExtensionInfo(): Promise<KeywordSurferExtensionInfo> {

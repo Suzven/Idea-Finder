@@ -390,6 +390,93 @@ export interface KeywordVolumeResponse {
   createdAt: string;
 }
 
+export type GoogleTrendsTimeRange = "now 7-d" | "today 1-m" | "today 3-m" | "today 12-m" | "today 5-y" | "all";
+export type GoogleTrendsProperty = "" | "images" | "news" | "youtube" | "froogle";
+
+export interface GoogleTrendsRequest {
+  keywords: string[];
+  country: string;
+  timeRange: GoogleTrendsTimeRange;
+  property: GoogleTrendsProperty;
+}
+
+export interface GoogleTrendsLogEntry {
+  at: string;
+  stage: string;
+  status: "info" | "started" | "success" | "error";
+  message: string;
+  elapsedMs: number;
+  details?: Record<string, string | number | boolean>;
+}
+
+export interface GoogleTrendsProgress {
+  stage: string;
+  activity: string;
+  completedSteps: number;
+  totalSteps: number;
+  logs: GoogleTrendsLogEntry[];
+}
+
+export interface GoogleTrendsTimelinePoint {
+  timestamp: number;
+  label: string;
+  values: number[];
+  partial?: boolean;
+}
+
+export interface GoogleTrendsSeriesSummary {
+  keyword: string;
+  average: number;
+  current: number;
+  minimum: number;
+  maximum: number;
+  peakLabel?: string;
+  changePercent?: number;
+}
+
+export interface GoogleTrendsRelatedItem {
+  query: string;
+  value?: number;
+  formattedValue?: string;
+  link?: string;
+}
+
+export interface GoogleTrendsKeywordRelated {
+  keyword: string;
+  top: GoogleTrendsRelatedItem[];
+  rising: GoogleTrendsRelatedItem[];
+}
+
+export interface GoogleTrendsRegionRow {
+  code: string;
+  name: string;
+  values: number[];
+}
+
+export interface GoogleTrendsReport {
+  request: GoogleTrendsRequest;
+  countryName: string;
+  timeRangeLabel: string;
+  propertyLabel: string;
+  sourceUrl: string;
+  comparisonMode: "native" | "anchor_normalized";
+  timeline: GoogleTrendsTimelinePoint[];
+  series: GoogleTrendsSeriesSummary[];
+  related: GoogleTrendsKeywordRelated[];
+  regions: GoogleTrendsRegionRow[];
+  warnings: string[];
+  logs: GoogleTrendsLogEntry[];
+  createdAt: string;
+}
+
+export interface GoogleTrendsJobResponse {
+  jobId: string;
+  status: AIAnalysisJobState;
+  progress?: GoogleTrendsProgress;
+  result?: GoogleTrendsReport;
+  error?: AIAnalysisJobError;
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

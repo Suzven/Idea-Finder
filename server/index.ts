@@ -15,12 +15,13 @@ import { assertLoginAllowed, clearFailedLogins, endSession, getAuthenticatedUser
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
+import { collectGoogleTrends } from "./services/googleTrends.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, PrivateSettingsSummary, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -65,10 +66,24 @@ interface StoredReviewProxyTestJob {
 }
 
 const reviewProxyTestJobs = new Map<string, StoredReviewProxyTestJob>();
+interface StoredGoogleTrendsJob {
+  jobId: string;
+  clientId: string;
+  request: GoogleTrendsRequest;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  progress?: GoogleTrendsProgress;
+  result?: GoogleTrendsReport;
+  error?: AIAnalysisJobError;
+}
+
+const googleTrendsJobs = new Map<string, StoredGoogleTrendsJob>();
 const AI_JOB_TTL_MS = 30 * 60_000;
 const MAX_ACTIVE_AI_JOBS = 2;
 const MAX_ACTIVE_REVIEW_JOBS = 2;
 const MAX_ACTIVE_PROXY_TEST_JOBS = 2;
+const MAX_ACTIVE_GOOGLE_TRENDS_JOBS = 2;
 const REVIEW_SOURCE_LABELS: Record<ReviewSource, string> = {
   trustpilot: "Trustpilot",
   capterra: "Capterra",
@@ -182,6 +197,16 @@ const adCreativeSchema = z.object({
 
 function getClientId(request: express.Request): string {
   return userDataScope(getAuthenticatedUser(request).id);
+}
+
+function publicGoogleTrendsJob(job: StoredGoogleTrendsJob): GoogleTrendsJobResponse {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    ...(job.progress ? { progress: job.progress } : {}),
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  };
 }
 
 function shouldUseLive(source: AdSource): boolean {
@@ -433,6 +458,12 @@ const keywordVolumeSchema = z.object({
     volume: z.number().finite().nonnegative(),
     cpc: z.number().finite().nonnegative().optional(),
   })).max(600).optional(),
+});
+const googleTrendsSchema = z.object({
+  keywords: z.array(z.string().trim().min(1).max(120).refine((value) => !/[;\u0000-\u001f]/.test(value), "Ключ содержит недопустимый символ.")).min(1).max(8),
+  country: z.string().regex(/^(?:ALL|[A-Z]{2})$/).default("ALL"),
+  timeRange: z.enum(["now 7-d", "today 1-m", "today 3-m", "today 12-m", "today 5-y", "all"]).default("today 5-y"),
+  property: z.enum(["", "images", "news", "youtube", "froogle"]).default(""),
 });
 const reviewChallengeClickSchema = z.object({
   x: z.number().finite().min(0).max(2_500),
@@ -782,6 +813,88 @@ app.post("/api/keyword-volume", async (request, response, next) => {
   }
 });
 
+app.post("/api/google-trends", (request, response, next) => {
+  try {
+    const parsed = googleTrendsSchema.parse(request.body);
+    const keywords = [...new Map(parsed.keywords.map((keyword) => [keyword.toLocaleLowerCase("ru"), keyword.trim()])).values()];
+    const clientId = getClientId(request);
+    const existing = [...googleTrendsJobs.values()].find((job) =>
+      job.clientId === clientId && (job.status === "queued" || job.status === "running"));
+    if (existing) {
+      response.status(202).json(publicGoogleTrendsJob(existing));
+      return;
+    }
+    const activeCount = [...googleTrendsJobs.values()].filter((job) => job.status === "queued" || job.status === "running").length;
+    if (activeCount >= MAX_ACTIVE_GOOGLE_TRENDS_JOBS) {
+      throw new AppError(429, "GOOGLE_TRENDS_BUSY", "Сервер уже собирает несколько отчётов Google Trends.", "Дождитесь завершения текущих задач и повторите запрос.");
+    }
+    const trendsRequest: GoogleTrendsRequest = {
+      keywords,
+      country: parsed.country,
+      timeRange: parsed.timeRange,
+      property: parsed.property,
+    };
+    const now = Date.now();
+    const job: StoredGoogleTrendsJob = {
+      jobId: randomUUID(),
+      clientId,
+      request: trendsRequest,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+      progress: {
+        stage: "queued",
+        activity: "Отчёт поставлен в очередь.",
+        completedSteps: 0,
+        totalSteps: 3 + keywords.length,
+        logs: [],
+      },
+    };
+    googleTrendsJobs.set(job.jobId, job);
+    response.status(202).json(publicGoogleTrendsJob(job));
+
+    void (async () => {
+      job.status = "running";
+      job.updatedAt = Date.now();
+      try {
+        job.result = await collectGoogleTrends(trendsRequest, (progress) => {
+          job.progress = progress;
+          job.updatedAt = Date.now();
+        });
+        job.progress = {
+          stage: "complete",
+          activity: "Отчёт Google Trends готов.",
+          completedSteps: job.progress?.totalSteps ?? 1,
+          totalSteps: job.progress?.totalSteps ?? 1,
+          logs: job.result.logs,
+        };
+        job.status = "completed";
+      } catch (error) {
+        job.status = "failed";
+        job.error = backgroundJobError(error, job.jobId);
+        console.error(`[${job.jobId}] Google Trends background job failed`, error);
+      } finally {
+        job.updatedAt = Date.now();
+      }
+    })();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/google-trends/jobs/:jobId", (request, response, next) => {
+  try {
+    const jobId = z.string().uuid().parse(request.params.jobId);
+    const job = googleTrendsJobs.get(jobId);
+    if (!job || job.clientId !== getClientId(request)) {
+      throw new AppError(404, "GOOGLE_TRENDS_JOB_NOT_FOUND", "Задача Google Trends не найдена или уже удалена.");
+    }
+    response.json(publicGoogleTrendsJob(job));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/settings/keyword-surfer-extension", async (request, response, next) => {
   try {
     response.json(await getKeywordSurferExtensionInfo(getClientId(request)));
@@ -1006,6 +1119,9 @@ const aiJobCleanupTimer = setInterval(() => {
   }
   for (const [jobId, job] of reviewProxyTestJobs) {
     if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") reviewProxyTestJobs.delete(jobId);
+  }
+  for (const [jobId, job] of googleTrendsJobs) {
+    if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") googleTrendsJobs.delete(jobId);
   }
 }, 5 * 60_000);
 aiJobCleanupTimer.unref();
