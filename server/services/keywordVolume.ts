@@ -344,7 +344,7 @@ export async function collectKeywordVolume(request: KeywordVolumeRequest): Promi
           ? request.surferRows
           : await collectKeywordSurferRows(request.keywords, request.countries, log);
         const received = applyMetrics(rows, source, collectSurfer(importedRows));
-        const mode = request.surferRows?.length ? "CSV" : "Chromium";
+        const mode = request.surferRows?.length ? "CSV" : "Keyword Surfer";
         log("surfer_complete", received ? "success" : "info", `${mode}: получено ${received} из ${rows.length} значений.`);
         sourceResults.push(sourceResult(source, received === rows.length ? "completed" : "partial", received
           ? `${mode}: получено ${received} из ${rows.length} значений.`

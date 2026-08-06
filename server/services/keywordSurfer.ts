@@ -2,13 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, normalize, resolve } from "node:path";
+import { dirname, join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
 import { inflateRaw } from "node:zlib";
-import { chromium } from "playwright";
 import type { KeywordSurferExtensionInfo, KeywordSurferImportRow, KeywordVolumeLogEntry } from "../../src/shared/types.js";
 import { AppError } from "../errors.js";
-import { getMetaChromiumExecutablePath } from "./metaSnapshot.js";
 
 const inflateRawAsync = promisify(inflateRaw);
 const EXTENSION_ID = "bafijghppfhdpldihckdcadbcobikaca";
@@ -17,7 +15,7 @@ const STORAGE_ROOT = configuredStorageRoot
   ? resolve(configuredStorageRoot)
   : join(homedir(), ".spyservice", "keyword-surfer");
 const ACTIVE_EXTENSION = join(STORAGE_ROOT, "active");
-const SESSION_ROOT = join(STORAGE_ROOT, "sessions");
+const SURFER_API_URL = "https://db3.keywordsur.fr/api/ks/keywords";
 const MAX_ARCHIVE_ENTRIES = 2_000;
 const MAX_ARCHIVE_SIZE = 80 * 1024 * 1024;
 const MAX_EXTRACTED_SIZE = 200 * 1024 * 1024;
@@ -216,81 +214,75 @@ export async function collectKeywordSurferRows(
     throw new AppError(429, "KEYWORD_SURFER_BUSY", "Keyword Surfer уже собирает другой запрос. Дождитесь его завершения.");
   }
   surferCollectionActive = true;
-  const sessionPath = join(SESSION_ROOT, randomUUID());
-  let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   try {
     const info = await getKeywordSurferExtensionInfo();
     if (!info.configured) {
       throw new AppError(400, "KEYWORD_SURFER_EXTENSION_REQUIRED", "Загрузите ZIP расширения Keyword Surfer в Настройках → Ключи.");
     }
-    const executablePath = getMetaChromiumExecutablePath();
-    await mkdir(sessionPath, { recursive: true });
     log("surfer_extension", "info", "Расширение Keyword Surfer найдено на сервере.", {
       version: info.version || "—",
       extensionId: EXTENSION_ID,
-      chromium: basename(executablePath),
+      dataSource: new URL(SURFER_API_URL).host,
     });
-    context = await chromium.launchPersistentContext(sessionPath, {
-      headless: true,
-      executablePath,
-      locale: "en-US",
-      viewport: { width: 1440, height: 1000 },
-      args: [
-        `--disable-extensions-except=${ACTIVE_EXTENSION}`,
-        `--load-extension=${ACTIVE_EXTENSION}`,
-      ],
-    });
-    log("surfer_browser", "started", "Chromium запущен с расширением Keyword Surfer.");
-    const popup = await context.newPage();
-    await popup.goto(`chrome-extension://${EXTENSION_ID}/popup.html`, { waitUntil: "domcontentloaded", timeout: 20_000 });
-    const runtimeId = await popup.evaluate(() => {
-      const extensionChrome = (globalThis as unknown as { chrome?: { runtime?: { id?: string } } }).chrome;
-      return extensionChrome?.runtime?.id || "";
-    });
-    if (runtimeId !== EXTENSION_ID) throw new Error("Chromium запустился, но Keyword Surfer не активировался.");
-    log("surfer_browser", "success", "Keyword Surfer активирован в Chromium.", { runtimeId });
+    log("surfer_api", "started", "Используем источник данных установленной версии Keyword Surfer без загрузки Google SERP.");
 
     const rows: KeywordSurferImportRow[] = [];
     for (const country of countries) {
       log(`surfer_${country}`, "started", `Получаем объёмы Keyword Surfer для ${country}.`, { country, keywordCount: keywords.length });
-      await popup.evaluate(async (location) => {
-        const extensionChrome = (globalThis as unknown as {
-          chrome: { storage: { sync: { get: (keys: string[]) => Promise<Record<string, unknown>>; set: (items: Record<string, unknown>) => Promise<void> } } };
-        }).chrome;
-        const stored = await extensionChrome.storage.sync.get(["options"]);
-        const options = stored.options && typeof stored.options === "object" ? stored.options as Record<string, unknown> : {};
-        await extensionChrome.storage.sync.set({ options: { ...options, location: location.toLowerCase(), language: "en" } });
-      }, country);
-
-      const endpoints = chunks(keywords, 5).map((group) => {
-        const url = new URL("https://db3.keywordsur.fr/api/ks/keywords");
+      const batches = chunks(keywords, 5);
+      let countryCount = 0;
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+        const group = batches[batchIndex];
+        const url = new URL(SURFER_API_URL);
         url.searchParams.set("country", country.toUpperCase());
         url.searchParams.set("keywords", JSON.stringify(group));
-        return { url: url.toString(), keywords: group };
-      });
-      const responses = await popup.evaluate(async (requests) => Promise.all(requests.map(async (request) => {
+        log(`surfer_${country}`, "started", `Запрос ${batchIndex + 1} из ${batches.length}: ${group.length} ключей.`, {
+          country,
+          batch: batchIndex + 1,
+          batchCount: batches.length,
+        });
         try {
-          const response = await fetch(request.url, { method: "GET", cache: "no-store" });
-          return { ok: response.ok, status: response.status, text: await response.text(), keywords: request.keywords };
-        } catch (error) {
-          return { ok: false, status: 0, text: error instanceof Error ? error.message : String(error), keywords: request.keywords };
-        }
-      })), endpoints);
-
-      let countryCount = 0;
-      for (const response of responses) {
-        if (!response.ok) {
-          log(`surfer_${country}`, "error", `Keyword Surfer вернул HTTP ${response.status || "без ответа"}.`, {
-            country,
-            responsePreview: response.text.replace(/\s+/g, " ").slice(0, 1_500),
+          const response = await fetch(url, {
+            method: "GET",
+            headers: {
+              accept: "application/json",
+              origin: "https://www.google.com",
+              referer: "https://www.google.com/",
+              "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+            },
+            signal: AbortSignal.timeout(25_000),
           });
-          continue;
+          const raw = await response.text();
+          if (!response.ok) {
+            log(`surfer_${country}`, "error", `Источник Keyword Surfer вернул HTTP ${response.status}.`, {
+              country,
+              batch: batchIndex + 1,
+              httpStatus: response.status,
+              cfRay: response.headers.get("cf-ray") || "—",
+              responsePreview: raw.replace(/\s+/g, " ").slice(0, 1_500),
+            });
+            continue;
+          }
+          let payload: unknown;
+          try { payload = JSON.parse(raw); } catch { payload = null; }
+          const parsed = parseKeywordSurferPayload(payload, country, group);
+          rows.push(...parsed);
+          countryCount += parsed.length;
+          log(`surfer_${country}`, parsed.length ? "success" : "error", `Запрос ${batchIndex + 1}: получено ${parsed.length} из ${group.length} значений.`, {
+            country,
+            batch: batchIndex + 1,
+            httpStatus: response.status,
+            received: parsed.length,
+            cfRay: response.headers.get("cf-ray") || "—",
+          });
+        } catch (error) {
+          log(`surfer_${country}`, "error", `Запрос ${batchIndex + 1} к Keyword Surfer не выполнен.`, {
+            country,
+            batch: batchIndex + 1,
+            errorType: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : String(error),
+          });
         }
-        let payload: unknown;
-        try { payload = JSON.parse(response.text); } catch { payload = null; }
-        const parsed = parseKeywordSurferPayload(payload, country, response.keywords);
-        rows.push(...parsed);
-        countryCount += parsed.length;
       }
       log(`surfer_${country}`, countryCount ? "success" : "error", `Keyword Surfer: ${countryCount} из ${keywords.length} значений для ${country}.`, {
         country,
@@ -299,8 +291,6 @@ export async function collectKeywordSurferRows(
     }
     return rows;
   } finally {
-    await context?.close().catch(() => undefined);
-    await rm(sessionPath, { recursive: true, force: true }).catch(() => undefined);
     surferCollectionActive = false;
   }
 }
