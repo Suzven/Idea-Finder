@@ -440,6 +440,26 @@ async function extractCapterraReviews(page: Page, pageNumber: number): Promise<{
   };
 }
 
+async function dismissSoftwareAdviceConsent(page: Page, activity?: ReviewActivityReporter): Promise<void> {
+  const dismissed = await page.evaluate(() => {
+    const selectors = [
+      "#onetrust-reject-all-handler",
+      "#onetrust-accept-btn-handler",
+      "#onetrust-pc-sdk .onetrust-close-btn-handler",
+      "#onetrust-close-btn-container button",
+    ];
+    const button = selectors
+      .map((selector) => document.querySelector<HTMLElement>(selector))
+      .find((element) => element && element.getClientRects().length > 0);
+    button?.click();
+    return Boolean(button);
+  }).catch(() => false);
+  if (dismissed) {
+    activity?.("software_consent_closed", "Закрыли окно согласия OneTrust, которое перекрывало результаты поиска.");
+    await page.waitForTimeout(250);
+  }
+}
+
 async function resolveSoftwareAdviceCandidates(page: Page, query: string, activity?: ReviewActivityReporter): Promise<string[]> {
   const normalized = normalizeCompanyQuery(query);
   const searchTerm = query.includes(".") ? normalized.slug : query.trim();
@@ -471,9 +491,14 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string, activi
   if (bestIndex < 0) return [];
 
   activity?.("software_profile_selected", `Выбрана подсказка «${bestLabel}», открываем профиль.`);
+  await dismissSoftwareAdviceConsent(page, activity);
   const selectedOption = options.nth(bestIndex);
   await selectedOption.scrollIntoViewIfNeeded().catch(() => undefined);
-  await selectedOption.click({ timeout: 8_000 });
+  const pointerClickSucceeded = await selectedOption.click({ timeout: 2_500 }).then(() => true).catch(() => false);
+  if (!pointerClickSucceeded) {
+    activity?.("software_click_fallback", "Обычный клик перекрыт слоем страницы — выполняем безопасный DOM-клик по найденному AppsFlyer.");
+    await selectedOption.evaluate((element) => (element as HTMLElement).click());
+  }
   activity?.("software_profile_navigation", "Ожидаем переход на профиль Software Advice.");
   await page.waitForURL((url) => isSoftwareAdviceProfileUrl(url.toString()), { timeout: 12_000 }).catch(() => undefined);
 
