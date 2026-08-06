@@ -1,4 +1,4 @@
-import { AlertTriangle, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, ExternalLink, FileDown, FileText, FlaskConical, Folder, Gauge, History, Image, KeyRound, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw, Rocket, Save, ShieldAlert, Sparkles, Target, Trash2, TrendingUp } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, BrainCircuit, CheckCircle2, ChevronDown, ExternalLink, FileDown, FileText, FlaskConical, Folder, Gauge, History, Image, KeyRound, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw, Rocket, Save, ShieldAlert, Sparkles, Target, Trash2, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { analyzeCreativeCollection, ApiRequestError, deleteAIAnalysisReport, fetchAIAnalysisCreatives, fetchAIAnalysisReport, fetchAIAnalysisReports, fetchCollections, saveCreativeAnalysisNotes } from "../api";
@@ -63,7 +63,7 @@ function confidenceLabel(value: AIAnalysisResponse["analysis"]["confidence"]): s
 }
 
 export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalyticsPageProps) {
-  const [activeSection, setActiveSection] = useState<"campaigns" | "reviews">("campaigns");
+  const [activeSection, setActiveSection] = useState<"hub" | "campaigns" | "reviews">("hub");
   const [collections, setCollections] = useState<CreativeCollection[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [loadingCollections, setLoadingCollections] = useState(true);
@@ -218,12 +218,31 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
   };
 
   return <div className="page-wrap ai-page">
-    <section className="page-intro ai-intro"><div><span className="eyebrow"><BrainCircuit size={14} /> AI INTELLIGENCE</span><h1>AI Аналитика</h1><p>Исследуйте рекламные кампании и отзывы пользователей в одном рабочем пространстве.</p></div>{activeSection === "campaigns" && <div className={`ai-key-state ${keyConfigured ? "ready" : "missing"}`}>{keyConfigured ? <CheckCircle2 size={18} /> : <KeyRound size={18} />}<span><small>OpenAI API</small><strong>{keyConfigured ? "Ключ подключён" : "Ключ не добавлен"}</strong></span><button onClick={onOpenSettings}>{keyConfigured ? "Изменить" : "Настроить"}</button></div>}</section>
+    <section className="page-intro ai-intro"><div><span className="eyebrow"><BrainCircuit size={14} /> AI INTELLIGENCE</span><h1>{activeSection === "hub" ? "AI Аналитика" : activeSection === "campaigns" ? "Анализ рекламных кампаний" : "Анализ отзывов"}</h1><p>{activeSection === "hub" ? "Выберите инструмент для исследования рынка, рекламных связок и голоса пользователей." : activeSection === "campaigns" ? "Исследуйте креативы, лендинги и перспективность рекламной ниши." : "Собирайте и сравнивайте реальные отзывы пользователей из нескольких источников."}</p></div>{activeSection === "campaigns" && <div className={`ai-key-state ${keyConfigured ? "ready" : "missing"}`}>{keyConfigured ? <CheckCircle2 size={18} /> : <KeyRound size={18} />}<span><small>OpenAI API</small><strong>{keyConfigured ? "Ключ подключён" : "Ключ не добавлен"}</strong></span><button onClick={onOpenSettings}>{keyConfigured ? "Изменить" : "Настроить"}</button></div>}</section>
 
-    <nav className="ai-section-tabs" aria-label="Разделы AI Аналитики">
-      <button className={activeSection === "campaigns" ? "active" : ""} onClick={() => setActiveSection("campaigns")}><BrainCircuit size={19} /><span><strong>Анализ рекламных кампаний</strong><small>Креативы, лендинги и перспективность ниши</small></span></button>
-      <button className={activeSection === "reviews" ? "active" : ""} onClick={() => setActiveSection("reviews")}><MessageSquareText size={19} /><span><strong>Анализ отзывов пользователей</strong><small>Trustpilot, Capterra, Software Advice и Product Hunt</small></span></button>
-    </nav>
+    {activeSection === "hub" ? <section className="ai-tool-hub">
+      <header><span>Рабочее пространство</span><h2>Что будем исследовать?</h2><p>Каждый инструмент открывается в отдельном пространстве и сохраняет ваш текущий прогресс при возврате.</p></header>
+      <div className="ai-tool-grid">
+        <button type="button" className="ai-tool-card campaigns" onClick={() => setActiveSection("campaigns")}>
+          <span className="ai-tool-card-glow" />
+          <div className="ai-tool-card-top"><i><BrainCircuit size={30} /></i><em className={keyConfigured ? "ready" : "missing"}><b />{keyConfigured ? "OpenAI подключён" : "Нужен API-ключ"}</em></div>
+          <div className="ai-tool-card-copy"><small>AI RESEARCH</small><strong>Анализ рекламных кампаний</strong><p>Оценка ниши по креативам, рекламным текстам, статистике и полным снимкам лендингов.</p></div>
+          <div className="ai-tool-features"><i>Креативы</i><i>Лендинги</i><i>AI-отчёты</i></div>
+          <div className="ai-tool-card-action"><b>Открыть инструмент</b><i><ArrowRight size={20} /></i></div>
+        </button>
+        <button type="button" className="ai-tool-card reviews" onClick={() => setActiveSection("reviews")}>
+          <span className="ai-tool-card-glow" />
+          <div className="ai-tool-card-top"><i><MessageSquareText size={30} /></i><em className="ready"><b />4 источника доступны</em></div>
+          <div className="ai-tool-card-copy"><small>VOICE OF CUSTOMER</small><strong>Анализ отзывов пользователей</strong><p>Сбор отзывов о компании из Trustpilot, Capterra, Software Advice и Product Hunt.</p></div>
+          <div className="ai-tool-features"><i>До 6 страниц</i><i>Живой лог</i><i>PDF-выгрузка</i></div>
+          <div className="ai-tool-card-action"><b>Открыть инструмент</b><i><ArrowRight size={20} /></i></div>
+        </button>
+      </div>
+    </section> : <>
+      <nav className="ai-workspace-bar" aria-label="Навигация по AI Аналитике">
+        <button type="button" onClick={() => setActiveSection("hub")}><ArrowLeft size={17} />Все инструменты</button>
+        <div>{activeSection === "campaigns" ? <BrainCircuit size={18} /> : <MessageSquareText size={18} />}<span><small>Текущий инструмент</small><strong>{activeSection === "campaigns" ? "Рекламные кампании" : "Отзывы пользователей"}</strong></span></div>
+      </nav>
 
     {activeSection === "campaigns" ? <div className="ai-campaign-section">
 
@@ -307,6 +326,6 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
       {(result.warnings.length > 0 || result.analysis.caveats.length > 0) && <div className="ai-caveats"><AlertTriangle size={20} /><div><strong>Ограничения анализа</strong><ul>{[...result.warnings, ...result.analysis.caveats].map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div></div>}
     </section>}
-    </div> : <ReviewAnalysisPanel />}
+    </div> : <ReviewAnalysisPanel />}</>}
   </div>;
 }
