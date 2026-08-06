@@ -379,8 +379,7 @@ function releaseSnapshotSlot(): void {
   waiters.shift()?.();
 }
 
-export async function getMetaBrowser(): Promise<Browser> {
-  if (browserPromise) return browserPromise;
+export function getMetaChromiumExecutablePath(): string {
   const executablePath = [
     config.metaChromiumExecutablePath,
     chromium.executablePath(),
@@ -397,6 +396,12 @@ export async function getMetaBrowser(): Promise<Browser> {
       "Выполните `pnpm exec playwright install chromium` или задайте META_CHROMIUM_EXECUTABLE_PATH.",
     );
   }
+  return executablePath;
+}
+
+export async function getMetaBrowser(): Promise<Browser> {
+  if (browserPromise) return browserPromise;
+  const executablePath = getMetaChromiumExecutablePath();
   browserPromise = chromium.launch({ headless: true, executablePath }).then((browser) => {
     browser.once("disconnected", () => { browserPromise = undefined; });
     return browser;

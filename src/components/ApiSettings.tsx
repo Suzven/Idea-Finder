@@ -1,10 +1,10 @@
-import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, ShieldAlert, Trash2, X } from "lucide-react";
+import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { deleteReviewProxyConfiguration, fetchReviewProxySettings, saveReviewProxyConfiguration, testReviewProxyConfiguration } from "../api";
+import { deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchReviewProxySettings, removeKeywordSurferExtension, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
 import { getOpenAIKey, saveOpenAIKey } from "../openaiSettings";
 import { clearKeywordProviderSettings, getKeywordProviderSettings, saveKeywordProviderSettings } from "../keywordSettings";
 import type { KeywordProviderSettings } from "../keywordSettings";
-import type { ReviewProxyTestResult } from "../shared/types";
+import type { KeywordSurferExtensionInfo, ReviewProxyTestResult } from "../shared/types";
 
 interface ApiSettingsProps {
   open: boolean;
@@ -30,6 +30,10 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>(() => getKeywordProviderSettings());
   const [keywordSaved, setKeywordSaved] = useState(false);
   const [keywordError, setKeywordError] = useState("");
+  const [surferInfo, setSurferInfo] = useState<KeywordSurferExtensionInfo>({ configured: false });
+  const [surferLoading, setSurferLoading] = useState(false);
+  const [surferUploading, setSurferUploading] = useState(false);
+  const [surferError, setSurferError] = useState("");
   const [proxyServer, setProxyServer] = useState("");
   const [proxyUsername, setProxyUsername] = useState("");
   const [proxyPassword, setProxyPassword] = useState("");
@@ -52,6 +56,8 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setKeywordSettings(getKeywordProviderSettings());
     setKeywordSaved(false);
     setKeywordError("");
+    setSurferError("");
+    setSurferLoading(true);
     setProxyPassword("");
     setProxyPasswordVisible(false);
     setProxyMessage("");
@@ -71,6 +77,10 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
         if (!cancelled) setProxyError(error instanceof Error ? error.message : "Не удалось загрузить настройки прокси.");
       })
       .finally(() => { if (!cancelled) setProxyLoading(false); });
+    void fetchKeywordSurferExtensionInfo()
+      .then((info) => { if (!cancelled) setSurferInfo(info); })
+      .catch((error) => { if (!cancelled) setSurferError(error instanceof Error ? error.message : "Не удалось проверить расширение Keyword Surfer."); })
+      .finally(() => { if (!cancelled) setSurferLoading(false); });
     return () => { cancelled = true; };
   }, [open]);
 
@@ -109,6 +119,34 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setKeywordSaved(false);
     setKeywordError("");
     onSaved();
+  };
+
+  const uploadSurfer = async (file?: File) => {
+    if (!file) return;
+    setSurferUploading(true);
+    setSurferError("");
+    try {
+      setSurferInfo(await uploadKeywordSurferExtension(file));
+      onSaved();
+    } catch (error) {
+      setSurferError(error instanceof Error ? error.message : "Не удалось загрузить ZIP Keyword Surfer.");
+    } finally {
+      setSurferUploading(false);
+    }
+  };
+
+  const removeSurfer = async () => {
+    setSurferUploading(true);
+    setSurferError("");
+    try {
+      await removeKeywordSurferExtension();
+      setSurferInfo({ configured: false });
+      onSaved();
+    } catch (error) {
+      setSurferError(error instanceof Error ? error.message : "Не удалось удалить расширение Keyword Surfer.");
+    } finally {
+      setSurferUploading(false);
+    }
   };
 
   const persistProxy = async () => {
@@ -223,10 +261,17 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
             <label><span>Service account JSON</span><textarea value={keywordSettings.googleAds.serviceAccountJson} onChange={(event) => setKeywordSettings((current) => ({ ...current, googleAds: { ...current.googleAds, serviceAccountJson: event.target.value } }))} placeholder={'{\n  "client_email": "...",\n  "private_key": "..."\n}'} spellCheck={false} /></label>
           </div>
         </div>
-        <div className="setting-block keyword-provider-block compact">
-          <span className="setting-label">Keywords For Free</span>
-          <p>Дополнительная приблизительная оценка объёма. Сервис даёт 10 бесплатных API-запросов после регистрации; один запрос принимает до 30 ключей.</p>
-          <div className="keyword-settings-fields"><label><span>API key</span><input type="password" value={keywordSettings.keywordsForFreeApiKey} onChange={(event) => setKeywordSettings((current) => ({ ...current, keywordsForFreeApiKey: event.target.value }))} placeholder="kff_…" autoComplete="off" spellCheck={false} /></label></div>
+        <div className="setting-block keyword-provider-block surfer-extension-settings">
+          <span className="setting-label">Keyword Surfer для Chromium</span>
+          <p>Загрузите ZIP папки версии расширения. Сервер распакует его в защищённую папку <code>~/.spyservice</code>, поэтому Git-деплой файл не удалит.</p>
+          {surferLoading
+            ? <div className="surfer-extension-state"><LoaderCircle className="spin" size={17} />Проверяем расширение…</div>
+            : <div className={`surfer-extension-state ${surferInfo.configured ? "ready" : "missing"}`}><Puzzle size={18} /><div><strong>{surferInfo.configured ? `Keyword Surfer ${surferInfo.version ?? ""}` : "Расширение не загружено"}</strong><span>{surferInfo.configured ? "Готово к автоматическому сбору через Chromium" : "Нужен ZIP с manifest.json и файлами расширения"}</span></div></div>}
+          <div className="surfer-extension-actions">
+            <label className={`button primary ${surferUploading ? "disabled" : ""}`}><Upload size={15} />{surferUploading ? "Загружаем…" : surferInfo.configured ? "Обновить ZIP" : "Загрузить ZIP"}<input type="file" accept=".zip,application/zip" disabled={surferUploading} onChange={(event) => { void uploadSurfer(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+            <button type="button" className="button danger-outline" disabled={surferUploading || !surferInfo.configured} onClick={() => void removeSurfer()}><Trash2 size={15} />Удалить</button>
+          </div>
+          {surferError && <div className="proxy-settings-error">{surferError}</div>}
         </div>
         {keywordSaved && <div className="api-key-saved"><CheckCircle2 size={16} />Настройки источников сохранены в этом браузере</div>}
         {keywordError && <div className="proxy-settings-error">{keywordError}</div>}
@@ -234,7 +279,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
           <button className="button primary grow" onClick={persistKeywordSettings}>Сохранить источники</button>
           <button className="button danger-outline" onClick={clearKeywordSettings}><Trash2 size={16} />Очистить</button>
         </div>
-        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Реквизиты остаются в браузере</strong><p>Сервер получает их только во время конкретного запроса метрик и не пишет в MySQL или логи. Keyword Surfer подключается отдельно импортом CSV и ключа не требует.</p></div></div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Реквизиты остаются в браузере</strong><p>Google-реквизиты сервер получает только во время конкретного запроса метрик и не пишет в MySQL или логи. Keyword Surfer работает через загруженное расширение Chromium; CSV остаётся резервным способом импорта.</p></div></div>
       </div>}
 
       {activeTab === "proxy" && <div className="api-settings-pane" role="tabpanel">

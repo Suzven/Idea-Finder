@@ -2,6 +2,7 @@ import { createSign } from "node:crypto";
 import type {
   GoogleAdsKeywordCredentials,
   KeywordSurferImportRow,
+  KeywordVolumeLogEntry,
   KeywordVolumeMetric,
   KeywordVolumeRequest,
   KeywordVolumeResponse,
@@ -9,6 +10,7 @@ import type {
   KeywordVolumeSource,
   KeywordVolumeSourceResult,
 } from "../../src/shared/types.js";
+import { collectKeywordSurferRows } from "./keywordSurfer.js";
 
 const GOOGLE_ADS_VERSION = "v25";
 const GOOGLE_ADS_ROOT = `https://googleads.googleapis.com/${GOOGLE_ADS_VERSION}`;
@@ -16,7 +18,6 @@ const GOOGLE_ADS_SCOPE = "https://www.googleapis.com/auth/adwords";
 const sourceLabels: Record<KeywordVolumeSource, string> = {
   google_ads: "Google Keyword Planner",
   keyword_surfer: "Keyword Surfer",
-  keywords_for_free: "Keywords For Free",
 };
 
 interface GoogleServiceAccount {
@@ -34,6 +35,13 @@ interface GoogleAdsMetricResult {
     lowTopOfPageBidMicros?: string | number;
   };
 }
+
+type KeywordVolumeLogger = (
+  stage: string,
+  status: KeywordVolumeLogEntry["status"],
+  message: string,
+  details?: KeywordVolumeLogEntry["details"],
+) => void;
 
 function rowKey(country: string, keyword: string): string {
   return `${country.toUpperCase()}\u0000${keyword.trim().toLocaleLowerCase("en")}`;
@@ -70,10 +78,41 @@ function parseGoogleServiceAccount(raw: string): GoogleServiceAccount {
   };
 }
 
-async function googleServiceAccountToken(raw: string): Promise<string> {
+function googleErrorDetails(response: Response, payload: unknown, raw: string): Record<string, string | number | boolean> {
+  const details: Record<string, string | number | boolean> = {
+    httpStatus: response.status,
+    statusText: response.statusText || "—",
+  };
+  const requestId = response.headers.get("request-id") || response.headers.get("x-goog-request-id");
+  if (requestId) details.requestId = requestId;
+  if (payload && typeof payload === "object") {
+    const googleError = (payload as { error?: { code?: number; status?: string; details?: unknown[] } }).error;
+    if (googleError?.code !== undefined) details.googleCode = googleError.code;
+    if (googleError?.status) details.googleStatus = googleError.status;
+    const detailErrors = googleError?.details?.flatMap((detail) => {
+      if (!detail || typeof detail !== "object") return [];
+      const errors = (detail as { errors?: unknown[] }).errors;
+      return Array.isArray(errors) ? errors : [];
+    }) ?? [];
+    const codes = detailErrors.flatMap((error) => {
+      if (!error || typeof error !== "object") return [];
+      const code = (error as { errorCode?: Record<string, unknown> }).errorCode;
+      return code ? Object.entries(code).map(([key, value]) => `${key}: ${String(value)}`) : [];
+    });
+    if (codes.length) details.googleAdsError = [...new Set(codes)].join(", ");
+  }
+  if (raw) details.responsePreview = raw.replace(/\s+/g, " ").slice(0, 6_000);
+  return details;
+}
+
+async function googleServiceAccountToken(raw: string, log: KeywordVolumeLogger): Promise<string> {
   const account = parseGoogleServiceAccount(raw);
   const issuedAt = Math.floor(Date.now() / 1000);
   const tokenUri = account.token_uri || "https://oauth2.googleapis.com/token";
+  log("credentials", "info", "JSON сервисного аккаунта прочитан.", {
+    serviceAccount: account.client_email,
+    tokenEndpoint: tokenUri,
+  });
   const header = encodeBase64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = encodeBase64Url(JSON.stringify({
     iss: account.client_email,
@@ -87,17 +126,30 @@ async function googleServiceAccountToken(raw: string): Promise<string> {
   signer.update(unsigned);
   signer.end();
   const assertion = `${unsigned}.${signer.sign(account.private_key).toString("base64url")}`;
-  const response = await fetch(tokenUri, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const payload = await response.json() as { access_token?: string; error_description?: string; error?: string };
-  if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || payload.error || `Google OAuth вернул HTTP ${response.status}.`);
+  log("oauth", "started", "Запрашиваем OAuth access token у Google.");
+  try {
+    const response = await fetch(tokenUri, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const rawResponse = await response.text();
+    let payload: { access_token?: string; error_description?: string; error?: string } = {};
+    try { payload = JSON.parse(rawResponse) as typeof payload; } catch { /* diagnostic below */ }
+    if (!response.ok || !payload.access_token) {
+      const message = payload.error_description || payload.error || `Google OAuth вернул HTTP ${response.status}.`;
+      log("oauth", "error", message, googleErrorDetails(response, payload, rawResponse));
+      throw new Error(message);
+    }
+    log("oauth", "success", "OAuth access token получен. Сам токен в лог не записан.", { httpStatus: response.status });
+    return payload.access_token;
+  } catch (error) {
+    if (error instanceof Error && !/Google OAuth/.test(error.message)) {
+      log("oauth", "error", error.message, { errorType: error.name });
+    }
+    throw error;
   }
-  return payload.access_token;
 }
 
 function googleHeaders(credentials: GoogleAdsKeywordCredentials, accessToken: string): Record<string, string> {
@@ -109,26 +161,49 @@ function googleHeaders(credentials: GoogleAdsKeywordCredentials, accessToken: st
   };
 }
 
-async function googleRequest<T>(url: string, body: unknown, headers: Record<string, string>): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(45_000),
-  });
-  const raw = await response.text();
-  let payload: unknown;
-  try { payload = JSON.parse(raw); } catch { payload = null; }
-  if (!response.ok) {
-    const message = payload && typeof payload === "object"
-      ? String(((payload as { error?: { message?: string } }).error?.message) ?? "")
-      : "";
-    throw new Error(message || `Google Ads API вернул HTTP ${response.status}.`);
+async function googleRequest<T>(
+  url: string,
+  body: unknown,
+  headers: Record<string, string>,
+  log: KeywordVolumeLogger,
+  stage: string,
+  message: string,
+  context: KeywordVolumeLogEntry["details"],
+): Promise<T> {
+  log(stage, "started", message, { endpoint: new URL(url).pathname, ...context });
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const raw = await response.text();
+    let payload: unknown;
+    try { payload = JSON.parse(raw); } catch { payload = null; }
+    if (!response.ok) {
+      const googleMessage = payload && typeof payload === "object"
+        ? String(((payload as { error?: { message?: string } }).error?.message) ?? "")
+        : "";
+      const errorMessage = googleMessage || `Google Ads API вернул HTTP ${response.status}.`;
+      log(stage, "error", errorMessage, { ...context, ...googleErrorDetails(response, payload, raw) });
+      throw new Error(errorMessage);
+    }
+    log(stage, "success", "Google Ads API ответил успешно.", {
+      ...context,
+      httpStatus: response.status,
+      requestId: response.headers.get("request-id") || response.headers.get("x-goog-request-id") || "—",
+    });
+    return payload as T;
+  } catch (error) {
+    if (error instanceof Error && !/Google Ads API|permission|developer token/i.test(error.message)) {
+      log(stage, "error", error.message, { ...context, errorType: error.name });
+    }
+    throw error;
   }
-  return payload as T;
 }
 
-async function googleCountryResource(country: string, headers: Record<string, string>): Promise<string> {
+async function googleCountryResource(country: string, headers: Record<string, string>, log: KeywordVolumeLogger): Promise<string> {
   const englishName = new Intl.DisplayNames(["en"], { type: "region" }).of(country) ?? country;
   const response = await googleRequest<{
     geoTargetConstantSuggestions?: Array<{ geoTargetConstant?: { resourceName?: string; countryCode?: string; targetType?: string } }>;
@@ -136,7 +211,7 @@ async function googleCountryResource(country: string, headers: Record<string, st
     locale: "en",
     countryCode: country,
     locationNames: { names: [englishName] },
-  }, headers);
+  }, headers, log, `geo_${country}`, `Определяем геотаргет для ${country}.`, { country, countryName: englishName });
   const exact = response.geoTargetConstantSuggestions?.find((item) =>
     item.geoTargetConstant?.countryCode === country && item.geoTargetConstant?.targetType === "Country");
   if (!exact?.geoTargetConstant?.resourceName) throw new Error(`Google Ads не нашёл geo target для ${country}.`);
@@ -147,13 +222,21 @@ async function collectGoogleAds(
   keywords: string[],
   countries: string[],
   credentials: GoogleAdsKeywordCredentials,
+  log: KeywordVolumeLogger,
 ): Promise<Map<string, KeywordVolumeMetric>> {
-  const accessToken = await googleServiceAccountToken(credentials.serviceAccountJson);
+  log("configuration", "info", "Проверяем связку аккаунтов Google Ads.", {
+    apiVersion: GOOGLE_ADS_VERSION,
+    customerId: credentials.customerId,
+    managerId: credentials.loginCustomerId || "не указан",
+    keywordCount: keywords.length,
+    countryCount: countries.length,
+  });
+  const accessToken = await googleServiceAccountToken(credentials.serviceAccountJson, log);
   const headers = googleHeaders(credentials, accessToken);
   const customerId = credentials.customerId.replace(/\D/g, "");
   const metrics = new Map<string, KeywordVolumeMetric>();
   for (const country of countries) {
-    const geoTarget = await googleCountryResource(country, headers);
+    const geoTarget = await googleCountryResource(country, headers, log);
     const payload = await googleRequest<{ results?: GoogleAdsMetricResult[] }>(
       `${GOOGLE_ADS_ROOT}/customers/${customerId}:generateKeywordHistoricalMetrics`,
       {
@@ -163,7 +246,15 @@ async function collectGoogleAds(
         language: "languageConstants/1000",
       },
       headers,
+      log,
+      `metrics_${country}`,
+      `Запрашиваем исторические метрики для ${country}.`,
+      { country, customerId, managerId: credentials.loginCustomerId || "не указан", keywordCount: keywords.length },
     );
+    log(`metrics_${country}`, "info", `Google вернул ${payload.results?.length ?? 0} строк метрик для ${country}.`, {
+      country,
+      resultCount: payload.results?.length ?? 0,
+    });
     for (const result of payload.results ?? []) {
       const volume = Number(result.keywordMetrics?.avgMonthlySearches);
       const cpcMicros = Number(result.keywordMetrics?.lowTopOfPageBidMicros);
@@ -183,49 +274,6 @@ async function collectGoogleAds(
     }
   }
   return metrics;
-}
-
-function keywordRecords(payload: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(payload)) return payload.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
-  if (!payload || typeof payload !== "object") return [];
-  const record = payload as Record<string, unknown>;
-  for (const value of [record.keywords, record.results, record.data, (record.data as Record<string, unknown> | undefined)?.keywords]) {
-    if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
-  }
-  return [];
-}
-
-async function collectKeywordsForFree(keywords: string[], countries: string[], apiKey: string): Promise<Map<string, KeywordVolumeMetric>> {
-  const all = new Map<string, KeywordVolumeMetric>();
-  for (const country of countries) {
-    const response = await fetch("https://keywordsforfree.com/api/v1/research", {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ keywords, region: `${country.toLowerCase()}-en` }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    const raw = await response.text();
-    let payload: unknown;
-    try { payload = JSON.parse(raw); } catch { payload = null; }
-    if (!response.ok) {
-      const error = payload && typeof payload === "object" ? String((payload as Record<string, unknown>).message ?? (payload as Record<string, unknown>).error ?? "") : "";
-      throw new Error(error || `Keywords For Free вернул HTTP ${response.status}.`);
-    }
-    for (const item of keywordRecords(payload)) {
-      const keyword = String(item.keyword ?? item.phrase ?? item.text ?? "").trim();
-      const volume = Number(item.volume ?? item.search_volume ?? item.searchVolume ?? item.monthly_searches);
-      if (!keyword) continue;
-      all.set(rowKey(country, keyword), Number.isFinite(volume)
-        ? {
-          status: "ok",
-          volume,
-          ...(Number.isFinite(Number(item.cpc)) ? { cpc: Number(item.cpc) } : {}),
-          ...(Number.isFinite(Number(item.competition_index ?? item.competition)) ? { competition: Number(item.competition_index ?? item.competition) } : {}),
-        }
-        : { status: "no_data", message: "Сервис не вернул оценку объёма." });
-    }
-  }
-  return all;
 }
 
 function collectSurfer(rows: KeywordSurferImportRow[]): Map<string, KeywordVolumeMetric> {
@@ -250,8 +298,14 @@ function applyMetrics(rows: KeywordVolumeRow[], source: KeywordVolumeSource, met
   return received;
 }
 
-function sourceResult(source: KeywordVolumeSource, status: KeywordVolumeSourceResult["status"], message: string, received = 0): KeywordVolumeSourceResult {
-  return { source, status, message, received };
+function sourceResult(
+  source: KeywordVolumeSource,
+  status: KeywordVolumeSourceResult["status"],
+  message: string,
+  received = 0,
+  logs: KeywordVolumeLogEntry[] = [],
+): KeywordVolumeSourceResult {
+  return { source, status, message, received, ...(logs.length ? { logs } : {}) };
 }
 
 export async function collectKeywordVolume(request: KeywordVolumeRequest): Promise<KeywordVolumeResponse> {
@@ -264,33 +318,48 @@ export async function collectKeywordVolume(request: KeywordVolumeRequest): Promi
   const sourceResults: KeywordVolumeSourceResult[] = [];
 
   for (const source of request.sources) {
+    const startedAt = Date.now();
+    const logs: KeywordVolumeLogEntry[] = [];
+    const log: KeywordVolumeLogger = (stage, status, message, details) => logs.push({
+      at: new Date().toISOString(),
+      stage,
+      status,
+      message,
+      elapsedMs: Date.now() - startedAt,
+      ...(details ? { details } : {}),
+    });
     try {
       if (source === "google_ads") {
         const credentials = request.credentials?.googleAds;
         if (!credentials?.developerToken || !credentials.customerId || !credentials.serviceAccountJson) {
-          sourceResults.push(sourceResult(source, "not_configured", "Добавьте реквизиты Google Ads API в Настройках."));
+          log("configuration", "error", "Не заполнены обязательные реквизиты Google Ads API.");
+          sourceResults.push(sourceResult(source, "not_configured", "Добавьте реквизиты Google Ads API в Настройках.", 0, logs));
           continue;
         }
-        const received = applyMetrics(rows, source, await collectGoogleAds(request.keywords, request.countries, credentials));
-        sourceResults.push(sourceResult(source, received === rows.length ? "completed" : "partial", `Получено ${received} из ${rows.length} значений.`, received));
-      } else if (source === "keywords_for_free") {
-        const apiKey = request.credentials?.keywordsForFreeApiKey;
-        if (!apiKey) {
-          sourceResults.push(sourceResult(source, "not_configured", "Добавьте бесплатный API key Keywords For Free в Настройках."));
-          continue;
-        }
-        const received = applyMetrics(rows, source, await collectKeywordsForFree(request.keywords, request.countries, apiKey));
-        sourceResults.push(sourceResult(source, received === rows.length ? "completed" : "partial", `Получено ${received} из ${rows.length} значений.`, received));
+        const received = applyMetrics(rows, source, await collectGoogleAds(request.keywords, request.countries, credentials, log));
+        log("complete", "success", `Сбор Google завершён: получено ${received} из ${rows.length} значений.`);
+        sourceResults.push(sourceResult(source, received === rows.length ? "completed" : "partial", `Получено ${received} из ${rows.length} значений.`, received, logs));
       } else {
-        const received = applyMetrics(rows, source, collectSurfer(request.surferRows ?? []));
+        const importedRows = request.surferRows?.length
+          ? request.surferRows
+          : await collectKeywordSurferRows(request.keywords, request.countries, log);
+        const received = applyMetrics(rows, source, collectSurfer(importedRows));
+        const mode = request.surferRows?.length ? "CSV" : "Chromium";
+        log("surfer_complete", received ? "success" : "info", `${mode}: получено ${received} из ${rows.length} значений.`);
         sourceResults.push(sourceResult(source, received === rows.length ? "completed" : "partial", received
-          ? `Из CSV получено ${received} из ${rows.length} значений.`
-          : "Импортируйте CSV из Keyword Surfer хотя бы для одной страны.", received));
+          ? `${mode}: получено ${received} из ${rows.length} значений.`
+          : "Keyword Surfer не вернул данные. Проверьте лог источника ниже.", received, logs));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : `${sourceLabels[source]} завершился ошибкой.`;
+      if (!logs.some((entry) => entry.status === "error" && entry.message === message)) {
+        log("failed", "error", message, { errorType: error instanceof Error ? error.name : "UnknownError" });
+      }
+      if (source === "google_ads" && /permission|PERMISSION_DENIED|USER_PERMISSION_DENIED/i.test(message)) {
+        log("permission_hint", "info", "Проверьте: service account добавлен пользователем в Google Ads, Customer ID принадлежит рекламному аккаунту, а Manager ID — управляющему аккаунту с developer token.");
+      }
       for (const row of rows) row.metrics[source] = { status: "error", message };
-      sourceResults.push(sourceResult(source, "error", message));
+      sourceResults.push(sourceResult(source, "error", message, 0, logs));
     }
   }
 

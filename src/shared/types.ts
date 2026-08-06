@@ -275,7 +275,7 @@ export interface ReviewSearchJobResponse {
   error?: AIAnalysisJobError;
 }
 
-export type KeywordVolumeSource = "google_ads" | "keyword_surfer" | "keywords_for_free";
+export type KeywordVolumeSource = "google_ads" | "keyword_surfer";
 export type KeywordVolumeMetricStatus = "ok" | "no_data" | "error";
 export type KeywordVolumeSourceStatus = "completed" | "partial" | "not_configured" | "error";
 
@@ -288,7 +288,6 @@ export interface GoogleAdsKeywordCredentials {
 
 export interface KeywordVolumeCredentials {
   googleAds?: GoogleAdsKeywordCredentials;
-  keywordsForFreeApiKey?: string;
 }
 
 export interface KeywordSurferImportRow {
@@ -296,6 +295,13 @@ export interface KeywordSurferImportRow {
   keyword: string;
   volume: number;
   cpc?: number;
+}
+
+export interface KeywordSurferExtensionInfo {
+  configured: boolean;
+  name?: string;
+  version?: string;
+  updatedAt?: string;
 }
 
 export interface KeywordVolumeRequest {
@@ -327,6 +333,16 @@ export interface KeywordVolumeSourceResult {
   status: KeywordVolumeSourceStatus;
   message: string;
   received: number;
+  logs?: KeywordVolumeLogEntry[];
+}
+
+export interface KeywordVolumeLogEntry {
+  at: string;
+  stage: string;
+  status: "info" | "started" | "success" | "error";
+  message: string;
+  elapsedMs: number;
+  details?: Record<string, string | number | boolean>;
 }
 
 export interface KeywordVolumeResponse {

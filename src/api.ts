@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordVolumeRequest, KeywordVolumeResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, CreativeCollection, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -233,6 +233,22 @@ export async function collectKeywordVolumes(payload: KeywordVolumeRequest): Prom
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function fetchKeywordSurferExtensionInfo(): Promise<KeywordSurferExtensionInfo> {
+  return request<KeywordSurferExtensionInfo>("/api/settings/keyword-surfer-extension", { cache: "no-store" });
+}
+
+export async function uploadKeywordSurferExtension(file: File): Promise<KeywordSurferExtensionInfo> {
+  return request<KeywordSurferExtensionInfo>("/api/settings/keyword-surfer-extension", {
+    method: "POST",
+    headers: { "Content-Type": "application/zip" },
+    body: file,
+  });
+}
+
+export async function removeKeywordSurferExtension(): Promise<void> {
+  await request("/api/settings/keyword-surfer-extension", { method: "DELETE" });
 }
 
 export async function fetchReviewChallengeFrame(challengeId: string): Promise<Blob> {

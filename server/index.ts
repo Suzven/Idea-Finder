@@ -14,6 +14,7 @@ import { addFavorite, clearIntegrationLogs, closeDatabase, createCollection, del
 import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
+import { deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
@@ -280,7 +281,7 @@ const reviewSearchSchema = z.object({
 const keywordVolumeSchema = z.object({
   keywords: z.array(z.string().trim().min(1).max(120).refine((value) => !/[;\u0000-\u001f]/.test(value), "Ключ содержит недопустимый символ.")).min(1).max(30),
   countries: z.array(z.string().regex(/^[A-Z]{2}$/)).min(1).max(20),
-  sources: z.array(z.enum(["google_ads", "keyword_surfer", "keywords_for_free"])).min(1).max(3),
+  sources: z.array(z.enum(["google_ads", "keyword_surfer"])).min(1).max(2),
   credentials: z.object({
     googleAds: z.object({
       developerToken: z.string().trim().min(1).max(200),
@@ -288,7 +289,6 @@ const keywordVolumeSchema = z.object({
       loginCustomerId: z.string().regex(/^\d{10}$/).optional(),
       serviceAccountJson: z.string().min(10).max(20_000),
     }).optional(),
-    keywordsForFreeApiKey: z.string().trim().min(1).max(500).optional(),
   }).optional(),
   surferRows: z.array(z.object({
     country: z.string().regex(/^[A-Z]{2}$/),
@@ -627,6 +627,36 @@ app.post("/api/keyword-volume", async (request, response, next) => {
       ...(parsed.credentials ? { credentials: parsed.credentials } : {}),
       ...(parsed.surferRows ? { surferRows: parsed.surferRows } : {}),
     }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/settings/keyword-surfer-extension", async (_request, response, next) => {
+  try {
+    response.json(await getKeywordSurferExtensionInfo());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post(
+  "/api/settings/keyword-surfer-extension",
+  express.raw({ type: ["application/zip", "application/octet-stream"], limit: "80mb" }),
+  async (request, response, next) => {
+    try {
+      if (!Buffer.isBuffer(request.body)) throw new AppError(400, "KEYWORD_SURFER_ZIP_REQUIRED", "Выберите ZIP расширения Keyword Surfer.");
+      response.status(201).json(await installKeywordSurferExtension(request.body));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.delete("/api/settings/keyword-surfer-extension", async (_request, response, next) => {
+  try {
+    await deleteKeywordSurferExtension();
+    response.json({ ok: true });
   } catch (error) {
     next(error);
   }

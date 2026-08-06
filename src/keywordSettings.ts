@@ -4,7 +4,6 @@ const STORAGE_KEY = "spyservice-keyword-volume-settings";
 
 export interface KeywordProviderSettings {
   googleAds: GoogleAdsKeywordCredentials;
-  keywordsForFreeApiKey: string;
 }
 
 const EMPTY_SETTINGS: KeywordProviderSettings = {
@@ -14,16 +13,16 @@ const EMPTY_SETTINGS: KeywordProviderSettings = {
     loginCustomerId: "",
     serviceAccountJson: "",
   },
-  keywordsForFreeApiKey: "",
 };
 
 export function getKeywordProviderSettings(): KeywordProviderSettings {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<KeywordProviderSettings>;
-    return {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<KeywordProviderSettings> & { keywordsForFreeApiKey?: unknown };
+    const settings = {
       googleAds: { ...EMPTY_SETTINGS.googleAds, ...(parsed.googleAds ?? {}) },
-      keywordsForFreeApiKey: parsed.keywordsForFreeApiKey?.trim() ?? "",
     };
+    if ("keywordsForFreeApiKey" in parsed) localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    return settings;
   } catch {
     return structuredClone(EMPTY_SETTINGS);
   }
@@ -37,7 +36,6 @@ export function saveKeywordProviderSettings(settings: KeywordProviderSettings): 
       loginCustomerId: settings.googleAds.loginCustomerId?.replace(/\D/g, "") ?? "",
       serviceAccountJson: settings.googleAds.serviceAccountJson.trim(),
     },
-    keywordsForFreeApiKey: settings.keywordsForFreeApiKey.trim(),
   }));
 }
 
@@ -48,8 +46,4 @@ export function clearKeywordProviderSettings(): void {
 export function hasGoogleAdsKeywordSettings(): boolean {
   const settings = getKeywordProviderSettings().googleAds;
   return Boolean(settings.developerToken && settings.customerId && settings.serviceAccountJson);
-}
-
-export function hasKeywordsForFreeSettings(): boolean {
-  return Boolean(getKeywordProviderSettings().keywordsForFreeApiKey);
 }
