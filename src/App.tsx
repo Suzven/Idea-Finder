@@ -184,7 +184,7 @@ function WorkspaceApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     <div className="app-shell">
       <div className={`mobile-sidebar-backdrop ${mobileNavOpen ? "show" : ""}`} onClick={() => setMobileNavOpen(false)} />
       <div className={`sidebar-wrap ${mobileNavOpen ? "open" : ""}`}>
-        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={changeSavedOnly} onOpenSettings={() => { setApiSettingsOpen(true); setMobileNavOpen(false); }} />
+        <Sidebar activeView={activeView} onViewChange={(view) => { setActiveView(view); setMobileNavOpen(false); }} source={source} onSourceChange={changeSource} savedOnly={savedOnly} onSavedOnlyChange={changeSavedOnly} onOpenSettings={() => { setApiSettingsOpen(true); setMobileNavOpen(false); }} user={user} onLogout={onLogout} />
       </div>
 
       <main className="main-content">

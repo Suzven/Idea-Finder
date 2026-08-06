@@ -1,5 +1,5 @@
-import { Activity, BarChart3, Bookmark, Radar, Settings2 } from "lucide-react";
-import type { AdSource } from "../shared/types";
+import { Activity, BarChart3, Bookmark, LogOut, Radar, Settings2 } from "lucide-react";
+import type { AdSource, AuthUser } from "../shared/types";
 
 interface SidebarProps {
   activeView: "ads" | "logs" | "analytics";
@@ -9,9 +9,12 @@ interface SidebarProps {
   savedOnly: boolean;
   onSavedOnlyChange: (value: boolean) => void;
   onOpenSettings: () => void;
+  user: AuthUser;
+  onLogout: () => void;
 }
 
-export function Sidebar({ activeView, onViewChange, source, onSourceChange, savedOnly, onSavedOnlyChange, onOpenSettings }: SidebarProps) {
+export function Sidebar({ activeView, onViewChange, source, onSourceChange, savedOnly, onSavedOnlyChange, onOpenSettings, user, onLogout }: SidebarProps) {
+  const initials = user.displayName.split(/\s+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || user.username.slice(0, 2).toUpperCase();
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -48,9 +51,10 @@ export function Sidebar({ activeView, onViewChange, source, onSourceChange, save
 
       <div className="sidebar-footer">
         <button className="nav-item" onClick={onOpenSettings}><Settings2 size={18} /><span>Настройки</span></button>
-        <div className="profile-row">
-          <span className="profile-avatar">OS</span>
-          <span><strong>Workspace</strong><small>Private account</small></span>
+        <div className="profile-row" title={`Вы вошли как ${user.username}`}>
+          <span className="profile-avatar">{initials}</span>
+          <span><strong>{user.displayName}</strong><small>@{user.username} · {user.role}</small></span>
+          <button type="button" onClick={onLogout} aria-label="Выйти из аккаунта" title="Выйти"><LogOut size={17} /></button>
         </div>
       </div>
     </aside>
