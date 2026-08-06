@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildCapterraCandidates, buildSoftwareAdviceCandidates, buildTrustpilotCandidates, normalizeCompanyQuery } from "../server/services/reviewAnalysis";
+import {
+  buildCapterraCandidates,
+  buildSoftwareAdviceCandidates,
+  buildTrustpilotCandidates,
+  isSoftwareAdviceProfileUrl,
+  normalizeCompanyQuery,
+  scoreSoftwareAdviceResult,
+} from "../server/services/reviewAnalysis";
 
 describe("review analysis URL adapters", () => {
   it("normalizes a company URL into domain and product slug", () => {
@@ -25,5 +32,16 @@ describe("review analysis URL adapters", () => {
 
   it("opens Software Advice search because profile URLs use internal product identifiers", () => {
     expect(buildSoftwareAdviceCandidates()).toEqual(["https://www.softwareadvice.com/"]);
+  });
+
+  it("selects the exact Software Advice product suggestion", () => {
+    expect(scoreSoftwareAdviceResult("AppsFlyer", "appsflyer")).toBe(100);
+    expect(scoreSoftwareAdviceResult("eFlyerMaker", "appsflyer")).toBeLessThan(100);
+  });
+
+  it("accepts product profiles but rejects the Software Advice home page", () => {
+    expect(isSoftwareAdviceProfileUrl("https://www.softwareadvice.com/mobile-marketing/appsflyer-profile/")).toBe(true);
+    expect(isSoftwareAdviceProfileUrl("https://www.softwareadvice.com/product/548339-Perso-AI/")).toBe(true);
+    expect(isSoftwareAdviceProfileUrl("https://www.softwareadvice.com/#reviews")).toBe(false);
   });
 });

@@ -67,6 +67,31 @@ export function buildSoftwareAdviceCandidates(): string[] {
   return ["https://www.softwareadvice.com/"];
 }
 
+function normalizeSearchLabel(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+export function scoreSoftwareAdviceResult(label: string, query: string): number {
+  const normalizedLabel = normalizeSearchLabel(label);
+  const normalizedQuery = normalizeSearchLabel(query);
+  if (!normalizedLabel || !normalizedQuery) return 0;
+  if (normalizedLabel === normalizedQuery) return 100;
+  if (normalizedLabel.includes(normalizedQuery) || normalizedQuery.includes(normalizedLabel)) return 80;
+  const queryWords = query.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  return queryWords.filter((word) => normalizedLabel.includes(word)).length * 10;
+}
+
+export function isSoftwareAdviceProfileUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.hostname === "www.softwareadvice.com"
+      && url.pathname !== "/"
+      && (/-profile\/?$/i.test(url.pathname) || /^\/product\/[^/]+\/?$/i.test(url.pathname));
+  } catch {
+    return false;
+  }
+}
+
 function pageUrl(baseUrl: string, pageNumber: number): string {
   if (pageNumber === 1) return baseUrl;
   const url = new URL(baseUrl);
@@ -374,38 +399,39 @@ async function resolveSoftwareAdviceCandidates(page: Page, query: string): Promi
   const input = page.getByRole("textbox", { name: "Search for products or categories" });
   if (!await input.count()) return [];
   await input.fill(searchTerm);
-  await page.waitForTimeout(900);
-  const clicked = await page.evaluate(({ expectedName }) => {
-    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const expectedWords = expectedName.match(/[a-z0-9]+/g) ?? [];
-    const options = Array.from(document.querySelectorAll<HTMLElement>("li > div.cursor-pointer"))
-      .map((element) => {
-        const label = element.querySelector("p")?.textContent?.trim() ?? "";
-        const normalizedLabel = normalize(label);
-        const exact = normalizedLabel === normalize(expectedName);
-        const contains = normalizedLabel.includes(normalize(expectedName)) || normalize(expectedName).includes(normalizedLabel);
-        const overlap = expectedWords.filter((word) => normalizedLabel.includes(word)).length;
-        return { element, score: exact ? 100 : contains ? 80 : overlap * 10 };
-      })
-      .filter((option) => option.score > 0)
-      .sort((left, right) => right.score - left.score);
-    if (!options[0]) return false;
-    options[0].element.click();
-    return true;
-  }, { expectedName: searchTerm });
-  if (!clicked) return [];
+  const options = page.locator("li > div.cursor-pointer");
+  await options.first().waitFor({ state: "visible", timeout: 6_000 }).catch(() => undefined);
+  const optionCount = await options.count();
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (let index = 0; index < optionCount; index += 1) {
+    const option = options.nth(index);
+    if (!await option.isVisible().catch(() => false)) continue;
+    const label = (await option.locator("p").first().textContent().catch(() => ""))?.trim() ?? "";
+    const score = scoreSoftwareAdviceResult(label, searchTerm);
+    if (score > bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  }
+  if (bestIndex < 0) return [];
+
+  const selectedOption = options.nth(bestIndex);
+  await selectedOption.scrollIntoViewIfNeeded().catch(() => undefined);
+  await selectedOption.click({ timeout: 8_000 });
+  await page.waitForURL((url) => isSoftwareAdviceProfileUrl(url.toString()), { timeout: 12_000 }).catch(() => undefined);
 
   await waitForNavigationToSettle(page);
   await page.waitForTimeout(500);
+  if (!isSoftwareAdviceProfileUrl(page.url())) return [];
   const profileUrl = new URL(page.url());
-  if (profileUrl.hostname !== "www.softwareadvice.com") return [];
   const basePath = profileUrl.pathname.endsWith("/") ? profileUrl.pathname : `${profileUrl.pathname}/`;
   const reviewsUrl = await page.evaluate(({ expectedPath }) => {
     const link = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
       .find((anchor) => new URL(anchor.href, location.href).pathname === `${expectedPath}reviews/`);
     return link ? new URL(link.href, location.href).toString() : undefined;
   }, { expectedPath: basePath });
-  return [reviewsUrl ?? `${profileUrl.origin}${basePath}#reviews`];
+  return [reviewsUrl ?? `${profileUrl.origin}${basePath}reviews/`];
 }
 
 async function prepareSoftwareAdviceReviews(page: Page): Promise<void> {
@@ -416,7 +442,9 @@ async function prepareSoftwareAdviceReviews(page: Page): Promise<void> {
     const controls = await cards.nth(index).getByText("Read More", { exact: true }).all();
     for (const control of controls) {
       if (await control.isVisible().catch(() => false)) {
-        await control.dispatchEvent("click").catch(() => undefined);
+        await control.click({ timeout: 3_000 })
+          .catch(() => control.dispatchEvent("click"))
+          .catch(() => undefined);
         expanded += 1;
       }
     }
