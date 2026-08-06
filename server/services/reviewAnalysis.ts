@@ -22,7 +22,7 @@ interface ReviewAdapter {
   extract(page: Page, pageNumber: number): Promise<{ companyName?: string; reviews: UserReview[] }>;
 }
 
-const MAX_PAGES = 2;
+const MAX_PAGES = 6;
 const NAVIGATION_TIMEOUT_MS = 35_000;
 const CHALLENGE_WAIT_MS = 45_000;
 
@@ -782,7 +782,9 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
             if (nextState.blocked || nextBlockedByStatus || nextResponse?.status() === 404 || nextState.notFound) {
               currentAttempt.message = nextBlockedByStatus
                 ? `Источник вернул HTTP ${nextResponse?.status()} для IP сервера.`
-                : nextState.blocked ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.` : "Вторая страница не найдена.";
+                : nextState.blocked
+                  ? `JS-проверка не завершилась за ${Math.round(CHALLENGE_WAIT_MS / 1_000)} секунд.`
+                  : `Страница ${currentPage} не найдена.`;
               record(currentAttempt);
               break;
             }
@@ -790,14 +792,24 @@ async function scrapeSource(adapter: ReviewAdapter, query: string, proxySettings
           const extractionStartedAt = Date.now();
           await adapter.prepare?.(page);
           const extracted = await adapter.extract(page, currentPage);
+          const knownReviewIds = new Set(allReviews.map((review) => review.id));
+          const newReviews = extracted.reviews.filter((review) => {
+            if (knownReviewIds.has(review.id)) return false;
+            knownReviewIds.add(review.id);
+            return true;
+          });
           companyName ||= extracted.companyName;
-          allReviews.push(...extracted.reviews);
-          currentAttempt.reviewsFound = extracted.reviews.length;
-          currentAttempt.outcome = extracted.reviews.length ? "found" : "empty";
+          allReviews.push(...newReviews);
+          currentAttempt.reviewsFound = newReviews.length;
+          currentAttempt.outcome = newReviews.length ? "found" : "empty";
           currentAttempt.durationMs += Date.now() - extractionStartedAt;
-          if (!extracted.reviews.length) currentAttempt.message = "Страница открылась, но подходящие карточки отзывов в DOM не найдены.";
+          if (!extracted.reviews.length) {
+            currentAttempt.message = "Страница открылась, но подходящие карточки отзывов в DOM не найдены.";
+          } else if (!newReviews.length) {
+            currentAttempt.message = "Страница повторяет уже собранные отзывы — дальнейший обход остановлен.";
+          }
           record(currentAttempt);
-          if (!extracted.reviews.length) break;
+          if (!newReviews.length) break;
         }
         const reviews = deduplicateReviews(allReviews);
         if (!reviews.length) {

@@ -44,10 +44,11 @@ const attemptLabels = {
 } as const;
 
 function SourceResult({ result }: { result: ReviewSourceResult }) {
+  const collectedPages = result.reviews.reduce((maximum, review) => Math.max(maximum, review.page), 0);
   return <section className="review-source-result">
     <header>
       <div><span className={`review-source-logo ${result.source}`}>{result.source === "trustpilot" ? "★" : "C"}</span><div><h2>{result.label}</h2><p>{result.companyName || result.query}</p></div></div>
-      <div className="review-source-count"><strong>{result.reviews.length}</strong><span>отзывов с 2 страниц</span></div>
+      <div className="review-source-count"><strong>{result.reviews.length}</strong><span>{collectedPages ? `страниц собрано: ${collectedPages}` : "до 6 страниц"}</span></div>
       {result.profileUrl && <a href={result.profileUrl} target="_blank" rel="noreferrer">Открыть профиль <ExternalLink size={14} /></a>}
     </header>
     {result.status === "found"
@@ -129,7 +130,7 @@ export function ReviewAnalysisPanel() {
 
   return <div className="review-analysis-panel" id="review-analysis-print">
     <section className="review-search-card">
-      <header><span><MessageSquareQuote size={22} /></span><div><h2>Анализ отзывов пользователей</h2><p>Chromium проверит варианты названия и домена, затем соберёт отзывы с первой и второй страницы выбранных сервисов.</p></div></header>
+      <header><span><MessageSquareQuote size={22} /></span><div><h2>Анализ отзывов пользователей</h2><p>Chromium проверит варианты названия и домена, затем последовательно соберёт до шести доступных страниц каждого сервиса.</p></div></header>
       <div className="review-source-picker">
         <span>Источники отзывов</span>
         <div>{sourceOptions.map((source) => {
@@ -146,7 +147,7 @@ export function ReviewAnalysisPanel() {
       <footer><ShieldCheck size={15} /><span>Trustpilot проверяет варианты домена, а Capterra сначала ищет точный профиль компании во внутреннем поиске. Антибот-защита отображается отдельно от результата «не найдено».</span></footer>
     </section>
 
-    {loading && <section className="review-progress"><LoaderCircle className="spin" size={28} /><div><strong>Chromium собирает отзывы</strong><p>Открываем Trustpilot и Capterra. В Capterra сначала находим точный профиль через поиск, раскрываем полные тексты, затем собираем две страницы отзывов.</p></div></section>}
+    {loading && <section className="review-progress"><LoaderCircle className="spin" size={28} /><div><strong>Chromium собирает отзывы</strong><p>Открываем Trustpilot и Capterra. Собираем страницы по очереди и останавливаемся, когда новые отзывы заканчиваются, но не позднее шестой страницы.</p></div></section>}
     {error && <div className="review-global-error"><AlertTriangle size={20} /><div><strong>Сбор отзывов не завершён</strong><p>{error}</p></div><button className="button ghost" onClick={() => void submit()}>Повторить</button></div>}
 
     {result && <>
