@@ -18,7 +18,6 @@ import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
 import { fetchThreadsConversation, initializeThreadsSession, searchThreadsPosts } from "./services/threadsOverview.js";
 import type { ThreadsBrowserSession } from "./services/threadsOverview.js";
-import { cancelThreadsDebugSession, captureThreadsDebugFrame } from "./services/threadsDebugSession.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
@@ -377,10 +376,10 @@ const threadsSearchSchema = z.object({
   searchType: z.enum(["TOP", "RECENT"]).default("TOP"),
   searchMode: z.enum(["KEYWORD", "TAG"]).default("KEYWORD"),
   limit: z.coerce.number().int().min(1).max(50).default(25),
+  maxPages: z.coerce.number().int().min(1).max(50).default(10),
   since: z.string().datetime().optional(),
   until: z.string().datetime().optional(),
   after: z.string().trim().max(2_000).optional(),
-  debugSessionId: z.string().uuid().optional(),
 });
 
 const threadsPostSchema = z.object({
@@ -433,32 +432,7 @@ app.post("/api/threads/search", async (request, response, next) => {
     const parsed = threadsSearchSchema.parse(request.body);
     const user = getAuthenticatedUser(request);
     const session = await threadsBrowserSession(user.id);
-    response.json(await searchThreadsPosts(parsed, session, userDataScope(user.id)));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/threads/debug/:debugSessionId/frame", async (request, response, next) => {
-  try {
-    const debugSessionId = z.string().uuid().parse(request.params.debugSessionId);
-    const frame = await captureThreadsDebugFrame(debugSessionId, getClientId(request));
-    response.set({
-      "Cache-Control": "no-store, max-age=0",
-      "Content-Type": "image/jpeg",
-      "Content-Length": String(frame.byteLength),
-    });
-    response.send(frame);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.delete("/api/threads/debug/:debugSessionId", async (request, response, next) => {
-  try {
-    const debugSessionId = z.string().uuid().parse(request.params.debugSessionId);
-    await cancelThreadsDebugSession(debugSessionId, getClientId(request));
-    response.status(204).end();
+    response.json(await searchThreadsPosts(parsed, session));
   } catch (error) {
     next(error);
   }

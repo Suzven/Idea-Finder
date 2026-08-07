@@ -9,7 +9,6 @@ import type {
   ThreadsSearchResponse,
 } from "../../src/shared/types.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
-import { registerThreadsDebugSession } from "./threadsDebugSession.js";
 
 const THREADS_WEB_ORIGIN = "https://www.threads.com";
 const SEARCH_TIMEOUT_MS = 30_000;
@@ -389,7 +388,7 @@ async function scrollThreadsFeedToEnd(page: Page): Promise<void> {
 interface FeedLoadResult {
   loaded: boolean;
   timedOut: boolean;
-  diagnostic: Omit<ThreadsFeedLoadDiagnostic, "newUniquePosts" | "collectedTotal" | "screenshotDataUrl"> & { screenshotDataUrl?: string };
+  diagnostic: Omit<ThreadsFeedLoadDiagnostic, "newUniquePosts" | "collectedTotal">;
 }
 
 async function loadNextFeedPage(
@@ -483,8 +482,6 @@ async function loadNextFeedPage(
     : contentChanged
       ? "Контент менялся, но лента не успела стабилизироваться за 40 секунд."
       : "За 40 секунд Threads не завершил подгрузку и не показал новый контент.");
-  const screenshot = await page.screenshot({ type: "jpeg", quality: 68, fullPage: false }).catch(() => undefined);
-  if (screenshot) timedOut.diagnostic.screenshotDataUrl = `data:image/jpeg;base64,${screenshot.toString("base64")}`;
   return timedOut;
 }
 
@@ -542,11 +539,8 @@ function withinDateRange(post: ThreadsPost, since?: string, until?: string): boo
   return true;
 }
 
-export async function searchThreadsPosts(request: ThreadsSearchRequest, session?: ThreadsBrowserSession, debugOwnerId?: string): Promise<ThreadsSearchResponse> {
+export async function searchThreadsPosts(request: ThreadsSearchRequest, session?: ThreadsBrowserSession): Promise<ThreadsSearchResponse> {
   return withThreadsPage(async (page) => {
-    const debugSession = request.debugSessionId && debugOwnerId
-      ? registerThreadsDebugSession(request.debugSessionId, debugOwnerId, page)
-      : undefined;
     try {
       const url = buildSearchUrl(request);
       await gotoThreadsPage(page, url);
@@ -565,7 +559,8 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
           diagnostics: { url, pagePreview: pageText },
         };
       }
-      const collected = await collectCards(page, Number.MAX_SAFE_INTEGER, false, MAX_SEARCH_FEED_LOADS, false);
+      const maxPages = Math.max(1, Math.min(50, Math.floor(request.maxPages || MAX_SEARCH_FEED_LOADS)));
+      const collected = await collectCards(page, Number.MAX_SAFE_INTEGER, false, maxPages, false);
       const allPosts = collected.posts
         .filter((post) => withinDateRange(post, request.since, request.until));
       if (request.searchType === "RECENT") {
@@ -575,7 +570,7 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
         ? "Данные собраны через авторизованную сессию Threads в Chromium."
         : "Данные собраны из публичной веб-выдачи Threads через Chromium."];
       if (request.since || request.until) warnings.push("Диапазон дат применён локально к датам найденных постов.");
-      if (collected.loadTimedOut) warnings.push("Одна из подгрузок Threads не завершилась за 40 секунд; сохранены все посты, успевшие появиться в ленте. Последний экран Chromium приложен к диагностическому логу.");
+      if (collected.loadTimedOut) warnings.push("Одна из подгрузок Threads не завершилась за 40 секунд; сохранены все посты, успевшие появиться в ленте. Подробности находятся в диагностическом DOM-логе.");
       if (!session && allPosts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
       return {
         source: "web",
@@ -593,12 +588,7 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
         },
       };
     } catch (error) {
-      if (debugSession?.isCancelled()) {
-        throw new AppError(409, "THREADS_DEBUG_CANCELLED", "Диагностическая сессия Threads остановлена пользователем.");
-      }
       throw threadsWebError(error);
-    } finally {
-      debugSession?.close();
     }
   }, session);
 }

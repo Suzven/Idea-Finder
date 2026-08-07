@@ -137,19 +137,6 @@ export async function searchThreadsPosts(payload: ThreadsSearchRequest): Promise
   });
 }
 
-export async function fetchThreadsDebugFrame(debugSessionId: string): Promise<Blob> {
-  const response = await fetch(`/api/threads/debug/${encodeURIComponent(debugSessionId)}/frame`, { cache: "no-store" });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as ApiErrorPayload;
-    throw new ApiRequestError(payload.error || "Живой кадр Chromium пока недоступен.", response.status, payload.code, payload.action, payload.traceId, payload.details);
-  }
-  return response.blob();
-}
-
-export async function cancelThreadsDebugSession(debugSessionId: string): Promise<void> {
-  await request(`/api/threads/debug/${encodeURIComponent(debugSessionId)}`, { method: "DELETE" });
-}
-
 export async function fetchThreadsConversation(post: ThreadsPost): Promise<ThreadsConversationResponse> {
   return request<ThreadsConversationResponse>("/api/threads/conversation", {
     method: "POST",

@@ -1,7 +1,7 @@
-import { AtSign, CalendarDays, Check, CheckCircle2, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Monitor, Search, ShieldAlert, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AtSign, CalendarDays, Check, CheckCircle2, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { ApiRequestError, cancelThreadsDebugSession, fetchThreadsConversation, fetchThreadsDebugFrame, searchThreadsPosts } from "../api";
+import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
 import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchResponse, ThreadsSearchType } from "../shared/types";
 
 interface PreparedThread extends ThreadsConversationResponse {
@@ -9,73 +9,7 @@ interface PreparedThread extends ThreadsConversationResponse {
   action?: string;
 }
 
-function ThreadsLiveBrowserModal({ sessionId, active, onDismiss }: { sessionId: string; active: boolean; onDismiss: () => void }) {
-  const [frameUrl, setFrameUrl] = useState("");
-  const [frameError, setFrameError] = useState("");
-  const activeRef = useRef(active);
-
-  useEffect(() => { activeRef.current = active; }, [active]);
-
-  useEffect(() => {
-    document.body.classList.add("modal-open");
-    return () => document.body.classList.remove("modal-open");
-  }, []);
-
-  useEffect(() => {
-    let stopped = false;
-    let timer = 0;
-    let currentObjectUrl = "";
-    const refresh = async () => {
-      try {
-        const frame = await fetchThreadsDebugFrame(sessionId);
-        if (stopped) return;
-        const nextObjectUrl = URL.createObjectURL(frame);
-        if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-        currentObjectUrl = nextObjectUrl;
-        setFrameUrl(nextObjectUrl);
-        setFrameError("");
-      } catch (error) {
-        if (stopped) return;
-        const apiError = error instanceof ApiRequestError ? error : null;
-        if (activeRef.current && (apiError?.status === 404 || apiError?.status === 409)) {
-          setFrameError("");
-        } else if (!activeRef.current && apiError?.status === 404) {
-          setFrameError("Сбор завершён. Ниже оставлен последний полученный кадр Chromium.");
-          return;
-        } else {
-          setFrameError(error instanceof Error ? error.message : "Не удалось получить кадр Chromium.");
-        }
-      } finally {
-        if (!stopped && activeRef.current) timer = window.setTimeout(() => { void refresh(); }, 850);
-      }
-    };
-    void refresh();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-    };
-  }, [sessionId]);
-
-  const close = async () => {
-    try {
-      await cancelThreadsDebugSession(sessionId);
-    } catch {
-      // Поиск мог завершиться и закрыть вкладку раньше пользователя.
-    } finally {
-      onDismiss();
-    }
-  };
-
-  return <div className="review-challenge-backdrop" role="dialog" aria-modal="true" aria-labelledby="threads-live-title">
-    <section className="review-challenge-modal threads-live-modal">
-      <header><div><span><Monitor size={22} /></span><div><h2 id="threads-live-title">Живой экран Chromium · Threads</h2><p>{active ? "Поиск и прокрутка выполняются на сервере прямо сейчас." : "Поиск завершён — можно изучить последний кадр и закрыть окно."}</p></div></div><button type="button" title="Закрыть диагностическую сессию" onClick={() => void close()}><X size={20} /></button></header>
-      <div className="review-challenge-screen threads-live-screen">{frameUrl ? <img src={frameUrl} alt="Живой экран Threads в серверном Chromium" draggable={false} /> : <div><LoaderCircle className="spin" size={28} /><span>Открываем диагностическую вкладку Chromium…</span></div>}</div>
-      {frameError && <p className="review-challenge-error"><ShieldAlert size={15} />{frameError}</p>}
-      <footer><span>{active ? "Кадр обновляется автоматически. Крестик остановит поиск и закроет серверную вкладку." : "Диагностическая вкладка на сервере уже закрыта."}</span><button className="button danger-outline" type="button" onClick={() => void close()}>{active ? "Остановить и закрыть" : "Закрыть"}</button></footer>
-    </section>
-  </div>;
-}
+const MAX_SELECTED_POSTS = 150;
 
 function formatDate(value: string): string {
   if (!value) return "Дата не указана";
@@ -100,6 +34,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [searchType, setSearchType] = useState<ThreadsSearchType>("TOP");
   const [searchMode, setSearchMode] = useState<ThreadsSearchMode>("KEYWORD");
   const [limit, setLimit] = useState(25);
+  const [maxPages, setMaxPages] = useState(10);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [posts, setPosts] = useState<ThreadsPost[]>([]);
@@ -110,7 +45,6 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [diagnostics, setDiagnostics] = useState<ThreadsSearchResponse["diagnostics"]>();
-  const [debugSessionId, setDebugSessionId] = useState<string>();
   const [accessMode, setAccessMode] = useState<"authenticated" | "public">(authenticated ? "authenticated" : "public");
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
   const [preparing, setPreparing] = useState(false);
@@ -125,8 +59,6 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const runSearch = async () => {
     const cleanQuery = query.trim();
     if (!cleanQuery) return;
-    const currentDebugSessionId = crypto.randomUUID();
-    setDebugSessionId(currentDebugSessionId);
     setLoading(true);
     setError("");
     setErrorAction("");
@@ -142,9 +74,9 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
         searchType,
         searchMode,
         limit,
+        maxPages,
         ...(requestedSince ? { since: requestedSince } : {}),
         ...(requestedUntil ? { until: requestedUntil } : {}),
-        debugSessionId: currentDebugSessionId,
       });
       setAccessMode(result.accessMode);
       setWarnings(result.warnings);
@@ -152,10 +84,8 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
       setPosts(result.posts);
     } catch (searchError) {
       const apiError = searchError instanceof ApiRequestError ? searchError : null;
-      if (apiError?.code !== "THREADS_DEBUG_CANCELLED") {
-        setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Threads.");
-        setErrorAction(apiError?.action ?? "");
-      }
+      setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Threads.");
+      setErrorAction(apiError?.action ?? "");
     } finally {
       setLoading(false);
     }
@@ -172,7 +102,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
 
   const selectAll = () => {
     setPrepared([]);
-    setSelectedIds(new Set(posts.slice(0, 20).map((post) => post.id)));
+    setSelectedIds(new Set(posts.slice(0, MAX_SELECTED_POSTS).map((post) => post.id)));
   };
 
   const prepareReport = async () => {
@@ -219,7 +149,6 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   };
 
   return <div className="threads-overview-panel">
-    {debugSessionId && <ThreadsLiveBrowserModal sessionId={debugSessionId} active={loading} onDismiss={() => setDebugSessionId(undefined)} />}
     <section className="threads-search-card">
       <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><span className="threads-token-state ready"><i />{accessMode === "authenticated" ? "Авторизованный Chromium" : "Публичный веб-поиск"}</span></header>
       <form onSubmit={(event) => { event.preventDefault(); void runSearch(); }}>
@@ -230,6 +159,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
           <label><span>С даты</span><input type="date" value={since} max={until || undefined} onChange={(event) => setSince(event.target.value)} disabled={loading} /></label>
           <label><span>По дату</span><input type="date" value={until} min={since || undefined} onChange={(event) => setUntil(event.target.value)} disabled={loading} /></label>
           <label><span>Показывать за раз</span><select value={limit} onChange={(event) => setLimit(Number(event.target.value))} disabled={loading}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
+          <label><span>Страниц для сбора</span><input type="number" value={maxPages} min={1} max={50} step={1} onChange={(event) => setMaxPages(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} disabled={loading} /></label>
         </div>
       </form>
     </section>
@@ -256,16 +186,15 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
             <div><dt>Спиннер исчез</dt><dd>{entry.loaderFinished ? "да" : "нет"}</dd></div>
             <div><dt>Последний URL сменился</dt><dd>{entry.lastPostChanged ? "да" : "нет"}</dd></div>
           </dl>
-          {entry.screenshotDataUrl && <figure className="threads-debug-screenshot"><figcaption>Последний экран Chromium перед закрытием</figcaption><a href={entry.screenshotDataUrl} target="_blank" rel="noreferrer"><img src={entry.screenshotDataUrl} alt={`Экран Chromium после таймаута прокрутки ${entry.pass}`} /></a></figure>}
         </article>)}</div>
       </div>
     </details>}
 
     {posts.length > 0 && <section className="threads-results">
-      <header><div><h2>Найденные посты</h2><p>{posts.length} результатов · выбрано {selectedIds.size} из 20 доступных для одного PDF</p></div><div><button type="button" className="button ghost" onClick={selectAll}><Check size={16} />Выбрать первые {Math.min(posts.length, 20)}</button><button type="button" className="button ghost" disabled={!selectedIds.size} onClick={() => { setSelectedIds(new Set()); setPrepared([]); }}><X size={16} />Снять выбор</button></div></header>
+      <header><div><h2>Найденные посты</h2><p>{posts.length} результатов · выбрано {selectedIds.size} из {Math.min(posts.length, MAX_SELECTED_POSTS)} доступных для одного PDF</p></div><div><button type="button" className="button ghost" onClick={selectAll}><Check size={16} />Выбрать {posts.length <= MAX_SELECTED_POSTS ? "все" : `первые ${MAX_SELECTED_POSTS}`}</button><button type="button" className="button ghost" disabled={!selectedIds.size} onClick={() => { setSelectedIds(new Set()); setPrepared([]); }}><X size={16} />Снять выбор</button></div></header>
       <div className="threads-post-grid">{posts.slice(0, visibleCount).map((post) => {
         const selected = selectedIds.has(post.id);
-        const selectionDisabled = !selected && selectedIds.size >= 20;
+        const selectionDisabled = !selected && selectedIds.size >= MAX_SELECTED_POSTS;
         return <article key={post.id} className={selected ? "selected" : ""} onClick={() => { if (!selectionDisabled) togglePost(post.id); }}>
           <button type="button" className="threads-post-check" disabled={selectionDisabled} aria-label={selected ? "Снять выбор" : "Выбрать пост"}>{selected ? <Check size={16} /> : null}</button>
           {postAuthor(post)}

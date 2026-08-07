@@ -521,10 +521,10 @@ export interface ThreadsSearchRequest {
   searchType: ThreadsSearchType;
   searchMode: ThreadsSearchMode;
   limit: number;
+  maxPages: number;
   since?: string;
   until?: string;
   after?: string;
-  debugSessionId?: string;
 }
 
 export interface ThreadsFeedLoadDiagnostic {
@@ -545,7 +545,6 @@ export interface ThreadsFeedLoadDiagnostic {
   lastPostChanged: boolean;
   newUniquePosts: number;
   collectedTotal: number;
-  screenshotDataUrl?: string;
 }
 
 export interface ThreadsSearchResponse {
