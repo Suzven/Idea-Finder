@@ -530,6 +530,13 @@ export interface ThreadsSearchResponse {
   posts: ThreadsPost[];
   nextCursor?: string;
   warnings: string[];
+  appliedFilters: {
+    searchType: ThreadsSearchType;
+    searchMode: ThreadsSearchMode;
+    since?: string;
+    until?: string;
+    fallback: boolean;
+  };
 }
 
 export interface ThreadsConversationResponse {

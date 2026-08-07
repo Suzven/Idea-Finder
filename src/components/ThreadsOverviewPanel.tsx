@@ -48,6 +48,7 @@ export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: Threa
   const [error, setError] = useState("");
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [paginationFilters, setPaginationFilters] = useState<{ searchType: ThreadsSearchType; searchMode: ThreadsSearchMode; since?: string; until?: string }>();
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [preparationProgress, setPreparationProgress] = useState(0);
@@ -74,17 +75,28 @@ export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: Threa
       setSelectedIds(new Set());
     }
     try {
+      const requestedSince = since ? new Date(`${since}T00:00:00.000Z`).toISOString() : undefined;
+      const requestedUntil = until ? new Date(`${until}T23:59:59.999Z`).toISOString() : undefined;
+      const effectiveFilters = loadMore && paginationFilters
+        ? paginationFilters
+        : { searchType, searchMode, ...(requestedSince ? { since: requestedSince } : {}), ...(requestedUntil ? { until: requestedUntil } : {}) };
       const result = await searchThreadsPosts({
         query: cleanQuery,
-        searchType,
-        searchMode,
+        searchType: effectiveFilters.searchType,
+        searchMode: effectiveFilters.searchMode,
         limit,
-        ...(since ? { since: new Date(`${since}T00:00:00.000Z`).toISOString() } : {}),
-        ...(until ? { until: new Date(`${until}T23:59:59.999Z`).toISOString() } : {}),
+        ...(effectiveFilters.since ? { since: effectiveFilters.since } : {}),
+        ...(effectiveFilters.until ? { until: effectiveFilters.until } : {}),
         ...(after ? { after } : {}),
       });
       setWarnings(result.warnings);
       setNextCursor(result.nextCursor);
+      setPaginationFilters({
+        searchType: result.appliedFilters.searchType,
+        searchMode: result.appliedFilters.searchMode,
+        ...(result.appliedFilters.since ? { since: result.appliedFilters.since } : {}),
+        ...(result.appliedFilters.until ? { until: result.appliedFilters.until } : {}),
+      });
       setPosts((current) => {
         if (!loadMore) return result.posts;
         const ids = new Set(current.map((post) => post.id));

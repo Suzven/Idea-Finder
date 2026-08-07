@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { consumeThreadsOAuthState, createThreadsAuthorization, requiredThreadsScopes } from "../server/services/threadsOAuth";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertThreadsTokenPermissions, consumeThreadsOAuthState, createThreadsAuthorization, inspectThreadsToken, requiredThreadsScopes } from "../server/services/threadsOAuth";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("Threads OAuth", () => {
   it("requests every permission needed by the Threads overview", () => {
@@ -32,5 +36,33 @@ describe("Threads OAuth", () => {
     );
 
     expect(() => consumeThreadsOAuthState(authorization.state, "user-2")).toThrow(/недействительна/i);
+  });
+
+  it("confirms the scopes Meta actually granted to the token", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: {
+        app_id: "888868750548875",
+        is_valid: true,
+        scopes: requiredThreadsScopes,
+        expires_at: 1_800_000_000,
+      },
+    }), { status: 200 })));
+
+    await expect(inspectThreadsToken("valid-token-for-test", true)).resolves.toMatchObject({
+      valid: true,
+      missingScopes: [],
+      scopes: requiredThreadsScopes,
+    });
+  });
+
+  it("rejects a token when Meta silently omitted keyword search", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: {
+        is_valid: true,
+        scopes: ["threads_basic", "threads_read_replies"],
+      },
+    }), { status: 200 })));
+
+    await expect(assertThreadsTokenPermissions("token-without-keyword-search", true)).rejects.toThrow(/threads_keyword_search/i);
   });
 });

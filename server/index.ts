@@ -17,7 +17,7 @@ import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
 import { fetchThreadsConversation, searchThreadsPosts } from "./services/threadsOverview.js";
-import { consumeThreadsOAuthState, createThreadsAuthorization, exchangeThreadsCode } from "./services/threadsOAuth.js";
+import { assertThreadsTokenPermissions, consumeThreadsOAuthState, createThreadsAuthorization, exchangeThreadsCode } from "./services/threadsOAuth.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
@@ -414,6 +414,7 @@ app.get("/api/threads/oauth/callback", async (request, response) => {
       throw new AppError(400, "THREADS_OAUTH_APP_REQUIRED", "Реквизиты Threads App были удалены во время подключения.");
     }
     const token = await exchangeThreadsCode(code, oauthState.redirectUri, settings.threadsAppId, settings.threadsAppSecret);
+    await assertThreadsTokenPermissions(token, true);
     await savePrivateSettings(user.id, { threadsAccessToken: token });
     return response.redirect(303, threadsOAuthResultUrl("success"));
   } catch (error) {
@@ -453,6 +454,7 @@ async function threadsTokenForRequest(request: express.Request): Promise<string>
   if (!token) {
     throw new AppError(400, "THREADS_TOKEN_REQUIRED", "Сначала добавьте Threads Access Token.", "Откройте настройки → Threads и сохраните токен с правами threads_basic, threads_keyword_search и threads_read_replies.");
   }
+  await assertThreadsTokenPermissions(token);
   return token;
 }
 

@@ -7,7 +7,7 @@ import type {
   ThreadsSearchResponse,
 } from "../../src/shared/types.js";
 
-const THREADS_API_BASE = "https://graph.threads.net";
+const THREADS_API_BASE = "https://graph.threads.net/v1.0";
 const SEARCH_FIELDS = [
   "id", "media_type", "media_url", "permalink", "username", "text", "timestamp",
   "thumbnail_url", "has_replies", "topic_tag", "is_verified", "profile_picture_url",
@@ -147,24 +147,65 @@ function unixSeconds(iso?: string): string | undefined {
 }
 
 export async function searchThreadsPosts(request: ThreadsSearchRequest, token: string): Promise<ThreadsSearchResponse> {
-  const url = new URL(`${THREADS_API_BASE}/keyword_search`);
-  url.searchParams.set("q", request.query);
-  url.searchParams.set("search_type", request.searchType);
-  url.searchParams.set("search_mode", request.searchMode);
-  url.searchParams.set("limit", String(request.limit));
-  url.searchParams.set("fields", SEARCH_FIELDS);
-  const since = unixSeconds(request.since);
-  const until = unixSeconds(request.until);
-  if (since) url.searchParams.set("since", since);
-  if (until) url.searchParams.set("until", until);
-  if (request.after) url.searchParams.set("after", request.after);
-  const payload = await fetchThreadsPage(url, token);
-  const posts = (payload.data ?? []).map(normalizeThreadsPost).filter((post): post is ThreadsPost => Boolean(post));
+  const attempts: ThreadsSearchRequest[] = [request];
+  if (!request.after && request.searchType === "TOP") attempts.push({ ...request, searchType: "RECENT" });
+  if (!request.after && (request.since || request.until)) {
+    attempts.push({ ...request, since: undefined, until: undefined });
+    if (request.searchType === "TOP") attempts.push({ ...request, searchType: "RECENT", since: undefined, until: undefined });
+  }
+
+  const uniqueAttempts = attempts.filter((attempt, index, all) => all.findIndex((candidate) =>
+    candidate.searchType === attempt.searchType
+    && candidate.searchMode === attempt.searchMode
+    && candidate.since === attempt.since
+    && candidate.until === attempt.until
+  ) === index);
+  let applied = request;
+  let payload: ThreadsApiPage = {};
+  let posts: ThreadsPost[] = [];
+  let attemptCount = 0;
+  for (const attempt of uniqueAttempts) {
+    const url = new URL(`${THREADS_API_BASE}/keyword_search`);
+    url.searchParams.set("q", attempt.query);
+    url.searchParams.set("search_type", attempt.searchType);
+    url.searchParams.set("search_mode", attempt.searchMode);
+    url.searchParams.set("limit", String(attempt.limit));
+    url.searchParams.set("fields", SEARCH_FIELDS);
+    const since = unixSeconds(attempt.since);
+    const until = unixSeconds(attempt.until);
+    if (since) url.searchParams.set("since", since);
+    if (until) url.searchParams.set("until", until);
+    if (attempt.after) url.searchParams.set("after", attempt.after);
+    payload = await fetchThreadsPage(url, token);
+    applied = attempt;
+    attemptCount += 1;
+    posts = (payload.data ?? []).map(normalizeThreadsPost).filter((post): post is ThreadsPost => Boolean(post));
+    if (posts.length) break;
+  }
+
+  const fallback = applied !== request;
+  const warnings: string[] = [];
+  if (posts.length && fallback) {
+    const changes = [
+      applied.searchType !== request.searchType ? "использована сортировка «сначала свежие»" : "",
+      (request.since || request.until) && !applied.since && !applied.until ? "снято ограничение по датам" : "",
+    ].filter(Boolean);
+    warnings.push(`По исходным фильтрам Meta вернула 0 постов. Результаты найдены автоматически: ${changes.join(", ")}.`);
+  } else if (!posts.length) {
+    warnings.push(`Threads API принял запрос, но вернул data=[] после ${attemptCount} ${attemptCount === 1 ? "попытки" : "вариантов поиска"}. Попробуйте RECENT, уберите даты или используйте более конкретную фразу.`);
+  }
   return {
     query: request.query,
     posts,
-    ...(payload.paging?.cursors?.after && payload.paging.next ? { nextCursor: payload.paging.cursors.after } : {}),
-    warnings: posts.length ? [] : ["Threads не нашёл публичных постов по этому запросу."],
+    ...(payload.paging?.cursors?.after ? { nextCursor: payload.paging.cursors.after } : {}),
+    warnings,
+    appliedFilters: {
+      searchType: applied.searchType,
+      searchMode: applied.searchMode,
+      ...(applied.since ? { since: applied.since } : {}),
+      ...(applied.until ? { until: applied.until } : {}),
+      fallback,
+    },
   };
 }
 
