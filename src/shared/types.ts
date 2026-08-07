@@ -528,6 +528,7 @@ export interface ThreadsSearchRequest {
 
 export interface ThreadsSearchResponse {
   source: "web";
+  accessMode: "authenticated" | "public";
   query: string;
   posts: ThreadsPost[];
   nextCursor?: string;
@@ -543,6 +544,7 @@ export interface ThreadsSearchResponse {
     url: string;
     collected?: number;
     loadedPages?: number;
+    loadTimedOut?: boolean;
     pagePreview?: string;
   };
 }

@@ -12,9 +12,11 @@ import { getMetaBrowser } from "./metaSnapshot.js";
 const THREADS_WEB_ORIGIN = "https://www.threads.com";
 const SEARCH_TIMEOUT_MS = 30_000;
 const SEARCH_RESULT_TIMEOUT_MS = 15_000;
-const MAX_SEARCH_FEED_PAGES = 10;
+const MAX_SEARCH_FEED_LOADS = 10;
 const MAX_CONVERSATION_SCROLL_PASSES = 14;
-const FEED_LOAD_TIMEOUT_MS = 8_000;
+const FEED_LOAD_TIMEOUT_MS = 15_000;
+const FEED_IDLE_CONFIRM_MS = 3_500;
+const FEED_SETTLE_MS = 900;
 const LOGIN_TIMEOUT_MS = 25_000;
 const MAX_CONVERSATION_REPLIES = 250;
 
@@ -330,80 +332,107 @@ async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
       return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0;
     };
     const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
+    const postUrls = [...new Set(links.map((link) => link.href))];
     const explicitLoaders = document.querySelectorAll([
       '[role="progressbar"]',
       '[aria-label*="loading" i]',
       '[aria-label*="загрузка" i]',
       '[data-visualcompletion="loading-state"]',
     ].join(","));
-    const animatedBottomLoader = [...document.querySelectorAll<HTMLElement>("body *")].some((element) => {
-      const rect = element.getBoundingClientRect();
-      if (rect.top < innerHeight * 0.55 || rect.top > innerHeight || rect.width > 80 || rect.height > 80 || !visible(element)) return false;
-      const style = getComputedStyle(element);
-      return style.animationName !== "none" && Number.parseFloat(style.animationDuration) > 0;
-    });
     return {
-      postCount: links.length,
+      postCount: postUrls.length,
       height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
-      lastPostUrl: links.at(-1)?.href ?? "",
-      loading: [...explicitLoaders].some(visible) || animatedBottomLoader,
+      lastPostUrl: postUrls.at(-1) ?? "",
+      loading: [...explicitLoaders].some(visible),
     };
   });
 }
 
-async function loadNextFeedPage(page: Page): Promise<boolean> {
+interface FeedLoadResult {
+  loaded: boolean;
+  timedOut: boolean;
+}
+
+async function loadNextFeedPage(page: Page): Promise<FeedLoadResult> {
   const before = await feedSnapshot(page);
   await page.evaluate(() => {
+    const loader = document.querySelector<HTMLElement>('[role="status"][data-visualcompletion="loading-state"], [role="status"][aria-label*="загрузка" i]');
     const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
-    links.at(-1)?.scrollIntoView({ block: "end", behavior: "instant" });
+    (loader ?? links.at(-1))?.scrollIntoView({ block: "center", behavior: "instant" });
     window.scrollTo({ top: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), behavior: "instant" });
   });
 
   const startedAt = Date.now();
   let contentChanged = false;
-  let settledAt = 0;
+  let sawLoader = before.loading;
+  let lastChangeAt = 0;
+  let loaderFinishedAt = 0;
+  let previous = before;
   while (Date.now() - startedAt < FEED_LOAD_TIMEOUT_MS) {
     await page.waitForTimeout(250);
     const current = await feedSnapshot(page);
-    const changed = current.postCount > before.postCount
+    const changedFromBefore = current.postCount > before.postCount
       || current.height > before.height + 8
       || Boolean(current.lastPostUrl && current.lastPostUrl !== before.lastPostUrl);
-    if (changed) {
+    const changedSincePrevious = current.postCount !== previous.postCount
+      || Math.abs(current.height - previous.height) > 8
+      || current.lastPostUrl !== previous.lastPostUrl;
+    if (changedFromBefore) {
       contentChanged = true;
-      settledAt ||= Date.now();
+      if (changedSincePrevious) lastChangeAt = Date.now();
     }
-    if (contentChanged && !current.loading && Date.now() - settledAt >= 700) return true;
-    if (!contentChanged && !current.loading && Date.now() - startedAt >= 2_500) return false;
+    if (current.loading) {
+      sawLoader = true;
+      loaderFinishedAt = 0;
+    } else if (sawLoader) {
+      loaderFinishedAt ||= Date.now();
+    }
+    if (contentChanged && !current.loading && Date.now() - lastChangeAt >= FEED_SETTLE_MS) {
+      return { loaded: true, timedOut: false };
+    }
+    if (!contentChanged && sawLoader && loaderFinishedAt && Date.now() - loaderFinishedAt >= FEED_SETTLE_MS) {
+      return { loaded: false, timedOut: false };
+    }
+    if (!contentChanged && !sawLoader && Date.now() - startedAt >= FEED_IDLE_CONFIRM_MS) {
+      return { loaded: false, timedOut: false };
+    }
+    previous = current;
   }
-  return contentChanged;
+  return { loaded: contentChanged, timedOut: true };
 }
 
 interface CollectedCards {
   posts: ThreadsPost[];
   loadedPages: number;
+  loadTimedOut: boolean;
 }
 
 async function collectCards(
   page: Page,
   targetCount: number,
   conversationOnly = false,
-  maxPages = MAX_CONVERSATION_SCROLL_PASSES + 1,
+  maxLoadPasses = MAX_CONVERSATION_SCROLL_PASSES,
   stopAtTarget = true,
 ): Promise<CollectedCards> {
   const collected = new Map<string, ThreadsPost>();
-  let stablePasses = 0;
   let loadedPages = 1;
-  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
-    const before = collected.size;
-    for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
-    stablePasses = collected.size === before ? stablePasses + 1 : 0;
-    if (stablePasses >= 2 || pageNumber === maxPages || (stopAtTarget && collected.size >= targetCount)) break;
-    const loaded = await loadNextFeedPage(page);
-    if (loaded) loadedPages += 1;
-    else stablePasses += 1;
+  let loadTimedOut = false;
+  for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+  for (let loadPass = 0; loadPass < maxLoadPasses; loadPass += 1) {
+    if (stopAtTarget && collected.size >= targetCount) break;
+    const result = await loadNextFeedPage(page);
+    if (result.loaded) {
+      loadedPages += 1;
+      for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+    }
+    if (result.timedOut) {
+      loadTimedOut = true;
+      break;
+    }
+    if (!result.loaded) break;
   }
   for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
-  return { posts: [...collected.values()], loadedPages };
+  return { posts: [...collected.values()], loadedPages, loadTimedOut };
 }
 
 function withinDateRange(post: ThreadsPost, since?: string, until?: string): boolean {
@@ -425,15 +454,18 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
         const pageText = (await page.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 600);
         return {
           source: "web",
+          accessMode: session ? "authenticated" : "public",
           query: request.query,
           posts: [],
-          warnings: ["Публичная веб-выдача Threads не нашла постов по этому запросу."],
+          warnings: [session
+            ? "Авторизованная выдача Threads не нашла постов по этому запросу."
+            : "Публичная веб-выдача Threads не нашла постов по этому запросу."],
           appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
           diagnostics: { url, pagePreview: pageText },
         };
       }
       const offset = decodeThreadsWebCursor(request.after);
-      const collected = await collectCards(page, Number.MAX_SAFE_INTEGER, false, MAX_SEARCH_FEED_PAGES, false);
+      const collected = await collectCards(page, Number.MAX_SAFE_INTEGER, false, MAX_SEARCH_FEED_LOADS, false);
       const allPosts = collected.posts
         .filter((post) => withinDateRange(post, request.since, request.until));
       if (request.searchType === "RECENT") {
@@ -441,17 +473,21 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
       }
       const posts = allPosts.slice(offset, offset + request.limit);
       const hasMore = allPosts.length > offset + request.limit;
-      const warnings = ["Данные собраны из публичной веб-выдачи Threads через Chromium."];
-      if (request.since || request.until) warnings.push("Диапазон дат применён локально к датам найденных публичных постов.");
-      if (posts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
+      const warnings = [session
+        ? "Данные собраны через авторизованную сессию Threads в Chromium."
+        : "Данные собраны из публичной веб-выдачи Threads через Chromium."];
+      if (request.since || request.until) warnings.push("Диапазон дат применён локально к датам найденных постов.");
+      if (collected.loadTimedOut) warnings.push("Одна из подгрузок Threads не завершилась за 15 секунд; сохранены все посты, успевшие появиться в ленте.");
+      if (!session && posts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
       return {
         source: "web",
+        accessMode: session ? "authenticated" : "public",
         query: request.query,
         posts,
         ...(hasMore ? { nextCursor: encodeThreadsWebCursor(offset + request.limit) } : {}),
         warnings,
         appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
-        diagnostics: { url, collected: allPosts.length, loadedPages: collected.loadedPages },
+        diagnostics: { url, collected: allPosts.length, loadedPages: collected.loadedPages, loadTimedOut: collected.loadTimedOut },
       };
     } catch (error) {
       throw threadsWebError(error);
@@ -479,7 +515,7 @@ export async function fetchThreadsConversation(post: ThreadsPost, session?: Thre
       await gotoThreadsPage(page, url);
       const hasCards = await waitForPublicCards(page);
       if (!hasCards) {
-        return { post, replies: [], warnings: ["Threads не отдал публичные ответы для этого поста."], truncated: false };
+        return { post, replies: [], warnings: [session ? "Threads не отдал ответы для этого поста в авторизованной сессии." : "Threads не отдал публичные ответы для этого поста."], truncated: false };
       }
       const { posts: cards } = await collectCards(page, MAX_CONVERSATION_REPLIES + 1, true);
       const replies: ThreadsReply[] = cards
@@ -491,8 +527,8 @@ export async function fetchThreadsConversation(post: ThreadsPost, session?: Thre
         post,
         replies,
         warnings: [
-          "Ответы собраны с публичной страницы поста Threads через Chromium.",
-          ...(truncated ? [`Для выгрузки оставлены первые ${MAX_CONVERSATION_REPLIES} публичных ответов.`] : []),
+          session ? "Ответы собраны через авторизованную сессию Threads в Chromium." : "Ответы собраны с публичной страницы поста Threads через Chromium.",
+          ...(truncated ? [`Для выгрузки оставлены первые ${MAX_CONVERSATION_REPLIES} ответов.`] : []),
         ],
         truncated,
       };

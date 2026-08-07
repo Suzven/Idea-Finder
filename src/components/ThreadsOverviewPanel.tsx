@@ -1,5 +1,5 @@
 import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
 import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchType } from "../shared/types";
@@ -27,7 +27,7 @@ function postAuthor(post: ThreadsPost) {
   </div>;
 }
 
-export function ThreadsOverviewPanel() {
+export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean }) {
   const [query, setQuery] = useState("");
   const [searchType, setSearchType] = useState<ThreadsSearchType>("TOP");
   const [searchMode, setSearchMode] = useState<ThreadsSearchMode>("KEYWORD");
@@ -42,10 +42,15 @@ export function ThreadsOverviewPanel() {
   const [error, setError] = useState("");
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [accessMode, setAccessMode] = useState<"authenticated" | "public">(authenticated ? "authenticated" : "public");
   const [paginationFilters, setPaginationFilters] = useState<{ searchType: ThreadsSearchType; searchMode: ThreadsSearchMode; since?: string; until?: string }>();
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [preparationProgress, setPreparationProgress] = useState(0);
+
+  useEffect(() => {
+    setAccessMode(authenticated ? "authenticated" : "public");
+  }, [authenticated]);
 
   const selectedPosts = useMemo(() => posts.filter((post) => selectedIds.has(post.id)), [posts, selectedIds]);
 
@@ -75,6 +80,7 @@ export function ThreadsOverviewPanel() {
         ...(effectiveFilters.until ? { until: effectiveFilters.until } : {}),
         ...(after ? { after } : {}),
       });
+      setAccessMode(result.accessMode);
       setWarnings(result.warnings);
       setNextCursor(result.nextCursor);
       setPaginationFilters({
@@ -156,7 +162,7 @@ export function ThreadsOverviewPanel() {
 
   return <div className="threads-overview-panel">
     <section className="threads-search-card">
-      <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><span className="threads-token-state ready"><i />Публичный веб-поиск</span></header>
+      <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><span className="threads-token-state ready"><i />{accessMode === "authenticated" ? "Авторизованный Chromium" : "Публичный веб-поиск"}</span></header>
       <form onSubmit={(event) => { event.preventDefault(); void runSearch(); }}>
         <label className="threads-query-field"><span>Текст для поиска</span><div>{searchMode === "TAG" ? <Hash size={19} /> : <Search size={19} />}<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchMode === "TAG" ? "Например: productmanagement" : "Например: onboarding mobile app"} maxLength={100} disabled={loading} /><button className="button primary" disabled={loading || !query.trim()}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}{loading ? "Ищем…" : "Найти посты"}</button></div></label>
         <div className="threads-filter-grid">
