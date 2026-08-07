@@ -9,6 +9,7 @@ import type {
   ThreadsSearchResponse,
 } from "../../src/shared/types.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
+import { registerThreadsDebugSession } from "./threadsDebugSession.js";
 
 const THREADS_WEB_ORIGIN = "https://www.threads.com";
 const SEARCH_TIMEOUT_MS = 30_000;
@@ -319,9 +320,13 @@ async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise
 
 interface FeedSnapshot {
   postCount: number;
+  postUrls: string[];
   height: number;
   lastPostUrl: string;
   loading: boolean;
+  loaderCount: number;
+  visibleLoaderCount: number;
+  bottomGap: number;
 }
 
 async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
@@ -330,7 +335,13 @@ async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
       const node = element as HTMLElement;
       const rect = node.getBoundingClientRect();
       const style = getComputedStyle(node);
-      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0;
+      return rect.width > 0
+        && rect.height > 0
+        && rect.bottom > 0
+        && rect.top < window.innerHeight
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && Number(style.opacity) !== 0;
     };
     const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
     const postUrls = [...new Set(links.map((link) => link.href))];
@@ -340,12 +351,42 @@ async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
       '[aria-label*="загрузка" i]',
       '[data-visualcompletion="loading-state"]',
     ].join(","));
+    const visibleLoaders = [...explicitLoaders].filter(visible);
+    const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    const scrollBottom = window.scrollY + window.innerHeight;
     return {
       postCount: postUrls.length,
-      height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+      postUrls,
+      height,
       lastPostUrl: postUrls.at(-1) ?? "",
-      loading: [...explicitLoaders].some(visible),
+      loading: visibleLoaders.length > 0,
+      loaderCount: explicitLoaders.length,
+      visibleLoaderCount: visibleLoaders.length,
+      bottomGap: Math.max(0, Math.round(height - scrollBottom)),
     };
+  });
+}
+
+async function scrollThreadsFeedToEnd(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
+    // Threads leaves old loaders mounted outside the viewport. Scrolling to one
+    // of them can jump back into an already loaded part of the virtualized feed.
+    const target = links.at(-1);
+    target?.scrollIntoView({ block: "end", behavior: "instant" });
+
+    let ancestor = target?.parentElement;
+    while (ancestor) {
+      const style = getComputedStyle(ancestor);
+      if (ancestor.scrollHeight > ancestor.clientHeight + 8 && /(auto|scroll)/.test(style.overflowY)) {
+        ancestor.scrollTop = ancestor.scrollHeight;
+      }
+      ancestor = ancestor.parentElement;
+    }
+
+    const scrollingElement = document.scrollingElement;
+    scrollingElement?.scrollTo({ top: scrollingElement.scrollHeight, behavior: "instant" });
+    window.scrollTo({ top: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), behavior: "instant" });
   });
 }
 
@@ -355,20 +396,21 @@ interface FeedLoadResult {
   diagnostic: Omit<ThreadsFeedLoadDiagnostic, "newUniquePosts" | "collectedTotal" | "screenshotDataUrl"> & { screenshotDataUrl?: string };
 }
 
-async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResult> {
+async function loadNextFeedPage(
+  page: Page,
+  pass: number,
+  collectVisible?: () => Promise<void>,
+): Promise<FeedLoadResult> {
   const before = await feedSnapshot(page);
-  await page.evaluate(() => {
-    const loader = document.querySelector<HTMLElement>('[role="status"][data-visualcompletion="loading-state"], [role="status"][aria-label*="загрузка" i]');
-    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
-    (loader ?? links.at(-1))?.scrollIntoView({ block: "center", behavior: "instant" });
-    window.scrollTo({ top: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), behavior: "instant" });
-  });
+  const observedPostUrls = new Set(before.postUrls);
+  await scrollThreadsFeedToEnd(page);
 
   const startedAt = Date.now();
   let contentChanged = false;
   let sawLoader = before.loading;
   let lastChangeAt = 0;
   let loaderFinishedAt = 0;
+  let lastNewPostAt = 0;
   let previous = before;
   let latest = before;
   const finish = (outcome: ThreadsFeedLoadDiagnostic["outcome"], reason: string): FeedLoadResult => ({
@@ -383,6 +425,10 @@ async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResul
       afterDomPosts: latest.postCount,
       beforeHeight: before.height,
       afterHeight: latest.height,
+      beforeBottomGap: before.bottomGap,
+      afterBottomGap: latest.bottomGap,
+      loadersInDom: latest.loaderCount,
+      loadersInViewport: latest.visibleLoaderCount,
       sawLoader,
       loaderFinished: sawLoader && !latest.loading,
       lastPostChanged: Boolean(latest.lastPostUrl && latest.lastPostUrl !== before.lastPostUrl),
@@ -392,26 +438,41 @@ async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResul
     await page.waitForTimeout(250);
     const current = await feedSnapshot(page);
     latest = current;
-    const changedFromBefore = current.postCount > before.postCount
-      || current.height > before.height + 8
-      || Boolean(current.lastPostUrl && current.lastPostUrl !== before.lastPostUrl);
+    const newPostUrls = current.postUrls.filter((url) => !observedPostUrls.has(url));
+    for (const url of newPostUrls) observedPostUrls.add(url);
+    if (newPostUrls.length > 0) {
+      contentChanged = true;
+      lastNewPostAt = Date.now();
+      await collectVisible?.();
+    }
     const changedSincePrevious = current.postCount !== previous.postCount
       || Math.abs(current.height - previous.height) > 8
       || current.lastPostUrl !== previous.lastPostUrl;
-    if (changedFromBefore) {
-      contentChanged = true;
-      if (changedSincePrevious) lastChangeAt = Date.now();
+    if (changedSincePrevious) lastChangeAt = Date.now();
+    if (changedSincePrevious || current.bottomGap > 120) {
+      await scrollThreadsFeedToEnd(page);
+      await page.waitForTimeout(100);
+      latest = await feedSnapshot(page);
+      const postScrollUrls = latest.postUrls.filter((url) => !observedPostUrls.has(url));
+      for (const url of postScrollUrls) observedPostUrls.add(url);
+      if (postScrollUrls.length > 0) {
+        contentChanged = true;
+        lastNewPostAt = Date.now();
+        await collectVisible?.();
+      }
     }
-    if (current.loading) {
+    if (latest.loading) {
       sawLoader = true;
       loaderFinishedAt = 0;
     } else if (sawLoader) {
       loaderFinishedAt ||= Date.now();
     }
-    if (contentChanged && !current.loading && Date.now() - lastChangeAt >= FEED_SETTLE_MS) {
-      return finish("loaded", sawLoader
-        ? "Появился новый контент, индикатор загрузки исчез, DOM стабилизировался."
-        : "Появился новый контент без видимого индикатора, DOM стабилизировался.");
+    const stableSince = Math.max(lastChangeAt, lastNewPostAt);
+    if (contentChanged && Date.now() - stableSince >= FEED_SETTLE_MS) {
+      await collectVisible?.();
+      return finish("loaded", latest.loading
+        ? "Новые уникальные URL постов получены, лента стабилизировалась. Оставшийся индикатор признан служебным и не блокирует следующую прокрутку."
+        : "Новые уникальные URL постов получены, лента стабилизировалась и готова к следующей прокрутке.");
     }
     if (!contentChanged && sawLoader && loaderFinishedAt && Date.now() - loaderFinishedAt >= FEED_SETTLE_MS) {
       return finish("end", "Индикатор загрузки завершился, но новых URL постов и изменений ленты не появилось.");
@@ -419,7 +480,7 @@ async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResul
     if (!contentChanged && !sawLoader && Date.now() - startedAt >= FEED_IDLE_CONFIRM_MS) {
       return finish("end", "После прокрутки индикатор не появился и лента не изменилась.");
     }
-    previous = current;
+    previous = latest;
   }
   const timedOut = finish("timeout", latest.loading
     ? "Через 40 секунд индикатор загрузки всё ещё виден."
@@ -449,14 +510,17 @@ async function collectCards(
   let loadedPages = 1;
   let loadTimedOut = false;
   const feedLoads: ThreadsFeedLoadDiagnostic[] = [];
-  for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+  const collectVisible = async () => {
+    for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+  };
+  await collectVisible();
   for (let loadPass = 0; loadPass < maxLoadPasses; loadPass += 1) {
     if (stopAtTarget && collected.size >= targetCount) break;
     const collectedBefore = collected.size;
-    const result = await loadNextFeedPage(page, loadPass + 1);
+    const result = await loadNextFeedPage(page, loadPass + 1, collectVisible);
     if (result.loaded) {
       loadedPages += 1;
-      for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+      await collectVisible();
     }
     feedLoads.push({
       ...result.diagnostic,
@@ -469,7 +533,7 @@ async function collectCards(
     }
     if (!result.loaded) break;
   }
-  for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+  await collectVisible();
   return { posts: [...collected.values()], loadedPages, loadTimedOut, feedLoads };
 }
 
@@ -482,8 +546,11 @@ function withinDateRange(post: ThreadsPost, since?: string, until?: string): boo
   return true;
 }
 
-export async function searchThreadsPosts(request: ThreadsSearchRequest, session?: ThreadsBrowserSession): Promise<ThreadsSearchResponse> {
+export async function searchThreadsPosts(request: ThreadsSearchRequest, session?: ThreadsBrowserSession, debugOwnerId?: string): Promise<ThreadsSearchResponse> {
   return withThreadsPage(async (page) => {
+    const debugSession = request.debugSessionId && debugOwnerId
+      ? registerThreadsDebugSession(request.debugSessionId, debugOwnerId, page)
+      : undefined;
     try {
       const url = buildSearchUrl(request);
       await gotoThreadsPage(page, url);
@@ -534,7 +601,12 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
         },
       };
     } catch (error) {
+      if (debugSession?.isCancelled()) {
+        throw new AppError(409, "THREADS_DEBUG_CANCELLED", "Диагностическая сессия Threads остановлена пользователем.");
+      }
       throw threadsWebError(error);
+    } finally {
+      debugSession?.close();
     }
   }, session);
 }

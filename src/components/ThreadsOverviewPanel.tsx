@@ -1,12 +1,80 @@
-import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Monitor, Search, ShieldAlert, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
+import { ApiRequestError, cancelThreadsDebugSession, fetchThreadsConversation, fetchThreadsDebugFrame, searchThreadsPosts } from "../api";
 import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchResponse, ThreadsSearchType } from "../shared/types";
 
 interface PreparedThread extends ThreadsConversationResponse {
   error?: string;
   action?: string;
+}
+
+function ThreadsLiveBrowserModal({ sessionId, active, onDismiss }: { sessionId: string; active: boolean; onDismiss: () => void }) {
+  const [frameUrl, setFrameUrl] = useState("");
+  const [frameError, setFrameError] = useState("");
+  const activeRef = useRef(active);
+
+  useEffect(() => { activeRef.current = active; }, [active]);
+
+  useEffect(() => {
+    document.body.classList.add("modal-open");
+    return () => document.body.classList.remove("modal-open");
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer = 0;
+    let currentObjectUrl = "";
+    const refresh = async () => {
+      try {
+        const frame = await fetchThreadsDebugFrame(sessionId);
+        if (stopped) return;
+        const nextObjectUrl = URL.createObjectURL(frame);
+        if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = nextObjectUrl;
+        setFrameUrl(nextObjectUrl);
+        setFrameError("");
+      } catch (error) {
+        if (stopped) return;
+        const apiError = error instanceof ApiRequestError ? error : null;
+        if (activeRef.current && (apiError?.status === 404 || apiError?.status === 409)) {
+          setFrameError("");
+        } else if (!activeRef.current && apiError?.status === 404) {
+          setFrameError("Сбор завершён. Ниже оставлен последний полученный кадр Chromium.");
+          return;
+        } else {
+          setFrameError(error instanceof Error ? error.message : "Не удалось получить кадр Chromium.");
+        }
+      } finally {
+        if (!stopped && activeRef.current) timer = window.setTimeout(() => { void refresh(); }, 850);
+      }
+    };
+    void refresh();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+    };
+  }, [sessionId]);
+
+  const close = async () => {
+    try {
+      await cancelThreadsDebugSession(sessionId);
+    } catch {
+      // Поиск мог завершиться и закрыть вкладку раньше пользователя.
+    } finally {
+      onDismiss();
+    }
+  };
+
+  return <div className="review-challenge-backdrop" role="dialog" aria-modal="true" aria-labelledby="threads-live-title">
+    <section className="review-challenge-modal threads-live-modal">
+      <header><div><span><Monitor size={22} /></span><div><h2 id="threads-live-title">Живой экран Chromium · Threads</h2><p>{active ? "Поиск и прокрутка выполняются на сервере прямо сейчас." : "Поиск завершён — можно изучить последний кадр и закрыть окно."}</p></div></div><button type="button" title="Закрыть диагностическую сессию" onClick={() => void close()}><X size={20} /></button></header>
+      <div className="review-challenge-screen threads-live-screen">{frameUrl ? <img src={frameUrl} alt="Живой экран Threads в серверном Chromium" draggable={false} /> : <div><LoaderCircle className="spin" size={28} /><span>Открываем диагностическую вкладку Chromium…</span></div>}</div>
+      {frameError && <p className="review-challenge-error"><ShieldAlert size={15} />{frameError}</p>}
+      <footer><span>{active ? "Кадр обновляется автоматически. Крестик остановит поиск и закроет серверную вкладку." : "Диагностическая вкладка на сервере уже закрыта."}</span><button className="button danger-outline" type="button" onClick={() => void close()}>{active ? "Остановить и закрыть" : "Закрыть"}</button></footer>
+    </section>
+  </div>;
 }
 
 function formatDate(value: string): string {
@@ -43,6 +111,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [diagnostics, setDiagnostics] = useState<ThreadsSearchResponse["diagnostics"]>();
+  const [debugSessionId, setDebugSessionId] = useState<string>();
   const [accessMode, setAccessMode] = useState<"authenticated" | "public">(authenticated ? "authenticated" : "public");
   const [paginationFilters, setPaginationFilters] = useState<{ searchType: ThreadsSearchType; searchMode: ThreadsSearchMode; since?: string; until?: string }>();
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
@@ -59,6 +128,8 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
     const cleanQuery = query.trim();
     if (!cleanQuery) return;
     const loadMore = Boolean(after);
+    const currentDebugSessionId = crypto.randomUUID();
+    setDebugSessionId(currentDebugSessionId);
     loadMore ? setLoadingMore(true) : setLoading(true);
     setError("");
     setErrorAction("");
@@ -81,6 +152,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
         ...(effectiveFilters.since ? { since: effectiveFilters.since } : {}),
         ...(effectiveFilters.until ? { until: effectiveFilters.until } : {}),
         ...(after ? { after } : {}),
+        debugSessionId: currentDebugSessionId,
       });
       setAccessMode(result.accessMode);
       setWarnings(result.warnings);
@@ -99,8 +171,10 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
       });
     } catch (searchError) {
       const apiError = searchError instanceof ApiRequestError ? searchError : null;
-      setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Threads.");
-      setErrorAction(apiError?.action ?? "");
+      if (apiError?.code !== "THREADS_DEBUG_CANCELLED") {
+        setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Threads.");
+        setErrorAction(apiError?.action ?? "");
+      }
     } finally {
       loadMore ? setLoadingMore(false) : setLoading(false);
     }
@@ -164,6 +238,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   };
 
   return <div className="threads-overview-panel">
+    {debugSessionId && <ThreadsLiveBrowserModal sessionId={debugSessionId} active={loading || loadingMore} onDismiss={() => setDebugSessionId(undefined)} />}
     <section className="threads-search-card">
       <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><span className="threads-token-state ready"><i />{accessMode === "authenticated" ? "Авторизованный Chromium" : "Публичный веб-поиск"}</span></header>
       <form onSubmit={(event) => { event.preventDefault(); void runSearch(); }}>
@@ -193,6 +268,9 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
             <div><dt>Всего накоплено</dt><dd>{entry.collectedTotal}</dd></div>
             <div><dt>Постов в DOM</dt><dd>{entry.beforeDomPosts} → {entry.afterDomPosts}</dd></div>
             <div><dt>Высота DOM</dt><dd>{entry.beforeHeight} → {entry.afterHeight}</dd></div>
+            <div><dt>До низа страницы</dt><dd>{entry.beforeBottomGap} → {entry.afterBottomGap}px</dd></div>
+            <div><dt>Лоадеров в DOM</dt><dd>{entry.loadersInDom}</dd></div>
+            <div><dt>Лоадеров на экране</dt><dd>{entry.loadersInViewport}</dd></div>
             <div><dt>Спиннер появился</dt><dd>{entry.sawLoader ? "да" : "нет"}</dd></div>
             <div><dt>Спиннер исчез</dt><dd>{entry.loaderFinished ? "да" : "нет"}</dd></div>
             <div><dt>Последний URL сменился</dt><dd>{entry.lastPostChanged ? "да" : "нет"}</dd></div>

@@ -524,6 +524,7 @@ export interface ThreadsSearchRequest {
   since?: string;
   until?: string;
   after?: string;
+  debugSessionId?: string;
 }
 
 export interface ThreadsFeedLoadDiagnostic {
@@ -535,6 +536,10 @@ export interface ThreadsFeedLoadDiagnostic {
   afterDomPosts: number;
   beforeHeight: number;
   afterHeight: number;
+  beforeBottomGap: number;
+  afterBottomGap: number;
+  loadersInDom: number;
+  loadersInViewport: number;
   sawLoader: boolean;
   loaderFinished: boolean;
   lastPostChanged: boolean;

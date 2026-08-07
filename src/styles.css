@@ -1475,6 +1475,10 @@ body.modal-open { overflow: hidden; }
 .review-challenge-modal > footer { display: flex; align-items: center; gap: 12px; padding: 12px 17px; border-top: 1px solid #e7e9ef; }
 .review-challenge-modal > footer > div { display: flex; gap: 8px; }
 .review-challenge-modal > footer > span { flex: 1; color: #8a93a4; font-size: 10px; text-align: center; }
+.threads-live-modal { width: min(1500px, 98vw); }
+.threads-live-modal > header > div > span { background: linear-gradient(145deg,#484852,#111116); }
+.threads-live-screen { min-height: min(760px, calc(96vh - 150px)); }
+.threads-live-screen > img { max-height: calc(96vh - 150px); cursor: default; }
 
 @media (max-width: 620px) {
   .review-challenge-backdrop { padding: 0; }
