@@ -16,7 +16,7 @@ import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
-import { fetchThreadsConversation, initializeThreadsSession, searchThreadsPosts } from "./services/threadsOverview.js";
+import { fetchThreadsConversation, fetchThreadsPostViewCounts, initializeThreadsSession, searchThreadsPosts } from "./services/threadsOverview.js";
 import type { ThreadsBrowserSession } from "./services/threadsOverview.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
@@ -395,11 +395,16 @@ const threadsPostSchema = z.object({
   hasReplies: z.boolean().optional(),
   topicTag: z.string().max(500).optional(),
   linkAttachmentUrl: z.string().url().max(4_000).optional(),
+  viewCount: z.number().int().nonnegative().optional(),
 });
 
 const threadsConversationSchema = z.object({
   post: threadsPostSchema,
   maxReplies: z.coerce.number().int().min(1).max(150).default(100),
+});
+
+const threadsViewCountsSchema = z.object({
+  posts: z.array(threadsPostSchema).min(1).max(8),
 });
 
 async function threadsBrowserSession(userId: string): Promise<ThreadsBrowserSession | undefined> {
@@ -449,6 +454,16 @@ app.post("/api/threads/conversation", async (request, response, next) => {
     const post = parsed.post as ThreadsPost;
     const session = await threadsBrowserSession(getAuthenticatedUser(request).id);
     response.json(await fetchThreadsConversation(post, session, parsed.maxReplies));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/threads/views", async (request, response, next) => {
+  try {
+    const parsed = threadsViewCountsSchema.parse(request.body);
+    const session = await threadsBrowserSession(getAuthenticatedUser(request).id);
+    response.json(await fetchThreadsPostViewCounts(parsed.posts as ThreadsPost[], session));
   } catch (error) {
     next(error);
   }

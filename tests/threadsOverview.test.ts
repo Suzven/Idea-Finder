@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeThreadsWebCursor, normalizeThreadsWebPost } from "../server/services/threadsOverview";
+import { decodeThreadsWebCursor, normalizeThreadsWebPost, parseThreadsViewCount } from "../server/services/threadsOverview";
 
 describe("Threads public web parser", () => {
   it("normalizes a public card extracted by Chromium", () => {
@@ -13,6 +13,7 @@ describe("Threads public web parser", () => {
       mediaUrl: "https://cdn.example.com/post.jpg",
       profilePictureUrl: "https://cdn.example.com/broken-avatar.jpg",
       topicTag: "productmanagement",
+      viewCount: "1 283 955 просмотров",
     })).toEqual({
       id: "Dbu3coEiUry",
       username: "product_person",
@@ -22,7 +23,15 @@ describe("Threads public web parser", () => {
       mediaType: "IMAGE",
       mediaUrl: "https://cdn.example.com/post.jpg",
       topicTag: "productmanagement",
+      viewCount: 1_283_955,
     });
+  });
+
+  it("parses localized Threads view counters", () => {
+    expect(parseThreadsViewCount("Ветка\n1 283 955 просмотров\n@user")).toBe(1_283_955);
+    expect(parseThreadsViewCount("Thread\n1,2 млн просмотров")).toBe(1_200_000);
+    expect(parseThreadsViewCount("Thread\n4.5K views")).toBe(4_500);
+    expect(parseThreadsViewCount("Текст поста без счётчика")).toBeUndefined();
   });
 
   it("ignores malformed cards without a post id or permalink", () => {

@@ -7,6 +7,7 @@ import type {
   ThreadsReply,
   ThreadsSearchRequest,
   ThreadsSearchResponse,
+  ThreadsViewCountsResponse,
 } from "../../src/shared/types.js";
 import { getMetaBrowser } from "./metaSnapshot.js";
 
@@ -36,6 +37,7 @@ interface ThreadsWebCard {
   thumbnailUrl?: unknown;
   topicTag?: unknown;
   linkAttachmentUrl?: unknown;
+  viewCount?: unknown;
 }
 
 export interface ThreadsBrowserSession {
@@ -70,6 +72,29 @@ function safeHttpUrl(value: unknown): string | undefined {
   }
 }
 
+export function parseThreadsViewCount(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\r/g, "\n").replace(/[\u00a0\u202f]/g, " ");
+  const pattern = /(?:^|\n)\s*(\d[\d\s.,]*?)\s*(тыс\.?|млн|млрд|k|m|b)?\s+(?:просмотр(?:а|ов)?|перегляд(?:и|ів)?|views?)\s*(?=$|\n)/gimu;
+  for (const match of normalized.matchAll(pattern)) {
+    const suffix = (match[2] ?? "").toLowerCase().replace(".", "");
+    const multiplier = suffix === "тыс" || suffix === "k"
+      ? 1_000
+      : suffix === "млн" || suffix === "m"
+        ? 1_000_000
+        : suffix === "млрд" || suffix === "b"
+          ? 1_000_000_000
+          : 1;
+    const rawNumber = match[1].trim();
+    const numeric = multiplier === 1
+      ? Number(rawNumber.replace(/[^\d]/g, ""))
+      : Number(rawNumber.replace(/\s/g, "").replace(",", ".").replace(/[^\d.]/g, ""));
+    if (Number.isFinite(numeric) && numeric >= 0) return Math.round(numeric * multiplier);
+  }
+  return undefined;
+}
+
 export function normalizeThreadsWebPost(value: unknown): ThreadsPost | null {
   const item = asRecord(value) as ThreadsWebCard;
   const id = optionalString(item.id);
@@ -79,6 +104,7 @@ export function normalizeThreadsWebPost(value: unknown): ThreadsPost | null {
   const mediaUrl = safeHttpUrl(item.mediaUrl);
   const thumbnailUrl = safeHttpUrl(item.thumbnailUrl);
   const linkAttachmentUrl = safeHttpUrl(item.linkAttachmentUrl);
+  const viewCount = parseThreadsViewCount(item.viewCount);
   return {
     id,
     username: optionalString(item.username) ?? "threads_user",
@@ -90,6 +116,7 @@ export function normalizeThreadsWebPost(value: unknown): ThreadsPost | null {
     ...(thumbnailUrl ? { thumbnailUrl } : {}),
     ...(optionalString(item.topicTag) ? { topicTag: optionalString(item.topicTag) } : {}),
     ...(linkAttachmentUrl ? { linkAttachmentUrl } : {}),
+    ...(viewCount !== undefined ? { viewCount } : {}),
   };
 }
 
@@ -296,6 +323,10 @@ async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise
           return host !== "threads.com" && !host.endsWith(".threads.com") && host !== "threads.net" && !host.endsWith(".threads.net") && host !== "instagram.com" && !host.endsWith(".instagram.com");
         } catch { return false; }
       });
+      const viewCount = [
+        ...[...card.querySelectorAll<HTMLElement>("[aria-label],[title]")].flatMap((node) => [node.getAttribute("aria-label") ?? "", node.getAttribute("title") ?? ""]),
+        ...(card.innerText || card.textContent || "").split(/\r?\n/),
+      ].map(clean).find((text) => /^\d[\d\s\u00a0\u202f.,]*\s*(?:тыс\.?|млн|млрд|[kmb])?\s+(?:просмотр(?:а|ов)?|перегляд(?:и|ів)?|views?)$/i) ?? "";
       result.push({
         id: match[2],
         username,
@@ -307,11 +338,59 @@ async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise
         thumbnailUrl: video?.poster || mediaImage?.currentSrc || mediaImage?.src || "",
         topicTag: clean(tagLink?.textContent),
         linkAttachmentUrl: externalLink?.href || "",
+        viewCount,
       });
     }
     return result;
   }, conversationOnly);
   return rawCards.map(normalizeThreadsWebPost).filter((post): post is ThreadsPost => Boolean(post));
+}
+
+async function readThreadViewCount(page: Page, timeoutMs = 5_000): Promise<number | undefined> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const text = await page.evaluate(() => {
+      const attributes = [...document.querySelectorAll<HTMLElement>("[aria-label],[title]")]
+        .flatMap((node) => [node.getAttribute("aria-label") ?? "", node.getAttribute("title") ?? ""])
+        .filter(Boolean)
+        .join("\n");
+      return `${document.body?.innerText ?? ""}\n${attributes}`.slice(0, 250_000);
+    }).catch(() => "");
+    const viewCount = parseThreadsViewCount(text);
+    if (viewCount !== undefined) return viewCount;
+    await page.waitForTimeout(350);
+  }
+  return undefined;
+}
+
+export async function fetchThreadsPostViewCounts(
+  posts: ThreadsPost[],
+  session?: ThreadsBrowserSession,
+): Promise<ThreadsViewCountsResponse> {
+  return withThreadsPage(async (page, context) => {
+    const views: ThreadsViewCountsResponse["views"] = [];
+    const workerPages = [page, await context.newPage(), await context.newPage()];
+    await Promise.all(workerPages.map((workerPage) => workerPage.route("**/*", async (route) => {
+      const resourceType = route.request().resourceType();
+      if (resourceType === "image" || resourceType === "media" || resourceType === "font") await route.abort();
+      else await route.continue();
+    })));
+    let cursor = 0;
+    await Promise.all(workerPages.map(async (workerPage) => {
+      while (cursor < posts.length) {
+        const post = posts[cursor];
+        cursor += 1;
+        try {
+          await gotoThreadsPage(workerPage, validatePostPermalink(post.permalink));
+          const viewCount = await readThreadViewCount(workerPage);
+          if (viewCount !== undefined) views.push({ id: post.id, viewCount });
+        } catch {
+          // Один удалённый или ограниченный пост не должен прерывать дозагрузку остальных счётчиков.
+        }
+      }
+    }));
+    return { views };
+  }, session);
 }
 
 interface FeedSnapshot {
@@ -621,6 +700,8 @@ export async function fetchThreadsConversation(
       if (!hasCards) {
         return { post, replies: [], warnings: [session ? "Threads не отдал ответы для этого поста в авторизованной сессии." : "Threads не отдал публичные ответы для этого поста."], truncated: false };
       }
+      const viewCount = await readThreadViewCount(page, 2_500);
+      const enrichedPost = viewCount !== undefined ? { ...post, viewCount } : post;
       const { posts: cards } = await collectCards(page, replyLimit + 2, true);
       const replyCards = cards.filter((item) => item.id !== post.id && item.permalink !== post.permalink);
       const replies: ThreadsReply[] = replyCards
@@ -628,7 +709,7 @@ export async function fetchThreadsConversation(
         .map((item) => ({ ...item, parentId: post.id, depth: 0 }));
       const truncated = replyCards.length > replyLimit;
       return {
-        post,
+        post: enrichedPost,
         replies,
         warnings: [
           session ? "Ответы собраны через авторизованную сессию Threads в Chromium." : "Ответы собраны с публичной страницы поста Threads через Chromium.",

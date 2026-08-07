@@ -1,7 +1,7 @@
-import { AtSign, CalendarDays, Check, CheckCircle2, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AtSign, CalendarDays, Check, CheckCircle2, ExternalLink, Eye, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
+import { ApiRequestError, fetchThreadsConversation, fetchThreadsViewCounts, searchThreadsPosts } from "../api";
 import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchResponse, ThreadsSearchType } from "../shared/types";
 
 interface PreparedThread extends ThreadsConversationResponse {
@@ -10,6 +10,11 @@ interface PreparedThread extends ThreadsConversationResponse {
 }
 
 const MAX_SELECTED_POSTS = 150;
+const VIEW_COUNT_BATCH_SIZE = 8;
+
+function formatViewCount(value: number): string {
+  return new Intl.NumberFormat("ru-RU").format(value);
+}
 
 function formatDate(value: string): string {
   if (!value) return "Дата не указана";
@@ -42,6 +47,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [visibleCount, setVisibleCount] = useState(25);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [viewsLoading, setViewsLoading] = useState(false);
   const [error, setError] = useState("");
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -50,17 +56,25 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [preparationProgress, setPreparationProgress] = useState(0);
+  const viewHydrationRun = useRef(0);
 
   useEffect(() => {
     setAccessMode(authenticated ? "authenticated" : "public");
   }, [authenticated]);
+
+  useEffect(() => () => {
+    viewHydrationRun.current += 1;
+  }, []);
 
   const selectedPosts = useMemo(() => posts.filter((post) => selectedIds.has(post.id)), [posts, selectedIds]);
 
   const runSearch = async () => {
     const cleanQuery = query.trim();
     if (!cleanQuery) return;
+    const hydrationRun = viewHydrationRun.current + 1;
+    viewHydrationRun.current = hydrationRun;
     setLoading(true);
+    setViewsLoading(false);
     setError("");
     setErrorAction("");
     setPrepared([]);
@@ -83,6 +97,28 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
       setWarnings(result.warnings);
       setDiagnostics(result.diagnostics);
       setPosts(result.posts);
+      if (result.posts.length) {
+        setViewsLoading(true);
+        void (async () => {
+          const postsForViews = result.posts.slice(0, MAX_SELECTED_POSTS);
+          for (let offset = 0; offset < postsForViews.length; offset += VIEW_COUNT_BATCH_SIZE) {
+            if (viewHydrationRun.current !== hydrationRun) return;
+            try {
+              const batch = postsForViews.slice(offset, offset + VIEW_COUNT_BATCH_SIZE);
+              const counts = await fetchThreadsViewCounts(batch);
+              if (viewHydrationRun.current !== hydrationRun) return;
+              const byId = new Map(counts.views.map((item) => [item.id, item.viewCount]));
+              setPosts((current) => current.map((post) => {
+                const viewCount = byId.get(post.id);
+                return viewCount === undefined ? post : { ...post, viewCount };
+              }));
+            } catch {
+              // Просмотры являются дополнительной метрикой: ошибка одной пачки не скрывает найденные посты.
+            }
+          }
+          if (viewHydrationRun.current === hydrationRun) setViewsLoading(false);
+        })();
+      }
     } catch (searchError) {
       const apiError = searchError instanceof ApiRequestError ? searchError : null;
       setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Threads.");
@@ -115,7 +151,11 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
     for (let index = 0; index < selectedPosts.length; index += 1) {
       const post = selectedPosts[index];
       try {
-        items.push(await fetchThreadsConversation(post, maxReplies));
+        const item = await fetchThreadsConversation(post, maxReplies);
+        items.push(item);
+        if (item.post.viewCount !== undefined) {
+          setPosts((current) => current.map((candidate) => candidate.id === item.post.id ? { ...candidate, viewCount: item.post.viewCount } : candidate));
+        }
       } catch (conversationError) {
         const apiError = conversationError instanceof ApiRequestError ? conversationError : null;
         items.push({
@@ -202,7 +242,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
           {postAuthor(post)}
           <p className="threads-post-text">{post.text || "Пост без текстового описания"}</p>
           {(post.mediaUrl || post.thumbnailUrl) && <div className="threads-post-media">{postPreview(post)}</div>}
-          <footer><span>{post.topicTag ? `#${post.topicTag}` : post.hasReplies ? "Есть ответы" : "Публичный пост"}</span><a href={post.permalink} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Оригинал <ExternalLink size={14} /></a></footer>
+          <footer><div className="threads-post-meta"><span>{post.topicTag ? `#${post.topicTag}` : post.hasReplies ? "Есть ответы" : "Публичный пост"}</span><span className="threads-post-views"><Eye size={14} />{post.viewCount !== undefined ? `${formatViewCount(post.viewCount)} просмотров` : viewsLoading ? "Считаем просмотры…" : "Просмотры недоступны"}</span></div><a href={post.permalink} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Оригинал <ExternalLink size={14} /></a></footer>
         </article>;
       })}</div>
       {visibleCount < posts.length && <button type="button" className="button ghost threads-load-more" onClick={() => setVisibleCount((current) => Math.min(current + limit, posts.length))}>Показать ещё {Math.min(limit, posts.length - visibleCount)}</button>}
@@ -218,7 +258,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
     {prepared.length > 0 && <section className="threads-pdf-report" id="threads-pdf-report">
       <header><div><AtSign size={28} /><span><small>THREADS SIGNAL REPORT</small><h2>{query}</h2><p>{prepared.length} выбранных постов · {prepared.reduce((sum, item) => sum + item.replies.length, 0)} ответов · {new Date().toLocaleString("ru-RU")}</p></span></div><button className="button primary" disabled={preparing} onClick={() => void exportPdf()}><FileDown size={17} />Выгрузить PDF</button></header>
       <div className="threads-report-items">{prepared.map((item, postIndex) => <article className="threads-report-thread" key={item.post.id}>
-        <div className="threads-report-post"><b>{String(postIndex + 1).padStart(2, "0")}</b>{postAuthor(item.post)}<p>{item.post.text || "Пост без текста"}</p>{(item.post.mediaUrl || item.post.thumbnailUrl) && <div className="threads-report-media">{postPreview(item.post)}</div>}<footer><time><CalendarDays size={14} />{formatDate(item.post.timestamp)}</time><a href={item.post.permalink} target="_blank" rel="noreferrer">Открыть пост <ExternalLink size={13} /></a></footer></div>
+        <div className="threads-report-post"><b>{String(postIndex + 1).padStart(2, "0")}</b>{postAuthor(item.post)}<p>{item.post.text || "Пост без текста"}</p>{(item.post.mediaUrl || item.post.thumbnailUrl) && <div className="threads-report-media">{postPreview(item.post)}</div>}<footer><div><time><CalendarDays size={14} />{formatDate(item.post.timestamp)}</time>{item.post.viewCount !== undefined && <span className="threads-post-views"><Eye size={14} />{formatViewCount(item.post.viewCount)} просмотров</span>}</div><a href={item.post.permalink} target="_blank" rel="noreferrer">Открыть пост <ExternalLink size={13} /></a></footer></div>
         <section className="threads-report-replies"><header><MessageCircle size={18} /><strong>Ответы</strong><span>{item.replies.length}</span></header>
           {item.error && <div className="threads-reply-error"><ShieldAlert size={18} /><div><strong>Ответы недоступны</strong><p>{item.error}</p>{item.action && <small>{item.action}</small>}</div></div>}
           {item.warnings.map((warning) => <div className="threads-reply-warning" key={warning}>{warning}</div>)}

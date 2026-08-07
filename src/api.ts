@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse, ThreadsViewCountsResponse } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -141,6 +141,13 @@ export async function fetchThreadsConversation(post: ThreadsPost, maxReplies: nu
   return request<ThreadsConversationResponse>("/api/threads/conversation", {
     method: "POST",
     body: JSON.stringify({ post, maxReplies }),
+  });
+}
+
+export async function fetchThreadsViewCounts(posts: ThreadsPost[]): Promise<ThreadsViewCountsResponse> {
+  return request<ThreadsViewCountsResponse>("/api/threads/views", {
+    method: "POST",
+    body: JSON.stringify({ posts }),
   });
 }
 

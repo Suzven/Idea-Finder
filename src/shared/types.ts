@@ -509,6 +509,11 @@ export interface ThreadsPost {
   hasReplies?: boolean;
   topicTag?: string;
   linkAttachmentUrl?: string;
+  viewCount?: number;
+}
+
+export interface ThreadsViewCountsResponse {
+  views: Array<{ id: string; viewCount: number }>;
 }
 
 export interface ThreadsReply extends ThreadsPost {
