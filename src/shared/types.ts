@@ -540,6 +540,7 @@ export interface ThreadsFeedLoadDiagnostic {
   lastPostChanged: boolean;
   newUniquePosts: number;
   collectedTotal: number;
+  screenshotDataUrl?: string;
 }
 
 export interface ThreadsSearchResponse {

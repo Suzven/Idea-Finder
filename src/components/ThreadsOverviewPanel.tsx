@@ -197,6 +197,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
             <div><dt>Спиннер исчез</dt><dd>{entry.loaderFinished ? "да" : "нет"}</dd></div>
             <div><dt>Последний URL сменился</dt><dd>{entry.lastPostChanged ? "да" : "нет"}</dd></div>
           </dl>
+          {entry.screenshotDataUrl && <figure className="threads-debug-screenshot"><figcaption>Последний экран Chromium перед закрытием</figcaption><a href={entry.screenshotDataUrl} target="_blank" rel="noreferrer"><img src={entry.screenshotDataUrl} alt={`Экран Chromium после таймаута прокрутки ${entry.pass}`} /></a></figure>}
         </article>)}</div>
       </div>
     </details>}

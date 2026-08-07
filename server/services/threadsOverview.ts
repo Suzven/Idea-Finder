@@ -15,7 +15,7 @@ const SEARCH_TIMEOUT_MS = 30_000;
 const SEARCH_RESULT_TIMEOUT_MS = 15_000;
 const MAX_SEARCH_FEED_LOADS = 10;
 const MAX_CONVERSATION_SCROLL_PASSES = 14;
-const FEED_LOAD_TIMEOUT_MS = 15_000;
+const FEED_LOAD_TIMEOUT_MS = 40_000;
 const FEED_IDLE_CONFIRM_MS = 3_500;
 const FEED_SETTLE_MS = 900;
 const LOGIN_TIMEOUT_MS = 25_000;
@@ -352,7 +352,7 @@ async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
 interface FeedLoadResult {
   loaded: boolean;
   timedOut: boolean;
-  diagnostic: Omit<ThreadsFeedLoadDiagnostic, "newUniquePosts" | "collectedTotal">;
+  diagnostic: Omit<ThreadsFeedLoadDiagnostic, "newUniquePosts" | "collectedTotal" | "screenshotDataUrl"> & { screenshotDataUrl?: string };
 }
 
 async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResult> {
@@ -421,11 +421,14 @@ async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResul
     }
     previous = current;
   }
-  return finish("timeout", latest.loading
-    ? "Через 15 секунд индикатор загрузки всё ещё виден."
+  const timedOut = finish("timeout", latest.loading
+    ? "Через 40 секунд индикатор загрузки всё ещё виден."
     : contentChanged
-      ? "Контент менялся, но лента не успела стабилизироваться за 15 секунд."
-      : "За 15 секунд Threads не завершил подгрузку и не показал новый контент.");
+      ? "Контент менялся, но лента не успела стабилизироваться за 40 секунд."
+      : "За 40 секунд Threads не завершил подгрузку и не показал новый контент.");
+  const screenshot = await page.screenshot({ type: "jpeg", quality: 68, fullPage: false }).catch(() => undefined);
+  if (screenshot) timedOut.diagnostic.screenshotDataUrl = `data:image/jpeg;base64,${screenshot.toString("base64")}`;
+  return timedOut;
 }
 
 interface CollectedCards {
@@ -512,7 +515,7 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
         ? "Данные собраны через авторизованную сессию Threads в Chromium."
         : "Данные собраны из публичной веб-выдачи Threads через Chromium."];
       if (request.since || request.until) warnings.push("Диапазон дат применён локально к датам найденных постов.");
-      if (collected.loadTimedOut) warnings.push("Одна из подгрузок Threads не завершилась за 15 секунд; сохранены все посты, успевшие появиться в ленте.");
+      if (collected.loadTimedOut) warnings.push("Одна из подгрузок Threads не завершилась за 40 секунд; сохранены все посты, успевшие появиться в ленте. Последний экран Chromium приложен к диагностическому логу.");
       if (!session && posts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
       return {
         source: "web",

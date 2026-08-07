@@ -1564,6 +1564,10 @@ body.modal-open { overflow: hidden; }
 .threads-debug-rows dl div { display: grid; gap: 2px; padding: 7px 8px; border-radius: 7px; background: #f5f7fa; }
 .threads-debug-rows dt { color: #929aaa; font-size: 10px; }
 .threads-debug-rows dd { margin: 0; color: #465166; font-size: 11.5px; font-weight: 800; }
+.threads-debug-screenshot { display: grid; gap: 7px; margin: 12px 0 0; }
+.threads-debug-screenshot figcaption { color: #6c7588; font-size: 11px; font-weight: 800; }
+.threads-debug-screenshot a { display: block; overflow: hidden; border: 1px solid #dce1e9; border-radius: 10px; background: #eef1f5; }
+.threads-debug-screenshot img { display: block; width: 100%; max-height: 520px; object-fit: contain; }
 .threads-results > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px; border-bottom: 1px solid #e8ebf0; }
 .threads-results > header p { margin: 5px 0 0; color: #818a9c; font-size: 12.5px; }
 .threads-results > header > div:last-child { display: flex; gap: 8px; }
