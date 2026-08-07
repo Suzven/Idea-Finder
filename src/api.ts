@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -119,6 +119,20 @@ export async function savePrivateSettings(settings: PrivateSettingsInput): Promi
   return request<PrivateSettingsSummary>("/api/settings/private", {
     method: "PUT",
     body: JSON.stringify(settings),
+  });
+}
+
+export async function searchThreadsPosts(payload: ThreadsSearchRequest): Promise<ThreadsSearchResponse> {
+  return request<ThreadsSearchResponse>("/api/threads/search", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchThreadsConversation(post: ThreadsPost): Promise<ThreadsConversationResponse> {
+  return request<ThreadsConversationResponse>("/api/threads/conversation", {
+    method: "POST",
+    body: JSON.stringify({ post }),
   });
 }
 

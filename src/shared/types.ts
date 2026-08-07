@@ -14,6 +14,7 @@ export interface AuthSessionResponse {
 
 export interface PrivateSettingsSummary {
   openai: { configured: boolean };
+  threads: { configured: boolean };
   googleAds: {
     configured: boolean;
     customerId: string;
@@ -26,6 +27,7 @@ export interface PrivateSettingsSummary {
 
 export interface PrivateSettingsInput {
   openaiApiKey?: string | null;
+  threadsAccessToken?: string | null;
   googleAds?: {
     developerToken?: string | null;
     customerId?: string | null;
@@ -475,6 +477,54 @@ export interface GoogleTrendsJobResponse {
   progress?: GoogleTrendsProgress;
   result?: GoogleTrendsReport;
   error?: AIAnalysisJobError;
+}
+
+export type ThreadsSearchType = "TOP" | "RECENT";
+export type ThreadsSearchMode = "KEYWORD" | "TAG";
+
+export interface ThreadsPost {
+  id: string;
+  username: string;
+  text: string;
+  timestamp: string;
+  permalink: string;
+  mediaType?: string;
+  mediaUrl?: string;
+  thumbnailUrl?: string;
+  profilePictureUrl?: string;
+  isVerified?: boolean;
+  hasReplies?: boolean;
+  topicTag?: string;
+  linkAttachmentUrl?: string;
+}
+
+export interface ThreadsReply extends ThreadsPost {
+  parentId?: string;
+  depth: number;
+}
+
+export interface ThreadsSearchRequest {
+  query: string;
+  searchType: ThreadsSearchType;
+  searchMode: ThreadsSearchMode;
+  limit: number;
+  since?: string;
+  until?: string;
+  after?: string;
+}
+
+export interface ThreadsSearchResponse {
+  query: string;
+  posts: ThreadsPost[];
+  nextCursor?: string;
+  warnings: string[];
+}
+
+export interface ThreadsConversationResponse {
+  post: ThreadsPost;
+  replies: ThreadsReply[];
+  warnings: string[];
+  truncated: boolean;
 }
 
 export type IntegrationLogStatus = "started" | "success" | "error";

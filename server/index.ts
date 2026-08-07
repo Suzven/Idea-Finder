@@ -16,12 +16,13 @@ import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
+import { fetchThreadsConversation, searchThreadsPosts } from "./services/threadsOverview.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsPost } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -293,6 +294,7 @@ app.use("/api", requireAuthentication);
 
 const privateSettingsSchema = z.object({
   openaiApiKey: z.string().trim().max(500).nullable().optional(),
+  threadsAccessToken: z.string().trim().max(2_000).nullable().optional(),
   googleAds: z.object({
     developerToken: z.string().trim().max(200).nullable().optional(),
     customerId: z.string().trim().max(20).nullable().optional(),
@@ -309,6 +311,7 @@ function privateSettingsSummary(settings: Awaited<ReturnType<typeof getPrivateSe
   } catch { /* invalid JSON is rejected while saving */ }
   return {
     openai: { configured: Boolean(settings.openaiApiKey) },
+    threads: { configured: Boolean(settings.threadsAccessToken) },
     googleAds: {
       configured: Boolean(settings.googleAds?.developerToken && settings.googleAds.customerId && settings.googleAds.serviceAccountJson),
       customerId: settings.googleAds?.customerId ?? "",
@@ -342,6 +345,7 @@ app.put("/api/settings/private", async (request, response, next) => {
     const userId = getAuthenticatedUser(request).id;
     await savePrivateSettings(userId, {
       ...(parsed.openaiApiKey !== undefined ? { openaiApiKey: parsed.openaiApiKey } : {}),
+      ...(parsed.threadsAccessToken !== undefined ? { threadsAccessToken: parsed.threadsAccessToken } : {}),
       ...(parsed.googleAds ? { googleAds: {
         ...(parsed.googleAds.developerToken !== undefined ? { developerToken: parsed.googleAds.developerToken } : {}),
         ...(parsed.googleAds.customerId !== undefined ? { customerId: parsed.googleAds.customerId?.replace(/\D/g, "") ?? null } : {}),
@@ -350,6 +354,58 @@ app.put("/api/settings/private", async (request, response, next) => {
       } } : {}),
     });
     response.json(privateSettingsSummary(await getPrivateSettingsCredentials(userId)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+const threadsSearchSchema = z.object({
+  query: z.string().trim().min(1).max(100),
+  searchType: z.enum(["TOP", "RECENT"]).default("TOP"),
+  searchMode: z.enum(["KEYWORD", "TAG"]).default("KEYWORD"),
+  limit: z.coerce.number().int().min(1).max(50).default(25),
+  since: z.string().datetime().optional(),
+  until: z.string().datetime().optional(),
+  after: z.string().trim().max(2_000).optional(),
+});
+
+const threadsPostSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  username: z.string().trim().max(200).default("threads_user"),
+  text: z.string().max(20_000).default(""),
+  timestamp: z.string().max(100).default(""),
+  permalink: z.string().url().max(2_000),
+  mediaType: z.string().max(50).optional(),
+  mediaUrl: z.string().url().max(4_000).optional(),
+  thumbnailUrl: z.string().url().max(4_000).optional(),
+  profilePictureUrl: z.string().url().max(4_000).optional(),
+  isVerified: z.boolean().optional(),
+  hasReplies: z.boolean().optional(),
+  topicTag: z.string().max(500).optional(),
+  linkAttachmentUrl: z.string().url().max(4_000).optional(),
+});
+
+async function threadsTokenForRequest(request: express.Request): Promise<string> {
+  const token = (await getPrivateSettingsCredentials(getAuthenticatedUser(request).id)).threadsAccessToken;
+  if (!token) {
+    throw new AppError(400, "THREADS_TOKEN_REQUIRED", "Сначала добавьте Threads Access Token.", "Откройте настройки → Threads и сохраните токен с правами threads_basic, threads_keyword_search и threads_read_replies.");
+  }
+  return token;
+}
+
+app.post("/api/threads/search", async (request, response, next) => {
+  try {
+    const parsed = threadsSearchSchema.parse(request.body);
+    response.json(await searchThreadsPosts(parsed, await threadsTokenForRequest(request)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/threads/conversation", async (request, response, next) => {
+  try {
+    const post = threadsPostSchema.parse(request.body?.post) as ThreadsPost;
+    response.json(await fetchThreadsConversation(post, await threadsTokenForRequest(request)));
   } catch (error) {
     next(error);
   }

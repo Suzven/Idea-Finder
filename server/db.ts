@@ -51,6 +51,7 @@ export interface StoredUser {
 
 export interface StoredPrivateSettings {
   openaiApiKey?: string | null;
+  threadsAccessToken?: string | null;
   googleAds?: {
     developerToken?: string | null;
     customerId?: string | null;
@@ -168,7 +169,7 @@ export async function deleteUserSession(tokenHash: string): Promise<void> {
 export async function getPrivateSettingsCredentials(userId: string): Promise<StoredPrivateSettings> {
   if (!pool) return {};
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    `SELECT openai_api_key, google_ads_developer_token, google_ads_customer_id,
+    `SELECT openai_api_key, threads_access_token, google_ads_developer_token, google_ads_customer_id,
             google_ads_login_customer_id, google_ads_service_account_json
      FROM user_private_settings WHERE user_id = ?`,
     [userId],
@@ -181,6 +182,7 @@ export async function getPrivateSettingsCredentials(userId: string): Promise<Sto
   const loginCustomerId = nullableString(row.google_ads_login_customer_id) ?? undefined;
   return {
     openaiApiKey: decryptPrivateValue(row.openai_api_key),
+    threadsAccessToken: decryptPrivateValue(row.threads_access_token),
     googleAds: developerToken || serviceAccountJson || customerId || loginCustomerId ? {
       developerToken,
       customerId,
@@ -195,13 +197,15 @@ export async function savePrivateSettings(userId: string, input: StoredPrivateSe
   const current = await getPrivateSettingsCredentials(userId);
   const googleAds = { ...(current.googleAds ?? {}), ...(input.googleAds ?? {}) };
   const openaiApiKey = input.openaiApiKey === undefined ? current.openaiApiKey : input.openaiApiKey;
+  const threadsAccessToken = input.threadsAccessToken === undefined ? current.threadsAccessToken : input.threadsAccessToken;
   await pool.execute(
     `INSERT INTO user_private_settings
-      (user_id, openai_api_key, google_ads_developer_token, google_ads_customer_id,
+      (user_id, openai_api_key, threads_access_token, google_ads_developer_token, google_ads_customer_id,
        google_ads_login_customer_id, google_ads_service_account_json)
-     VALUES (?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        openai_api_key = VALUES(openai_api_key),
+       threads_access_token = VALUES(threads_access_token),
        google_ads_developer_token = VALUES(google_ads_developer_token),
        google_ads_customer_id = VALUES(google_ads_customer_id),
        google_ads_login_customer_id = VALUES(google_ads_login_customer_id),
@@ -210,6 +214,7 @@ export async function savePrivateSettings(userId: string, input: StoredPrivateSe
     [
       userId,
       encryptPrivateValue(openaiApiKey),
+      encryptPrivateValue(threadsAccessToken),
       encryptPrivateValue(googleAds.developerToken),
       googleAds.customerId || null,
       googleAds.loginCustomerId || null,

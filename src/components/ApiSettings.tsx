@@ -1,4 +1,4 @@
-import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
+import { AtSign, BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchPrivateSettings, fetchReviewProxySettings, removeKeywordSurferExtension, savePrivateSettings, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
 import type { KeywordProviderSettings } from "../keywordSettings";
@@ -10,7 +10,7 @@ interface ApiSettingsProps {
   onSaved: () => void;
 }
 
-type SettingsTab = "openai" | "keywords" | "proxy";
+type SettingsTab = "openai" | "threads" | "keywords" | "proxy";
 
 const proxyStageLabels = {
   browser: "Chromium",
@@ -42,6 +42,10 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [privateSummary, setPrivateSummary] = useState<PrivateSettingsSummary | null>(null);
   const [privateLoading, setPrivateLoading] = useState(false);
   const [privateError, setPrivateError] = useState("");
+  const [threadsToken, setThreadsToken] = useState("");
+  const [threadsVisible, setThreadsVisible] = useState(false);
+  const [threadsSaved, setThreadsSaved] = useState(false);
+  const [threadsError, setThreadsError] = useState("");
   const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
   const [keywordSaved, setKeywordSaved] = useState(false);
   const [keywordError, setKeywordError] = useState("");
@@ -69,6 +73,10 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setSaved(false);
     setPrivateError("");
     setVisible(false);
+    setThreadsToken("");
+    setThreadsVisible(false);
+    setThreadsSaved(false);
+    setThreadsError("");
     setKeywordSettings({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
     setKeywordSaved(false);
     setKeywordError("");
@@ -139,6 +147,37 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       onSaved();
     } catch (error) {
       setPrivateError(error instanceof Error ? error.message : "Не удалось удалить OpenAI-ключ.");
+    } finally {
+      setPrivateLoading(false);
+    }
+  };
+
+  const persistThreads = async () => {
+    if (!threadsToken.trim()) return;
+    setPrivateLoading(true);
+    setThreadsError("");
+    try {
+      setPrivateSummary(await savePrivateSettings({ threadsAccessToken: threadsToken.trim() }));
+      setThreadsToken("");
+      setThreadsSaved(true);
+      onSaved();
+    } catch (error) {
+      setThreadsError(error instanceof Error ? error.message : "Не удалось сохранить Threads Access Token.");
+    } finally {
+      setPrivateLoading(false);
+    }
+  };
+
+  const clearThreads = async () => {
+    setPrivateLoading(true);
+    setThreadsError("");
+    try {
+      setPrivateSummary(await savePrivateSettings({ threadsAccessToken: null }));
+      setThreadsToken("");
+      setThreadsSaved(false);
+      onSaved();
+    } catch (error) {
+      setThreadsError(error instanceof Error ? error.message : "Не удалось удалить Threads Access Token.");
     } finally {
       setPrivateLoading(false);
     }
@@ -293,6 +332,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
 
       <div className="api-settings-tabs" role="tablist" aria-label="Разделы настроек">
         <button type="button" role="tab" aria-selected={activeTab === "openai"} className={activeTab === "openai" ? "active" : ""} onClick={() => setActiveTab("openai")}><KeyRound size={17} />OpenAI</button>
+        <button type="button" role="tab" aria-selected={activeTab === "threads"} className={activeTab === "threads" ? "active" : ""} onClick={() => setActiveTab("threads")}><AtSign size={17} />Threads</button>
         <button type="button" role="tab" aria-selected={activeTab === "keywords"} className={activeTab === "keywords" ? "active" : ""} onClick={() => setActiveTab("keywords")}><BarChart3 size={17} />Ключи</button>
         <button type="button" role="tab" aria-selected={activeTab === "proxy"} className={activeTab === "proxy" ? "active" : ""} onClick={() => setActiveTab("proxy")}><Network size={17} />Прокси</button>
       </div>
@@ -315,6 +355,25 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
         </div>
         <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Защищённое хранение</strong><p>Ключ зашифрован AES-256-GCM в MySQL и доступен только вашему пользователю. Он никогда не возвращается обратно в браузер или логи.</p></div></div>
         <div className="setting-block api-model-note"><span className="setting-label">Модель</span><strong>GPT-5.6</strong><p>Vision-анализ креативов и полных скриншотов лендингов через Responses API.</p></div>
+      </div>}
+
+      {activeTab === "threads" && <div className="api-settings-pane" role="tabpanel">
+        <div className="setting-block api-key-block">
+          <span className="setting-label">Threads User Access Token</span>
+          <p>Нужен для официального поиска публичных постов и загрузки ответов через Threads API.</p>
+          <div className="api-key-input">
+            <AtSign size={18} />
+            <input type={threadsVisible ? "text" : "password"} value={threadsToken} onChange={(event) => { setThreadsToken(event.target.value); setThreadsSaved(false); }} autoComplete="off" spellCheck={false} placeholder={privateSummary?.threads.configured ? "Токен уже сохранён — введите новый для замены" : "Вставьте Threads User Access Token"} />
+            <button type="button" onClick={() => setThreadsVisible((current) => !current)} aria-label={threadsVisible ? "Скрыть токен" : "Показать токен"}>{threadsVisible ? <EyeOff size={18} /> : <Eye size={18} />}</button>
+          </div>
+          {(threadsSaved || privateSummary?.threads.configured) && <div className="api-key-saved"><CheckCircle2 size={16} />Threads-токен защищён и закреплён за вашим пользователем</div>}
+          {threadsError && <div className="proxy-settings-error">{threadsError}</div>}
+          <div className="api-key-actions">
+            <button className="button primary grow" disabled={privateLoading || !threadsToken.trim()} onClick={() => void persistThreads()}>Сохранить токен</button>
+            <button className="button danger-outline" disabled={privateLoading || !privateSummary?.threads.configured} onClick={() => void clearThreads()}><Trash2 size={16} />Удалить</button>
+          </div>
+        </div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Какие права нужны</strong><p><code>threads_basic</code>, <code>threads_keyword_search</code> и <code>threads_read_replies</code>. Токен шифруется AES-256-GCM и не возвращается в браузер после сохранения.</p></div></div>
       </div>}
 
       {activeTab === "keywords" && <div className="api-settings-pane keyword-settings-pane" role="tabpanel">
