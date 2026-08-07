@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -120,6 +120,10 @@ export async function savePrivateSettings(settings: PrivateSettingsInput): Promi
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+export async function initializeThreadsBrowserSession(): Promise<ThreadsSessionResponse> {
+  return request<ThreadsSessionResponse>("/api/threads/session", { method: "POST" });
 }
 
 export async function searchThreadsPosts(payload: ThreadsSearchRequest): Promise<ThreadsSearchResponse> {

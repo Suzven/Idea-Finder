@@ -57,6 +57,11 @@ export interface StoredPrivateSettings {
     loginCustomerId?: string | null;
     serviceAccountJson?: string | null;
   };
+  threads?: {
+    username?: string | null;
+    password?: string | null;
+    storageState?: string | null;
+  };
 }
 
 function proxyEncryptionKey(): Buffer {
@@ -169,7 +174,8 @@ export async function getPrivateSettingsCredentials(userId: string): Promise<Sto
   if (!pool) return {};
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
     `SELECT openai_api_key, google_ads_developer_token, google_ads_customer_id,
-            google_ads_login_customer_id, google_ads_service_account_json
+            google_ads_login_customer_id, google_ads_service_account_json,
+            threads_username, threads_password, threads_storage_state
      FROM user_private_settings WHERE user_id = ?`,
     [userId],
   );
@@ -179,6 +185,9 @@ export async function getPrivateSettingsCredentials(userId: string): Promise<Sto
   const serviceAccountJson = decryptPrivateValue(row.google_ads_service_account_json);
   const customerId = nullableString(row.google_ads_customer_id) ?? undefined;
   const loginCustomerId = nullableString(row.google_ads_login_customer_id) ?? undefined;
+  const threadsUsername = nullableString(row.threads_username) ?? undefined;
+  const threadsPassword = decryptPrivateValue(row.threads_password);
+  const threadsStorageState = decryptPrivateValue(row.threads_storage_state);
   return {
     openaiApiKey: decryptPrivateValue(row.openai_api_key),
     googleAds: developerToken || serviceAccountJson || customerId || loginCustomerId ? {
@@ -186,6 +195,11 @@ export async function getPrivateSettingsCredentials(userId: string): Promise<Sto
       customerId,
       loginCustomerId,
       serviceAccountJson,
+    } : undefined,
+    threads: threadsUsername || threadsPassword || threadsStorageState ? {
+      username: threadsUsername,
+      password: threadsPassword,
+      storageState: threadsStorageState,
     } : undefined,
   };
 }
@@ -195,17 +209,28 @@ export async function savePrivateSettings(userId: string, input: StoredPrivateSe
   const current = await getPrivateSettingsCredentials(userId);
   const googleAds = { ...(current.googleAds ?? {}), ...(input.googleAds ?? {}) };
   const openaiApiKey = input.openaiApiKey === undefined ? current.openaiApiKey : input.openaiApiKey;
+  const threadsInput = input.threads;
+  const threads = { ...(current.threads ?? {}), ...(threadsInput ?? {}) };
+  const credentialsChanged = Boolean(threadsInput) && (
+    (threadsInput?.username !== undefined && threadsInput.username !== current.threads?.username)
+    || (threadsInput?.password !== undefined && threadsInput.password !== current.threads?.password)
+  );
+  if (credentialsChanged && threadsInput?.storageState === undefined) threads.storageState = null;
   await pool.execute(
     `INSERT INTO user_private_settings
       (user_id, openai_api_key, google_ads_developer_token, google_ads_customer_id,
-       google_ads_login_customer_id, google_ads_service_account_json)
-     VALUES (?, ?, ?, ?, ?, ?)
+       google_ads_login_customer_id, google_ads_service_account_json,
+       threads_username, threads_password, threads_storage_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        openai_api_key = VALUES(openai_api_key),
        google_ads_developer_token = VALUES(google_ads_developer_token),
        google_ads_customer_id = VALUES(google_ads_customer_id),
        google_ads_login_customer_id = VALUES(google_ads_login_customer_id),
        google_ads_service_account_json = VALUES(google_ads_service_account_json),
+       threads_username = VALUES(threads_username),
+       threads_password = VALUES(threads_password),
+       threads_storage_state = VALUES(threads_storage_state),
        updated_at = CURRENT_TIMESTAMP`,
     [
       userId,
@@ -214,6 +239,9 @@ export async function savePrivateSettings(userId: string, input: StoredPrivateSe
       googleAds.customerId || null,
       googleAds.loginCustomerId || null,
       encryptPrivateValue(googleAds.serviceAccountJson),
+      threads.username || null,
+      encryptPrivateValue(threads.password),
+      encryptPrivateValue(threads.storageState),
     ],
   );
 }

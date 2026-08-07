@@ -1,6 +1,6 @@
-import { BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
+import { AtSign, BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchPrivateSettings, fetchReviewProxySettings, removeKeywordSurferExtension, savePrivateSettings, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
+import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchPrivateSettings, fetchReviewProxySettings, initializeThreadsBrowserSession, removeKeywordSurferExtension, savePrivateSettings, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
 import type { KeywordProviderSettings } from "../keywordSettings";
 import type { KeywordSurferExtensionInfo, PrivateSettingsSummary, ReviewProxyTestResult } from "../shared/types";
 
@@ -10,7 +10,7 @@ interface ApiSettingsProps {
   onSaved: () => void;
 }
 
-type SettingsTab = "openai" | "keywords" | "proxy";
+type SettingsTab = "openai" | "keywords" | "threads" | "proxy";
 
 const proxyStageLabels = {
   browser: "Chromium",
@@ -45,6 +45,12 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
   const [keywordSaved, setKeywordSaved] = useState(false);
   const [keywordError, setKeywordError] = useState("");
+  const [threadsUsername, setThreadsUsername] = useState("");
+  const [threadsPassword, setThreadsPassword] = useState("");
+  const [threadsPasswordVisible, setThreadsPasswordVisible] = useState(false);
+  const [threadsSaving, setThreadsSaving] = useState(false);
+  const [threadsMessage, setThreadsMessage] = useState("");
+  const [threadsError, setThreadsError] = useState("");
   const [surferInfo, setSurferInfo] = useState<KeywordSurferExtensionInfo>({ configured: false });
   const [surferLoading, setSurferLoading] = useState(false);
   const [surferUploading, setSurferUploading] = useState(false);
@@ -72,6 +78,10 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setKeywordSettings({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
     setKeywordSaved(false);
     setKeywordError("");
+    setThreadsPassword("");
+    setThreadsPasswordVisible(false);
+    setThreadsMessage("");
+    setThreadsError("");
     setSurferError("");
     setSurferLoading(true);
     setProxyPassword("");
@@ -102,13 +112,20 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       .then((settings) => {
         if (cancelled) return;
         setPrivateSummary(settings);
+        setThreadsUsername(settings.threads.username);
+        if (settings.threads.sessionSaved) setThreadsMessage("Авторизованная сессия Chromium сохранена");
         setKeywordSettings((current) => ({ googleAds: {
           ...current.googleAds,
           customerId: settings.googleAds.customerId,
           loginCustomerId: settings.googleAds.loginCustomerId,
         } }));
       })
-      .catch((error) => { if (!cancelled) setKeywordError(error instanceof Error ? error.message : "Не удалось загрузить защищённые настройки."); })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Не удалось загрузить защищённые настройки.";
+        setKeywordError(message);
+        setThreadsError(message);
+      })
       .finally(() => { if (!cancelled) setPrivateLoading(false); });
     return () => { cancelled = true; };
   }, [open]);
@@ -186,6 +203,61 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       setKeywordError(error instanceof Error ? error.message : "Не удалось удалить настройки Google Ads.");
     } finally {
       setPrivateLoading(false);
+    }
+  };
+
+  const persistThreadsSettings = async () => {
+    const username = threadsUsername.trim();
+    if (!username) {
+      setThreadsError("Укажите имя пользователя, телефон или email от аккаунта Threads.");
+      return;
+    }
+    if (!threadsPassword && !privateSummary?.threads.hasPassword) {
+      setThreadsError("Укажите пароль Threads.");
+      return;
+    }
+    setThreadsSaving(true);
+    setThreadsError("");
+    setThreadsMessage("Сохраняем реквизиты и открываем Threads…");
+    try {
+      const savedSummary = await savePrivateSettings({ threads: {
+        username,
+        ...(threadsPassword ? { password: threadsPassword } : {}),
+      } });
+      setPrivateSummary(savedSummary);
+      setThreadsPassword("");
+      const session = await initializeThreadsBrowserSession();
+      const refreshed = await fetchPrivateSettings();
+      setPrivateSummary(refreshed);
+      setThreadsUsername(refreshed.threads.username);
+      setThreadsMessage(session.authenticated
+        ? "Вход выполнен. Cookies сохранены и будут использоваться автоматически."
+        : "Реквизиты сохранены.");
+      onSaved();
+    } catch (error) {
+      const apiError = error instanceof ApiRequestError ? error : null;
+      setThreadsError(`${error instanceof Error ? error.message : "Не удалось войти в Threads."}${apiError?.action ? ` ${apiError.action}` : ""}`);
+      setThreadsMessage("");
+    } finally {
+      setThreadsSaving(false);
+    }
+  };
+
+  const clearThreadsSettings = async () => {
+    if (!window.confirm("Удалить логин, пароль и сохранённую сессию Threads?")) return;
+    setThreadsSaving(true);
+    setThreadsError("");
+    setThreadsMessage("");
+    try {
+      setPrivateSummary(await savePrivateSettings({ threads: { username: null, password: null } }));
+      setThreadsUsername("");
+      setThreadsPassword("");
+      setThreadsMessage("Реквизиты и cookies Threads удалены");
+      onSaved();
+    } catch (error) {
+      setThreadsError(error instanceof Error ? error.message : "Не удалось удалить подключение Threads.");
+    } finally {
+      setThreadsSaving(false);
     }
   };
 
@@ -294,6 +366,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       <div className="api-settings-tabs" role="tablist" aria-label="Разделы настроек">
         <button type="button" role="tab" aria-selected={activeTab === "openai"} className={activeTab === "openai" ? "active" : ""} onClick={() => setActiveTab("openai")}><KeyRound size={17} />OpenAI</button>
         <button type="button" role="tab" aria-selected={activeTab === "keywords"} className={activeTab === "keywords" ? "active" : ""} onClick={() => setActiveTab("keywords")}><BarChart3 size={17} />Ключи</button>
+        <button type="button" role="tab" aria-selected={activeTab === "threads"} className={activeTab === "threads" ? "active" : ""} onClick={() => setActiveTab("threads")}><AtSign size={17} />Threads</button>
         <button type="button" role="tab" aria-selected={activeTab === "proxy"} className={activeTab === "proxy" ? "active" : ""} onClick={() => setActiveTab("proxy")}><Network size={17} />Прокси</button>
       </div>
 
@@ -349,6 +422,24 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
           <button className="button danger-outline" disabled={privateLoading || !privateSummary?.googleAds.configured} onClick={() => void clearKeywordSettings()}><Trash2 size={16} />Очистить</button>
         </div>
         <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Персональные подключения</strong><p>Google-реквизиты зашифрованы в MySQL, а Keyword Surfer хранится в отдельной серверной папке вашего пользователя. На телефоне повторная настройка не нужна.</p></div></div>
+      </div>}
+
+      {activeTab === "threads" && <div className="api-settings-pane" role="tabpanel">
+        <div className="setting-block threads-login-settings">
+          <span className="setting-label">Аккаунт Threads для Chromium</span>
+          <p>Авторизация открывает полную персональную выдачу Threads. Сначала используется сохранённая сессия; пароль нужен повторно только после её истечения.</p>
+          <div className="keyword-settings-fields">
+            <label><span>Логин, телефон или email</span><input value={threadsUsername} onChange={(event) => { setThreadsUsername(event.target.value); setThreadsMessage(""); }} placeholder="username или email@example.com" autoComplete="username" spellCheck={false} /></label>
+            <label><span>Пароль</span><div className="proxy-password-input"><input type={threadsPasswordVisible ? "text" : "password"} value={threadsPassword} onChange={(event) => { setThreadsPassword(event.target.value); setThreadsMessage(""); }} placeholder={privateSummary?.threads.hasPassword ? "Пароль уже сохранён — оставьте пустым без изменений" : "Пароль от Threads / Instagram"} autoComplete="current-password" spellCheck={false} /><button type="button" onClick={() => setThreadsPasswordVisible((current) => !current)} aria-label={threadsPasswordVisible ? "Скрыть пароль" : "Показать пароль"}>{threadsPasswordVisible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
+          </div>
+          {threadsMessage && <div className="api-key-saved"><CheckCircle2 size={16} />{threadsMessage}</div>}
+          {threadsError && <div className="proxy-settings-error">{threadsError}</div>}
+          <div className="api-key-actions">
+            <button className="button primary grow" disabled={privateLoading || threadsSaving || !threadsUsername.trim()} onClick={() => void persistThreadsSettings()}>{threadsSaving ? <LoaderCircle className="spin" size={16} /> : <AtSign size={16} />}{threadsSaving ? "Входим…" : "Сохранить и войти"}</button>
+            <button className="button danger-outline" disabled={privateLoading || threadsSaving || !privateSummary?.threads.configured} onClick={() => void clearThreadsSettings()}><Trash2 size={16} />Удалить</button>
+          </div>
+        </div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Сессия закреплена за пользователем</strong><p>Пароль и cookies шифруются AES-256-GCM перед записью в MySQL. Они не возвращаются в браузер, не попадают в логи и не используются другими пользователями SpyService.</p></div></div>
       </div>}
 
       {activeTab === "proxy" && <div className="api-settings-pane" role="tabpanel">

@@ -1,4 +1,4 @@
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, BrowserContextOptions, Page } from "playwright";
 import { AppError } from "../errors.js";
 import type {
   ThreadsConversationResponse,
@@ -15,6 +15,7 @@ const SEARCH_RESULT_TIMEOUT_MS = 15_000;
 const MAX_SEARCH_FEED_PAGES = 10;
 const MAX_CONVERSATION_SCROLL_PASSES = 14;
 const FEED_LOAD_TIMEOUT_MS = 8_000;
+const LOGIN_TIMEOUT_MS = 25_000;
 const MAX_CONVERSATION_REPLIES = 250;
 
 let activeBrowserJobs = 0;
@@ -31,6 +32,19 @@ interface ThreadsWebCard {
   thumbnailUrl?: unknown;
   topicTag?: unknown;
   linkAttachmentUrl?: unknown;
+}
+
+export interface ThreadsBrowserSession {
+  username: string;
+  password: string;
+  storageState?: string;
+  saveStorageState?: (storageState: string) => Promise<void>;
+}
+
+export interface ThreadsSessionStatus {
+  authenticated: boolean;
+  username: string;
+  sessionSaved: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -99,22 +113,113 @@ function releaseBrowserJob(): void {
   browserJobWaiters.shift()?.();
 }
 
-async function withThreadsPage<T>(operation: (page: Page, context: BrowserContext) => Promise<T>): Promise<T> {
+function parseStorageState(value?: string): BrowserContextOptions["storageState"] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { cookies?: unknown; origins?: unknown };
+    if (!Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) return undefined;
+    return parsed as BrowserContextOptions["storageState"];
+  } catch {
+    return undefined;
+  }
+}
+
+async function ensureThreadsAuthenticated(page: Page, session: ThreadsBrowserSession): Promise<void> {
+  await gotoThreadsPage(page, `${THREADS_WEB_ORIGIN}/login`);
+  await page.waitForTimeout(900);
+
+  const usernameInput = page.locator('input[type="text"]:visible, input[type="email"]:visible').first();
+  const passwordInput = page.locator('input[type="password"]:visible').first();
+  const loginFormVisible = await passwordInput.isVisible().catch(() => false);
+  if (loginFormVisible) {
+    await usernameInput.fill(session.username, { timeout: 8_000 });
+    await passwordInput.fill(session.password, { timeout: 8_000 });
+    const submitButton = page.locator('input[type="submit"]:visible, button[type="submit"]:visible').first();
+    if (await submitButton.isVisible().catch(() => false)) {
+      await submitButton.click({ timeout: 8_000 });
+    } else {
+      await passwordInput.press("Enter", { timeout: 8_000 });
+    }
+    await Promise.race([
+      page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: LOGIN_TIMEOUT_MS }).catch(() => undefined),
+      page.locator('input[type="password"]').waitFor({ state: "hidden", timeout: LOGIN_TIMEOUT_MS }).catch(() => undefined),
+    ]);
+    await page.waitForTimeout(1_200);
+  }
+
+  const currentUrl = page.url();
+  const bodyText = (await page.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 2_000);
+  const passwordStillVisible = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
+  const challenge = /(?:введите код|код безопасности|подтвердите|проверьте уведомления|two-factor|security code|confirm your identity|check your notifications|challenge)/i.test(`${currentUrl} ${bodyText}`);
+  if (challenge) {
+    throw new AppError(
+      409,
+      "THREADS_LOGIN_CHALLENGE",
+      "Threads запросил дополнительное подтверждение входа.",
+      "Откройте Threads обычным браузером, подтвердите новый вход с VPS и повторите проверку в настройках.",
+      { url: currentUrl },
+    );
+  }
+  if (passwordStillVisible || currentUrl.includes("/login")) {
+    const rejected = /(?:неверн|incorrect|invalid|wrong password|couldn't find|не удалось найти)/i.test(bodyText);
+    throw new AppError(
+      401,
+      "THREADS_LOGIN_FAILED",
+      rejected ? "Threads отклонил логин или пароль." : "Не удалось подтвердить вход в Threads.",
+      rejected ? "Проверьте реквизиты в настройках." : "Повторите проверку. Если Threads прислал уведомление, подтвердите вход в приложении.",
+      { url: currentUrl },
+    );
+  }
+}
+
+async function withThreadsPage<T>(
+  operation: (page: Page, context: BrowserContext) => Promise<T>,
+  session?: ThreadsBrowserSession,
+  requireSessionSave = false,
+): Promise<T> {
   await acquireBrowserJob();
   let context: BrowserContext | undefined;
+  let authenticated = false;
+  let sessionSaveError: unknown;
   try {
     const browser = await getMetaBrowser();
+    const storageState = parseStorageState(session?.storageState);
     context = await browser.newContext({
       locale: "ru-RU",
       viewport: { width: 1440, height: 1100 },
       extraHTTPHeaders: { "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8" },
+      ...(storageState ? { storageState } : {}),
     });
     const page = await context.newPage();
+    if (session) {
+      await ensureThreadsAuthenticated(page, session);
+      authenticated = true;
+    }
     return await operation(page, context);
   } finally {
+    if (authenticated && context && session?.saveStorageState) {
+      const state = JSON.stringify(await context.storageState());
+      try {
+        await session.saveStorageState(state);
+      } catch (error) {
+        sessionSaveError = error;
+        if (!requireSessionSave) console.error("Не удалось сохранить сессию Threads:", error);
+      }
+    }
     await context?.close().catch(() => undefined);
     releaseBrowserJob();
+    if (requireSessionSave && sessionSaveError) {
+      throw new AppError(500, "THREADS_SESSION_SAVE_FAILED", "Вход выполнен, но сохранить cookies Threads не удалось.", "Проверьте миграцию базы данных и повторите вход.");
+    }
   }
+}
+
+export async function initializeThreadsSession(session: ThreadsBrowserSession): Promise<ThreadsSessionStatus> {
+  return withThreadsPage(async () => ({
+    authenticated: true,
+    username: session.username,
+    sessionSaved: true,
+  }), session, true);
 }
 
 function threadsWebError(error: unknown): AppError {
@@ -310,7 +415,7 @@ function withinDateRange(post: ThreadsPost, since?: string, until?: string): boo
   return true;
 }
 
-export async function searchThreadsPosts(request: ThreadsSearchRequest): Promise<ThreadsSearchResponse> {
+export async function searchThreadsPosts(request: ThreadsSearchRequest, session?: ThreadsBrowserSession): Promise<ThreadsSearchResponse> {
   return withThreadsPage(async (page) => {
     try {
       const url = buildSearchUrl(request);
@@ -351,7 +456,7 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest): Promise
     } catch (error) {
       throw threadsWebError(error);
     }
-  });
+  }, session);
 }
 
 function validatePostPermalink(value: string): string {
@@ -367,7 +472,7 @@ function validatePostPermalink(value: string): string {
   }
 }
 
-export async function fetchThreadsConversation(post: ThreadsPost): Promise<ThreadsConversationResponse> {
+export async function fetchThreadsConversation(post: ThreadsPost, session?: ThreadsBrowserSession): Promise<ThreadsConversationResponse> {
   return withThreadsPage(async (page) => {
     try {
       const url = validatePostPermalink(post.permalink);
@@ -394,5 +499,5 @@ export async function fetchThreadsConversation(post: ThreadsPost): Promise<Threa
     } catch (error) {
       throw threadsWebError(error);
     }
-  });
+  }, session);
 }

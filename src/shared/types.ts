@@ -22,6 +22,12 @@ export interface PrivateSettingsSummary {
     hasServiceAccount: boolean;
     serviceAccountEmail?: string;
   };
+  threads: {
+    configured: boolean;
+    username: string;
+    hasPassword: boolean;
+    sessionSaved: boolean;
+  };
 }
 
 export interface PrivateSettingsInput {
@@ -32,6 +38,16 @@ export interface PrivateSettingsInput {
     loginCustomerId?: string | null;
     serviceAccountJson?: string | null;
   };
+  threads?: {
+    username?: string | null;
+    password?: string | null;
+  };
+}
+
+export interface ThreadsSessionResponse {
+  authenticated: boolean;
+  username: string;
+  sessionSaved: boolean;
 }
 
 export interface LegacyBrowserImport {

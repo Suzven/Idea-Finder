@@ -16,7 +16,8 @@ import { AppError } from "./errors.js";
 import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
-import { fetchThreadsConversation, searchThreadsPosts } from "./services/threadsOverview.js";
+import { fetchThreadsConversation, initializeThreadsSession, searchThreadsPosts } from "./services/threadsOverview.js";
+import type { ThreadsBrowserSession } from "./services/threadsOverview.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
@@ -300,6 +301,10 @@ const privateSettingsSchema = z.object({
     loginCustomerId: z.string().trim().max(20).nullable().optional(),
     serviceAccountJson: z.string().trim().max(20_000).nullable().optional(),
   }).optional(),
+  threads: z.object({
+    username: z.string().trim().max(255).nullable().optional(),
+    password: z.string().max(500).nullable().optional(),
+  }).optional(),
 });
 
 function privateSettingsSummary(settings: Awaited<ReturnType<typeof getPrivateSettingsCredentials>>): PrivateSettingsSummary {
@@ -317,6 +322,12 @@ function privateSettingsSummary(settings: Awaited<ReturnType<typeof getPrivateSe
       hasDeveloperToken: Boolean(settings.googleAds?.developerToken),
       hasServiceAccount: Boolean(settings.googleAds?.serviceAccountJson),
       ...(serviceAccountEmail ? { serviceAccountEmail } : {}),
+    },
+    threads: {
+      configured: Boolean(settings.threads?.username && settings.threads.password),
+      username: settings.threads?.username ?? "",
+      hasPassword: Boolean(settings.threads?.password),
+      sessionSaved: Boolean(settings.threads?.storageState),
     },
   };
 }
@@ -348,6 +359,10 @@ app.put("/api/settings/private", async (request, response, next) => {
         ...(parsed.googleAds.customerId !== undefined ? { customerId: parsed.googleAds.customerId?.replace(/\D/g, "") ?? null } : {}),
         ...(parsed.googleAds.loginCustomerId !== undefined ? { loginCustomerId: parsed.googleAds.loginCustomerId?.replace(/\D/g, "") ?? null } : {}),
         ...(parsed.googleAds.serviceAccountJson !== undefined ? { serviceAccountJson: parsed.googleAds.serviceAccountJson } : {}),
+      } } : {}),
+      ...(parsed.threads ? { threads: {
+        ...(parsed.threads.username !== undefined ? { username: parsed.threads.username } : {}),
+        ...(parsed.threads.password !== undefined ? { password: parsed.threads.password } : {}),
       } } : {}),
     });
     response.json(privateSettingsSummary(await getPrivateSettingsCredentials(userId)));
@@ -381,10 +396,41 @@ const threadsPostSchema = z.object({
   linkAttachmentUrl: z.string().url().max(4_000).optional(),
 });
 
+async function threadsBrowserSession(userId: string): Promise<ThreadsBrowserSession | undefined> {
+  const stored = await getPrivateSettingsCredentials(userId);
+  const username = stored.threads?.username?.trim();
+  const password = stored.threads?.password;
+  if (!username || !password) return undefined;
+  return {
+    username,
+    password,
+    ...(stored.threads?.storageState ? { storageState: stored.threads.storageState } : {}),
+    saveStorageState: async (storageState) => {
+      if (storageState !== stored.threads?.storageState) {
+        await savePrivateSettings(userId, { threads: { storageState } });
+      }
+    },
+  };
+}
+
+app.post("/api/threads/session", async (request, response, next) => {
+  try {
+    const userId = getAuthenticatedUser(request).id;
+    const session = await threadsBrowserSession(userId);
+    if (!session) {
+      throw new AppError(400, "THREADS_CREDENTIALS_MISSING", "Сначала сохраните логин и пароль Threads в настройках.");
+    }
+    response.json(await initializeThreadsSession(session));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/threads/search", async (request, response, next) => {
   try {
     const parsed = threadsSearchSchema.parse(request.body);
-    response.json(await searchThreadsPosts(parsed));
+    const session = await threadsBrowserSession(getAuthenticatedUser(request).id);
+    response.json(await searchThreadsPosts(parsed, session));
   } catch (error) {
     next(error);
   }
@@ -393,7 +439,8 @@ app.post("/api/threads/search", async (request, response, next) => {
 app.post("/api/threads/conversation", async (request, response, next) => {
   try {
     const post = threadsPostSchema.parse(request.body?.post) as ThreadsPost;
-    response.json(await fetchThreadsConversation(post));
+    const session = await threadsBrowserSession(getAuthenticatedUser(request).id);
+    response.json(await fetchThreadsConversation(post, session));
   } catch (error) {
     next(error);
   }
