@@ -1,4 +1,4 @@
-import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, UserRound, X } from "lucide-react";
+import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
@@ -22,7 +22,7 @@ function postPreview(post: ThreadsPost) {
 
 function postAuthor(post: ThreadsPost) {
   return <div className="threads-author">
-    <span>{post.profilePictureUrl ? <img src={post.profilePictureUrl} alt="" loading="lazy" /> : <UserRound size={18} />}</span>
+    <span className="threads-author-placeholder" aria-hidden="true">👤</span>
     <div><strong>@{post.username}{post.isVerified && <CheckCircle2 size={14} aria-label="Подтверждённый аккаунт" />}</strong><time>{formatDate(post.timestamp)}</time></div>
   </div>;
 }

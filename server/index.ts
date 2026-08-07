@@ -375,7 +375,6 @@ const threadsPostSchema = z.object({
   mediaType: z.string().max(50).optional(),
   mediaUrl: z.string().url().max(4_000).optional(),
   thumbnailUrl: z.string().url().max(4_000).optional(),
-  profilePictureUrl: z.string().url().max(4_000).optional(),
   isVerified: z.boolean().optional(),
   hasReplies: z.boolean().optional(),
   topicTag: z.string().max(500).optional(),

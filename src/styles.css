@@ -1552,7 +1552,7 @@ body.modal-open { overflow: hidden; }
 .threads-post-grid > article.selected .threads-post-check { border-color: #202026; background: #202026; }
 .threads-author { display: flex; align-items: center; gap: 10px; min-width: 0; padding-right: 34px; }
 .threads-author > span { display: grid; place-items: center; flex: 0 0 auto; width: 38px; height: 38px; overflow: hidden; color: #555e70; border-radius: 50%; background: #edeef2; }
-.threads-author > span img { width: 100%; height: 100%; object-fit: cover; }
+.threads-author > span.threads-author-placeholder { font-size: 19px; line-height: 1; }
 .threads-author > div { display: grid; min-width: 0; gap: 3px; }
 .threads-author strong { display: flex; align-items: center; gap: 5px; overflow: hidden; color: #2e374b; font-size: 13.5px; text-overflow: ellipsis; white-space: nowrap; }
 .threads-author time { color: #8b94a5; font-size: 11.5px; }

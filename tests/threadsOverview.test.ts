@@ -11,7 +11,7 @@ describe("Threads public web parser", () => {
       permalink: "https://www.threads.com/@product_person/post/Dbu3coEiUry",
       mediaType: "IMAGE",
       mediaUrl: "https://cdn.example.com/post.jpg",
-      profilePictureUrl: "https://cdn.example.com/avatar.jpg",
+      profilePictureUrl: "https://cdn.example.com/broken-avatar.jpg",
       topicTag: "productmanagement",
     })).toEqual({
       id: "Dbu3coEiUry",
@@ -21,7 +21,6 @@ describe("Threads public web parser", () => {
       permalink: "https://www.threads.com/@product_person/post/Dbu3coEiUry",
       mediaType: "IMAGE",
       mediaUrl: "https://cdn.example.com/post.jpg",
-      profilePictureUrl: "https://cdn.example.com/avatar.jpg",
       topicTag: "productmanagement",
     });
   });

@@ -12,7 +12,9 @@ import { getMetaBrowser } from "./metaSnapshot.js";
 const THREADS_WEB_ORIGIN = "https://www.threads.com";
 const SEARCH_TIMEOUT_MS = 30_000;
 const SEARCH_RESULT_TIMEOUT_MS = 15_000;
-const MAX_SCROLL_PASSES = 14;
+const MAX_SEARCH_FEED_PAGES = 10;
+const MAX_CONVERSATION_SCROLL_PASSES = 14;
+const FEED_LOAD_TIMEOUT_MS = 8_000;
 const MAX_CONVERSATION_REPLIES = 250;
 
 let activeBrowserJobs = 0;
@@ -27,7 +29,6 @@ interface ThreadsWebCard {
   mediaType?: unknown;
   mediaUrl?: unknown;
   thumbnailUrl?: unknown;
-  profilePictureUrl?: unknown;
   topicTag?: unknown;
   linkAttachmentUrl?: unknown;
 }
@@ -59,7 +60,6 @@ export function normalizeThreadsWebPost(value: unknown): ThreadsPost | null {
   const mediaType = optionalString(item.mediaType);
   const mediaUrl = safeHttpUrl(item.mediaUrl);
   const thumbnailUrl = safeHttpUrl(item.thumbnailUrl);
-  const profilePictureUrl = safeHttpUrl(item.profilePictureUrl);
   const linkAttachmentUrl = safeHttpUrl(item.linkAttachmentUrl);
   return {
     id,
@@ -70,7 +70,6 @@ export function normalizeThreadsWebPost(value: unknown): ThreadsPost | null {
     ...(mediaType ? { mediaType } : {}),
     ...(mediaUrl ? { mediaUrl } : {}),
     ...(thumbnailUrl ? { thumbnailUrl } : {}),
-    ...(profilePictureUrl ? { profilePictureUrl } : {}),
     ...(optionalString(item.topicTag) ? { topicTag: optionalString(item.topicTag) } : {}),
     ...(linkAttachmentUrl ? { linkAttachmentUrl } : {}),
   };
@@ -185,8 +184,6 @@ async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise
       }
       const video = card.querySelector<HTMLVideoElement>("video");
       const mediaImage = card.querySelector<HTMLImageElement>('a[href$="/media"] img, a[href*="/media?"] img');
-      const profileLink = card.querySelector<HTMLAnchorElement>(`a[href="/@${CSS.escape(username)}"], a[href$="/@${CSS.escape(username)}"]`);
-      const profileImage = profileLink?.querySelector<HTMLImageElement>("img");
       const tagLink = card.querySelector<HTMLAnchorElement>('a[href*="serp_type=tags"]');
       const externalLink = [...card.querySelectorAll<HTMLAnchorElement>("a[href]")].find((candidate) => {
         try {
@@ -203,7 +200,6 @@ async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise
         mediaType: video ? "VIDEO" : mediaImage ? "IMAGE" : "",
         mediaUrl: video?.currentSrc || video?.src || video?.querySelector("source")?.src || mediaImage?.currentSrc || mediaImage?.src || "",
         thumbnailUrl: video?.poster || mediaImage?.currentSrc || mediaImage?.src || "",
-        profilePictureUrl: profileImage?.currentSrc || profileImage?.src || "",
         topicTag: clean(tagLink?.textContent),
         linkAttachmentUrl: externalLink?.href || "",
       });
@@ -213,18 +209,96 @@ async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise
   return rawCards.map(normalizeThreadsWebPost).filter((post): post is ThreadsPost => Boolean(post));
 }
 
-async function collectCards(page: Page, targetCount: number, conversationOnly = false): Promise<ThreadsPost[]> {
+interface FeedSnapshot {
+  postCount: number;
+  height: number;
+  lastPostUrl: string;
+  loading: boolean;
+}
+
+async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
+  return page.evaluate(() => {
+    const visible = (element: Element) => {
+      const node = element as HTMLElement;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0;
+    };
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
+    const explicitLoaders = document.querySelectorAll([
+      '[role="progressbar"]',
+      '[aria-label*="loading" i]',
+      '[aria-label*="загрузка" i]',
+      '[data-visualcompletion="loading-state"]',
+    ].join(","));
+    const animatedBottomLoader = [...document.querySelectorAll<HTMLElement>("body *")].some((element) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.top < innerHeight * 0.55 || rect.top > innerHeight || rect.width > 80 || rect.height > 80 || !visible(element)) return false;
+      const style = getComputedStyle(element);
+      return style.animationName !== "none" && Number.parseFloat(style.animationDuration) > 0;
+    });
+    return {
+      postCount: links.length,
+      height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+      lastPostUrl: links.at(-1)?.href ?? "",
+      loading: [...explicitLoaders].some(visible) || animatedBottomLoader,
+    };
+  });
+}
+
+async function loadNextFeedPage(page: Page): Promise<boolean> {
+  const before = await feedSnapshot(page);
+  await page.evaluate(() => {
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
+    links.at(-1)?.scrollIntoView({ block: "end", behavior: "instant" });
+    window.scrollTo({ top: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight), behavior: "instant" });
+  });
+
+  const startedAt = Date.now();
+  let contentChanged = false;
+  let settledAt = 0;
+  while (Date.now() - startedAt < FEED_LOAD_TIMEOUT_MS) {
+    await page.waitForTimeout(250);
+    const current = await feedSnapshot(page);
+    const changed = current.postCount > before.postCount
+      || current.height > before.height + 8
+      || Boolean(current.lastPostUrl && current.lastPostUrl !== before.lastPostUrl);
+    if (changed) {
+      contentChanged = true;
+      settledAt ||= Date.now();
+    }
+    if (contentChanged && !current.loading && Date.now() - settledAt >= 700) return true;
+    if (!contentChanged && !current.loading && Date.now() - startedAt >= 2_500) return false;
+  }
+  return contentChanged;
+}
+
+interface CollectedCards {
+  posts: ThreadsPost[];
+  loadedPages: number;
+}
+
+async function collectCards(
+  page: Page,
+  targetCount: number,
+  conversationOnly = false,
+  maxPages = MAX_CONVERSATION_SCROLL_PASSES + 1,
+  stopAtTarget = true,
+): Promise<CollectedCards> {
   const collected = new Map<string, ThreadsPost>();
   let stablePasses = 0;
-  for (let pass = 0; pass <= MAX_SCROLL_PASSES && collected.size < targetCount; pass += 1) {
+  let loadedPages = 1;
+  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
     const before = collected.size;
     for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
     stablePasses = collected.size === before ? stablePasses + 1 : 0;
-    if (stablePasses >= 3 || pass === MAX_SCROLL_PASSES || collected.size >= targetCount) break;
-    await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }));
-    await page.waitForTimeout(700);
+    if (stablePasses >= 2 || pageNumber === maxPages || (stopAtTarget && collected.size >= targetCount)) break;
+    const loaded = await loadNextFeedPage(page);
+    if (loaded) loadedPages += 1;
+    else stablePasses += 1;
   }
-  return [...collected.values()];
+  for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+  return { posts: [...collected.values()], loadedPages };
 }
 
 function withinDateRange(post: ThreadsPost, since?: string, until?: string): boolean {
@@ -254,7 +328,8 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest): Promise
         };
       }
       const offset = decodeThreadsWebCursor(request.after);
-      const allPosts = (await collectCards(page, offset + request.limit + 1))
+      const collected = await collectCards(page, Number.MAX_SAFE_INTEGER, false, MAX_SEARCH_FEED_PAGES, false);
+      const allPosts = collected.posts
         .filter((post) => withinDateRange(post, request.since, request.until));
       if (request.searchType === "RECENT") {
         allPosts.sort((left, right) => (Date.parse(right.timestamp) || 0) - (Date.parse(left.timestamp) || 0));
@@ -271,7 +346,7 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest): Promise
         ...(hasMore ? { nextCursor: encodeThreadsWebCursor(offset + request.limit) } : {}),
         warnings,
         appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
-        diagnostics: { url, collected: allPosts.length },
+        diagnostics: { url, collected: allPosts.length, loadedPages: collected.loadedPages },
       };
     } catch (error) {
       throw threadsWebError(error);
@@ -301,7 +376,7 @@ export async function fetchThreadsConversation(post: ThreadsPost): Promise<Threa
       if (!hasCards) {
         return { post, replies: [], warnings: ["Threads не отдал публичные ответы для этого поста."], truncated: false };
       }
-      const cards = await collectCards(page, MAX_CONVERSATION_REPLIES + 1, true);
+      const { posts: cards } = await collectCards(page, MAX_CONVERSATION_REPLIES + 1, true);
       const replies: ThreadsReply[] = cards
         .filter((item) => item.id !== post.id && item.permalink !== post.permalink)
         .slice(0, MAX_CONVERSATION_REPLIES)

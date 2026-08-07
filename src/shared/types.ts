@@ -489,7 +489,6 @@ export interface ThreadsPost {
   mediaType?: string;
   mediaUrl?: string;
   thumbnailUrl?: string;
-  profilePictureUrl?: string;
   isVerified?: boolean;
   hasReplies?: boolean;
   topicTag?: string;
@@ -527,6 +526,7 @@ export interface ThreadsSearchResponse {
   diagnostics?: {
     url: string;
     collected?: number;
+    loadedPages?: number;
     pagePreview?: string;
   };
 }
