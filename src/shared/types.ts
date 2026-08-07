@@ -526,6 +526,22 @@ export interface ThreadsSearchRequest {
   after?: string;
 }
 
+export interface ThreadsFeedLoadDiagnostic {
+  pass: number;
+  durationMs: number;
+  outcome: "loaded" | "end" | "timeout";
+  reason: string;
+  beforeDomPosts: number;
+  afterDomPosts: number;
+  beforeHeight: number;
+  afterHeight: number;
+  sawLoader: boolean;
+  loaderFinished: boolean;
+  lastPostChanged: boolean;
+  newUniquePosts: number;
+  collectedTotal: number;
+}
+
 export interface ThreadsSearchResponse {
   source: "web";
   accessMode: "authenticated" | "public";
@@ -545,6 +561,7 @@ export interface ThreadsSearchResponse {
     collected?: number;
     loadedPages?: number;
     loadTimedOut?: boolean;
+    feedLoads?: ThreadsFeedLoadDiagnostic[];
     pagePreview?: string;
   };
 }

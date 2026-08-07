@@ -2,6 +2,7 @@ import type { BrowserContext, BrowserContextOptions, Page } from "playwright";
 import { AppError } from "../errors.js";
 import type {
   ThreadsConversationResponse,
+  ThreadsFeedLoadDiagnostic,
   ThreadsPost,
   ThreadsReply,
   ThreadsSearchRequest,
@@ -351,9 +352,10 @@ async function feedSnapshot(page: Page): Promise<FeedSnapshot> {
 interface FeedLoadResult {
   loaded: boolean;
   timedOut: boolean;
+  diagnostic: Omit<ThreadsFeedLoadDiagnostic, "newUniquePosts" | "collectedTotal">;
 }
 
-async function loadNextFeedPage(page: Page): Promise<FeedLoadResult> {
+async function loadNextFeedPage(page: Page, pass: number): Promise<FeedLoadResult> {
   const before = await feedSnapshot(page);
   await page.evaluate(() => {
     const loader = document.querySelector<HTMLElement>('[role="status"][data-visualcompletion="loading-state"], [role="status"][aria-label*="загрузка" i]');
@@ -368,9 +370,28 @@ async function loadNextFeedPage(page: Page): Promise<FeedLoadResult> {
   let lastChangeAt = 0;
   let loaderFinishedAt = 0;
   let previous = before;
+  let latest = before;
+  const finish = (outcome: ThreadsFeedLoadDiagnostic["outcome"], reason: string): FeedLoadResult => ({
+    loaded: outcome === "loaded" || (outcome === "timeout" && contentChanged),
+    timedOut: outcome === "timeout",
+    diagnostic: {
+      pass,
+      durationMs: Date.now() - startedAt,
+      outcome,
+      reason,
+      beforeDomPosts: before.postCount,
+      afterDomPosts: latest.postCount,
+      beforeHeight: before.height,
+      afterHeight: latest.height,
+      sawLoader,
+      loaderFinished: sawLoader && !latest.loading,
+      lastPostChanged: Boolean(latest.lastPostUrl && latest.lastPostUrl !== before.lastPostUrl),
+    },
+  });
   while (Date.now() - startedAt < FEED_LOAD_TIMEOUT_MS) {
     await page.waitForTimeout(250);
     const current = await feedSnapshot(page);
+    latest = current;
     const changedFromBefore = current.postCount > before.postCount
       || current.height > before.height + 8
       || Boolean(current.lastPostUrl && current.lastPostUrl !== before.lastPostUrl);
@@ -388,23 +409,30 @@ async function loadNextFeedPage(page: Page): Promise<FeedLoadResult> {
       loaderFinishedAt ||= Date.now();
     }
     if (contentChanged && !current.loading && Date.now() - lastChangeAt >= FEED_SETTLE_MS) {
-      return { loaded: true, timedOut: false };
+      return finish("loaded", sawLoader
+        ? "Появился новый контент, индикатор загрузки исчез, DOM стабилизировался."
+        : "Появился новый контент без видимого индикатора, DOM стабилизировался.");
     }
     if (!contentChanged && sawLoader && loaderFinishedAt && Date.now() - loaderFinishedAt >= FEED_SETTLE_MS) {
-      return { loaded: false, timedOut: false };
+      return finish("end", "Индикатор загрузки завершился, но новых URL постов и изменений ленты не появилось.");
     }
     if (!contentChanged && !sawLoader && Date.now() - startedAt >= FEED_IDLE_CONFIRM_MS) {
-      return { loaded: false, timedOut: false };
+      return finish("end", "После прокрутки индикатор не появился и лента не изменилась.");
     }
     previous = current;
   }
-  return { loaded: contentChanged, timedOut: true };
+  return finish("timeout", latest.loading
+    ? "Через 15 секунд индикатор загрузки всё ещё виден."
+    : contentChanged
+      ? "Контент менялся, но лента не успела стабилизироваться за 15 секунд."
+      : "За 15 секунд Threads не завершил подгрузку и не показал новый контент.");
 }
 
 interface CollectedCards {
   posts: ThreadsPost[];
   loadedPages: number;
   loadTimedOut: boolean;
+  feedLoads: ThreadsFeedLoadDiagnostic[];
 }
 
 async function collectCards(
@@ -417,14 +445,21 @@ async function collectCards(
   const collected = new Map<string, ThreadsPost>();
   let loadedPages = 1;
   let loadTimedOut = false;
+  const feedLoads: ThreadsFeedLoadDiagnostic[] = [];
   for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
   for (let loadPass = 0; loadPass < maxLoadPasses; loadPass += 1) {
     if (stopAtTarget && collected.size >= targetCount) break;
-    const result = await loadNextFeedPage(page);
+    const collectedBefore = collected.size;
+    const result = await loadNextFeedPage(page, loadPass + 1);
     if (result.loaded) {
       loadedPages += 1;
       for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
     }
+    feedLoads.push({
+      ...result.diagnostic,
+      newUniquePosts: collected.size - collectedBefore,
+      collectedTotal: collected.size,
+    });
     if (result.timedOut) {
       loadTimedOut = true;
       break;
@@ -432,7 +467,7 @@ async function collectCards(
     if (!result.loaded) break;
   }
   for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
-  return { posts: [...collected.values()], loadedPages, loadTimedOut };
+  return { posts: [...collected.values()], loadedPages, loadTimedOut, feedLoads };
 }
 
 function withinDateRange(post: ThreadsPost, since?: string, until?: string): boolean {
@@ -487,7 +522,13 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
         ...(hasMore ? { nextCursor: encodeThreadsWebCursor(offset + request.limit) } : {}),
         warnings,
         appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
-        diagnostics: { url, collected: allPosts.length, loadedPages: collected.loadedPages, loadTimedOut: collected.loadTimedOut },
+        diagnostics: {
+          url,
+          collected: allPosts.length,
+          loadedPages: collected.loadedPages,
+          loadTimedOut: collected.loadTimedOut,
+          feedLoads: collected.feedLoads,
+        },
       };
     } catch (error) {
       throw threadsWebError(error);

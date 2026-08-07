@@ -1540,6 +1540,30 @@ body.modal-open { overflow: hidden; }
 .threads-error small { display: block; margin-top: 5px; color: #9b5962; font-size: 12px; }
 .threads-warning { align-items: center; color: #805f23; border-color: #eadab2; background: #fffaf0; }
 .threads-warning svg { color: #c58a30; }
+.threads-debug-log { overflow: hidden; border: 1px solid #d9dee8; border-radius: 15px; background: #fff; box-shadow: 0 12px 32px rgba(33,42,68,.05); }
+.threads-debug-log > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 17px; cursor: pointer; list-style: none; color: #4c566b; font-weight: 800; }
+.threads-debug-log > summary::-webkit-details-marker { display: none; }
+.threads-debug-log > summary span { display: inline-flex; align-items: center; gap: 9px; }
+.threads-debug-log > summary svg { color: #6d5bd0; }
+.threads-debug-log > summary small { color: #8a93a4; font-size: 12px; font-weight: 700; }
+.threads-debug-body { display: grid; gap: 12px; padding: 15px; border-top: 1px solid #e8ebf0; background: #f7f8fb; }
+.threads-debug-meta { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 10px; align-items: center; color: #7a8395; font-size: 12px; }
+.threads-debug-meta code { overflow: hidden; padding: 8px 10px; color: #4e586c; border: 1px solid #e0e4eb; border-radius: 8px; background: #fff; font: 12px/1.4 "SFMono-Regular",Consolas,monospace; text-overflow: ellipsis; white-space: nowrap; }
+.threads-debug-rows { display: grid; gap: 10px; }
+.threads-debug-rows article { padding: 13px 14px; border: 1px solid #dfe4ec; border-left: 4px solid #2faa77; border-radius: 11px; background: #fff; }
+.threads-debug-rows article.timeout { border-left-color: #d75e66; background: #fffafb; }
+.threads-debug-rows article.end { border-left-color: #d09a3d; }
+.threads-debug-rows article header { display: flex; align-items: center; gap: 10px; }
+.threads-debug-rows article header strong { color: #30394e; font-size: 13px; }
+.threads-debug-rows article header em { padding: 3px 7px; color: #257a59; border-radius: 6px; background: #e9f8f1; font-size: 10px; font-style: normal; font-weight: 850; }
+.threads-debug-rows article.timeout header em { color: #a8444c; background: #fdecef; }
+.threads-debug-rows article.end header em { color: #8b641f; background: #fff3da; }
+.threads-debug-rows article header time { margin-left: auto; color: #8c95a6; font-size: 11px; }
+.threads-debug-rows article p { margin: 7px 0 10px; color: #657085; font-size: 12.5px; line-height: 1.5; }
+.threads-debug-rows dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin: 0; }
+.threads-debug-rows dl div { display: grid; gap: 2px; padding: 7px 8px; border-radius: 7px; background: #f5f7fa; }
+.threads-debug-rows dt { color: #929aaa; font-size: 10px; }
+.threads-debug-rows dd { margin: 0; color: #465166; font-size: 11.5px; font-weight: 800; }
 .threads-results > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px; border-bottom: 1px solid #e8ebf0; }
 .threads-results > header p { margin: 5px 0 0; color: #818a9c; font-size: 12.5px; }
 .threads-results > header > div:last-child { display: flex; gap: 8px; }

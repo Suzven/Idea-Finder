@@ -2,7 +2,7 @@ import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, File
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
-import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchType } from "../shared/types";
+import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchResponse, ThreadsSearchType } from "../shared/types";
 
 interface PreparedThread extends ThreadsConversationResponse {
   error?: string;
@@ -42,6 +42,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [error, setError] = useState("");
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [diagnostics, setDiagnostics] = useState<ThreadsSearchResponse["diagnostics"]>();
   const [accessMode, setAccessMode] = useState<"authenticated" | "public">(authenticated ? "authenticated" : "public");
   const [paginationFilters, setPaginationFilters] = useState<{ searchType: ThreadsSearchType; searchMode: ThreadsSearchMode; since?: string; until?: string }>();
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
@@ -64,6 +65,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
     if (!loadMore) {
       setPrepared([]);
       setSelectedIds(new Set());
+      setDiagnostics(undefined);
     }
     try {
       const requestedSince = since ? new Date(`${since}T00:00:00.000Z`).toISOString() : undefined;
@@ -82,6 +84,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
       });
       setAccessMode(result.accessMode);
       setWarnings(result.warnings);
+      setDiagnostics(result.diagnostics);
       setNextCursor(result.nextCursor);
       setPaginationFilters({
         searchType: result.appliedFilters.searchType,
@@ -177,6 +180,26 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
 
     {error && <div className="threads-error"><ShieldAlert size={21} /><div><strong>Threads не выполнил запрос</strong><p>{error}</p>{errorAction && <small>{errorAction}</small>}</div></div>}
     {warnings.map((warning) => <div className="threads-warning" key={warning}><Sparkles size={18} />{warning}</div>)}
+
+    {diagnostics?.feedLoads && diagnostics.feedLoads.length > 0 && <details className="threads-debug-log" open={diagnostics.loadTimedOut}>
+      <summary><span><LoaderCircle size={17} />Временный лог подгрузки Threads</span><small>{diagnostics.collected ?? 0} уникальных постов · {diagnostics.loadedPages ?? 1} пачек · {diagnostics.feedLoads.length} попыток</small></summary>
+      <div className="threads-debug-body">
+        <div className="threads-debug-meta"><span>Итоговый URL</span><code>{diagnostics.url}</code></div>
+        <div className="threads-debug-rows">{diagnostics.feedLoads.map((entry) => <article className={entry.outcome} key={`${entry.pass}-${entry.durationMs}`}>
+          <header><strong>Прокрутка {entry.pass}</strong><em>{entry.outcome === "loaded" ? "Загружено" : entry.outcome === "timeout" ? "Таймаут" : "Конец ленты"}</em><time>{(entry.durationMs / 1000).toFixed(1)} с</time></header>
+          <p>{entry.reason}</p>
+          <dl>
+            <div><dt>Уникальных добавлено</dt><dd>+{entry.newUniquePosts}</dd></div>
+            <div><dt>Всего накоплено</dt><dd>{entry.collectedTotal}</dd></div>
+            <div><dt>Постов в DOM</dt><dd>{entry.beforeDomPosts} → {entry.afterDomPosts}</dd></div>
+            <div><dt>Высота DOM</dt><dd>{entry.beforeHeight} → {entry.afterHeight}</dd></div>
+            <div><dt>Спиннер появился</dt><dd>{entry.sawLoader ? "да" : "нет"}</dd></div>
+            <div><dt>Спиннер исчез</dt><dd>{entry.loaderFinished ? "да" : "нет"}</dd></div>
+            <div><dt>Последний URL сменился</dt><dd>{entry.lastPostChanged ? "да" : "нет"}</dd></div>
+          </dl>
+        </article>)}</div>
+      </div>
+    </details>}
 
     {posts.length > 0 && <section className="threads-results">
       <header><div><h2>Найденные посты</h2><p>{posts.length} результатов · выбрано {selectedIds.size} из 20 доступных для одного PDF</p></div><div><button type="button" className="button ghost" onClick={selectAll}><Check size={16} />Выбрать первые {Math.min(posts.length, 20)}</button><button type="button" className="button ghost" disabled={!selectedIds.size} onClick={() => { setSelectedIds(new Set()); setPrepared([]); }}><X size={16} />Снять выбор</button></div></header>
