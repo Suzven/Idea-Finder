@@ -1529,7 +1529,7 @@ body.modal-open { overflow: hidden; }
 .threads-query-field > div:focus-within { border-color: #888b98; box-shadow: 0 0 0 4px rgba(40,40,48,.07); }
 .threads-query-field input { flex: 1; min-width: 0; height: 48px; color: #283146; border: 0; outline: 0; background: transparent; font-size: 15px; }
 .threads-query-field .button { align-self: stretch; min-width: 150px; margin: 5px; border-radius: 10px; background: #1d1d22; box-shadow: none; font-size: 13px; }
-.threads-filter-grid { display: grid; grid-template-columns: 1.35fr 1.2fr 1fr 1fr .75fr .75fr; gap: 12px; }
+.threads-filter-grid { display: grid; grid-template-columns: 1.25fr 1.1fr .9fr .9fr .7fr .7fr .8fr; gap: 12px; }
 .threads-filter-grid label { display: grid; gap: 7px; }
 .threads-filter-grid select, .threads-filter-grid input { width: 100%; height: 44px; padding: 0 12px; color: #3a4357; border: 1px solid #dce1e9; border-radius: 11px; outline: 0; background: #fff; font: inherit; font-size: 13px; }
 .threads-error, .threads-warning { display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px; border: 1px solid #efcbd0; border-radius: 14px; background: #fff6f7; }

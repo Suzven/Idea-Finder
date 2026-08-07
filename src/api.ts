@@ -137,10 +137,10 @@ export async function searchThreadsPosts(payload: ThreadsSearchRequest): Promise
   });
 }
 
-export async function fetchThreadsConversation(post: ThreadsPost): Promise<ThreadsConversationResponse> {
+export async function fetchThreadsConversation(post: ThreadsPost, maxReplies: number): Promise<ThreadsConversationResponse> {
   return request<ThreadsConversationResponse>("/api/threads/conversation", {
     method: "POST",
-    body: JSON.stringify({ post }),
+    body: JSON.stringify({ post, maxReplies }),
   });
 }
 

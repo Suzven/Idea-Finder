@@ -35,6 +35,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [searchMode, setSearchMode] = useState<ThreadsSearchMode>("KEYWORD");
   const [limit, setLimit] = useState(25);
   const [maxPages, setMaxPages] = useState(10);
+  const [maxReplies, setMaxReplies] = useState(100);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [posts, setPosts] = useState<ThreadsPost[]>([]);
@@ -114,7 +115,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
     for (let index = 0; index < selectedPosts.length; index += 1) {
       const post = selectedPosts[index];
       try {
-        items.push(await fetchThreadsConversation(post));
+        items.push(await fetchThreadsConversation(post, maxReplies));
       } catch (conversationError) {
         const apiError = conversationError instanceof ApiRequestError ? conversationError : null;
         items.push({
@@ -160,6 +161,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
           <label><span>По дату</span><input type="date" value={until} min={since || undefined} onChange={(event) => setUntil(event.target.value)} disabled={loading} /></label>
           <label><span>Показывать за раз</span><select value={limit} onChange={(event) => setLimit(Number(event.target.value))} disabled={loading}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
           <label><span>Страниц для сбора</span><input type="number" value={maxPages} min={1} max={50} step={1} onChange={(event) => setMaxPages(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} disabled={loading} /></label>
+          <label><span>Комментариев на пост</span><input type="number" value={maxReplies} min={1} max={150} step={1} onChange={(event) => setMaxReplies(Math.max(1, Math.min(150, Number(event.target.value) || 1)))} disabled={preparing} /></label>
         </div>
       </form>
     </section>
@@ -207,7 +209,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
     </section>}
 
     {selectedPosts.length > 0 && <section className="threads-export-bar">
-      <div><FileDown size={22} /><span><strong>{selectedPosts.length} постов для отчёта</strong><small>К каждому посту будут добавлены доступные ответы и ссылки на оригиналы.</small></span></div>
+      <div><FileDown size={22} /><span><strong>{selectedPosts.length} постов для отчёта</strong><small>К каждому посту будет добавлено до {maxReplies} комментариев и ссылки на оригиналы.</small></span></div>
       {!prepared.length || prepared.length !== selectedPosts.length
         ? <button className="button primary" disabled={preparing} onClick={() => void prepareReport()}>{preparing ? <LoaderCircle className="spin" size={18} /> : <MessageCircle size={18} />}{preparing ? `Собираем ответы ${preparationProgress}/${selectedPosts.length}` : "Подготовить PDF: посты + ответы"}</button>
         : <button className="button primary" onClick={() => void exportPdf()}><FileDown size={18} />Выгрузить в PDF</button>}

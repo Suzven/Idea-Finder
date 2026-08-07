@@ -397,6 +397,11 @@ const threadsPostSchema = z.object({
   linkAttachmentUrl: z.string().url().max(4_000).optional(),
 });
 
+const threadsConversationSchema = z.object({
+  post: threadsPostSchema,
+  maxReplies: z.coerce.number().int().min(1).max(150).default(100),
+});
+
 async function threadsBrowserSession(userId: string): Promise<ThreadsBrowserSession | undefined> {
   const stored = await getPrivateSettingsCredentials(userId);
   const username = stored.threads?.username?.trim();
@@ -440,9 +445,10 @@ app.post("/api/threads/search", async (request, response, next) => {
 
 app.post("/api/threads/conversation", async (request, response, next) => {
   try {
-    const post = threadsPostSchema.parse(request.body?.post) as ThreadsPost;
+    const parsed = threadsConversationSchema.parse(request.body);
+    const post = parsed.post as ThreadsPost;
     const session = await threadsBrowserSession(getAuthenticatedUser(request).id);
-    response.json(await fetchThreadsConversation(post, session));
+    response.json(await fetchThreadsConversation(post, session, parsed.maxReplies));
   } catch (error) {
     next(error);
   }

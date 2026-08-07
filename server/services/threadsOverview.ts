@@ -19,7 +19,8 @@ const FEED_LOAD_TIMEOUT_MS = 40_000;
 const FEED_IDLE_CONFIRM_MS = 3_500;
 const FEED_SETTLE_MS = 900;
 const LOGIN_TIMEOUT_MS = 25_000;
-const MAX_CONVERSATION_REPLIES = 250;
+const DEFAULT_CONVERSATION_REPLIES = 100;
+const MAX_CONVERSATION_REPLIES = 150;
 
 let activeBrowserJobs = 0;
 const browserJobWaiters: Array<() => void> = [];
@@ -606,27 +607,32 @@ function validatePostPermalink(value: string): string {
   }
 }
 
-export async function fetchThreadsConversation(post: ThreadsPost, session?: ThreadsBrowserSession): Promise<ThreadsConversationResponse> {
+export async function fetchThreadsConversation(
+  post: ThreadsPost,
+  session?: ThreadsBrowserSession,
+  requestedReplyLimit = DEFAULT_CONVERSATION_REPLIES,
+): Promise<ThreadsConversationResponse> {
   return withThreadsPage(async (page) => {
     try {
+      const replyLimit = Math.max(1, Math.min(MAX_CONVERSATION_REPLIES, Math.floor(requestedReplyLimit)));
       const url = validatePostPermalink(post.permalink);
       await gotoThreadsPage(page, url);
       const hasCards = await waitForPublicCards(page);
       if (!hasCards) {
         return { post, replies: [], warnings: [session ? "Threads не отдал ответы для этого поста в авторизованной сессии." : "Threads не отдал публичные ответы для этого поста."], truncated: false };
       }
-      const { posts: cards } = await collectCards(page, MAX_CONVERSATION_REPLIES + 1, true);
-      const replies: ThreadsReply[] = cards
-        .filter((item) => item.id !== post.id && item.permalink !== post.permalink)
-        .slice(0, MAX_CONVERSATION_REPLIES)
+      const { posts: cards } = await collectCards(page, replyLimit + 2, true);
+      const replyCards = cards.filter((item) => item.id !== post.id && item.permalink !== post.permalink);
+      const replies: ThreadsReply[] = replyCards
+        .slice(0, replyLimit)
         .map((item) => ({ ...item, parentId: post.id, depth: 0 }));
-      const truncated = cards.length > MAX_CONVERSATION_REPLIES;
+      const truncated = replyCards.length > replyLimit;
       return {
         post,
         replies,
         warnings: [
           session ? "Ответы собраны через авторизованную сессию Threads в Chromium." : "Ответы собраны с публичной страницы поста Threads через Chromium.",
-          ...(truncated ? [`Для выгрузки оставлены первые ${MAX_CONVERSATION_REPLIES} ответов.`] : []),
+          ...(truncated ? [`Для выгрузки оставлены первые ${replyLimit} ответов.`] : []),
         ],
         truncated,
       };
