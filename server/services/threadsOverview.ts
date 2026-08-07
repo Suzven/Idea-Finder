@@ -99,10 +99,6 @@ export function decodeThreadsWebCursor(cursor?: string): number {
   return match ? Number(match[1]) : 0;
 }
 
-function encodeThreadsWebCursor(offset: number): string {
-  return `web:${Math.max(0, Math.floor(offset))}`;
-}
-
 async function acquireBrowserJob(): Promise<void> {
   if (activeBrowserJobs < 1) {
     activeBrowserJobs += 1;
@@ -569,27 +565,23 @@ export async function searchThreadsPosts(request: ThreadsSearchRequest, session?
           diagnostics: { url, pagePreview: pageText },
         };
       }
-      const offset = decodeThreadsWebCursor(request.after);
       const collected = await collectCards(page, Number.MAX_SAFE_INTEGER, false, MAX_SEARCH_FEED_LOADS, false);
       const allPosts = collected.posts
         .filter((post) => withinDateRange(post, request.since, request.until));
       if (request.searchType === "RECENT") {
         allPosts.sort((left, right) => (Date.parse(right.timestamp) || 0) - (Date.parse(left.timestamp) || 0));
       }
-      const posts = allPosts.slice(offset, offset + request.limit);
-      const hasMore = allPosts.length > offset + request.limit;
       const warnings = [session
         ? "Данные собраны через авторизованную сессию Threads в Chromium."
         : "Данные собраны из публичной веб-выдачи Threads через Chromium."];
       if (request.since || request.until) warnings.push("Диапазон дат применён локально к датам найденных постов.");
       if (collected.loadTimedOut) warnings.push("Одна из подгрузок Threads не завершилась за 40 секунд; сохранены все посты, успевшие появиться в ленте. Последний экран Chromium приложен к диагностическому логу.");
-      if (!session && posts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
+      if (!session && allPosts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
       return {
         source: "web",
         accessMode: session ? "authenticated" : "public",
         query: request.query,
-        posts,
-        ...(hasMore ? { nextCursor: encodeThreadsWebCursor(offset + request.limit) } : {}),
+        posts: allPosts,
         warnings,
         appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
         diagnostics: {

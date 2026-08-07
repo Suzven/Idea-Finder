@@ -1,4 +1,4 @@
-import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Monitor, Search, ShieldAlert, Sparkles, X } from "lucide-react";
+import { AtSign, CalendarDays, Check, CheckCircle2, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Monitor, Search, ShieldAlert, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { ApiRequestError, cancelThreadsDebugSession, fetchThreadsConversation, fetchThreadsDebugFrame, searchThreadsPosts } from "../api";
@@ -103,17 +103,15 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [posts, setPosts] = useState<ThreadsPost[]>([]);
-  const [nextCursor, setNextCursor] = useState<string>();
+  const [visibleCount, setVisibleCount] = useState(25);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [errorAction, setErrorAction] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [diagnostics, setDiagnostics] = useState<ThreadsSearchResponse["diagnostics"]>();
   const [debugSessionId, setDebugSessionId] = useState<string>();
   const [accessMode, setAccessMode] = useState<"authenticated" | "public">(authenticated ? "authenticated" : "public");
-  const [paginationFilters, setPaginationFilters] = useState<{ searchType: ThreadsSearchType; searchMode: ThreadsSearchMode; since?: string; until?: string }>();
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [preparationProgress, setPreparationProgress] = useState(0);
@@ -124,51 +122,34 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
 
   const selectedPosts = useMemo(() => posts.filter((post) => selectedIds.has(post.id)), [posts, selectedIds]);
 
-  const runSearch = async (after?: string) => {
+  const runSearch = async () => {
     const cleanQuery = query.trim();
     if (!cleanQuery) return;
-    const loadMore = Boolean(after);
     const currentDebugSessionId = crypto.randomUUID();
     setDebugSessionId(currentDebugSessionId);
-    loadMore ? setLoadingMore(true) : setLoading(true);
+    setLoading(true);
     setError("");
     setErrorAction("");
-    if (!loadMore) {
-      setPrepared([]);
-      setSelectedIds(new Set());
-      setDiagnostics(undefined);
-    }
+    setPrepared([]);
+    setSelectedIds(new Set());
+    setDiagnostics(undefined);
+    setVisibleCount(limit);
     try {
       const requestedSince = since ? new Date(`${since}T00:00:00.000Z`).toISOString() : undefined;
       const requestedUntil = until ? new Date(`${until}T23:59:59.999Z`).toISOString() : undefined;
-      const effectiveFilters = loadMore && paginationFilters
-        ? paginationFilters
-        : { searchType, searchMode, ...(requestedSince ? { since: requestedSince } : {}), ...(requestedUntil ? { until: requestedUntil } : {}) };
       const result = await searchThreadsPosts({
         query: cleanQuery,
-        searchType: effectiveFilters.searchType,
-        searchMode: effectiveFilters.searchMode,
+        searchType,
+        searchMode,
         limit,
-        ...(effectiveFilters.since ? { since: effectiveFilters.since } : {}),
-        ...(effectiveFilters.until ? { until: effectiveFilters.until } : {}),
-        ...(after ? { after } : {}),
+        ...(requestedSince ? { since: requestedSince } : {}),
+        ...(requestedUntil ? { until: requestedUntil } : {}),
         debugSessionId: currentDebugSessionId,
       });
       setAccessMode(result.accessMode);
       setWarnings(result.warnings);
       setDiagnostics(result.diagnostics);
-      setNextCursor(result.nextCursor);
-      setPaginationFilters({
-        searchType: result.appliedFilters.searchType,
-        searchMode: result.appliedFilters.searchMode,
-        ...(result.appliedFilters.since ? { since: result.appliedFilters.since } : {}),
-        ...(result.appliedFilters.until ? { until: result.appliedFilters.until } : {}),
-      });
-      setPosts((current) => {
-        if (!loadMore) return result.posts;
-        const ids = new Set(current.map((post) => post.id));
-        return [...current, ...result.posts.filter((post) => !ids.has(post.id))];
-      });
+      setPosts(result.posts);
     } catch (searchError) {
       const apiError = searchError instanceof ApiRequestError ? searchError : null;
       if (apiError?.code !== "THREADS_DEBUG_CANCELLED") {
@@ -176,7 +157,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
         setErrorAction(apiError?.action ?? "");
       }
     } finally {
-      loadMore ? setLoadingMore(false) : setLoading(false);
+      setLoading(false);
     }
   };
 
@@ -238,7 +219,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
   };
 
   return <div className="threads-overview-panel">
-    {debugSessionId && <ThreadsLiveBrowserModal sessionId={debugSessionId} active={loading || loadingMore} onDismiss={() => setDebugSessionId(undefined)} />}
+    {debugSessionId && <ThreadsLiveBrowserModal sessionId={debugSessionId} active={loading} onDismiss={() => setDebugSessionId(undefined)} />}
     <section className="threads-search-card">
       <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><span className="threads-token-state ready"><i />{accessMode === "authenticated" ? "Авторизованный Chromium" : "Публичный веб-поиск"}</span></header>
       <form onSubmit={(event) => { event.preventDefault(); void runSearch(); }}>
@@ -248,7 +229,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
           <label><span>Сортировка</span><select value={searchType} onChange={(event) => setSearchType(event.target.value as ThreadsSearchType)} disabled={loading}><option value="TOP">Сначала популярные</option><option value="RECENT">Сначала свежие</option></select></label>
           <label><span>С даты</span><input type="date" value={since} max={until || undefined} onChange={(event) => setSince(event.target.value)} disabled={loading} /></label>
           <label><span>По дату</span><input type="date" value={until} min={since || undefined} onChange={(event) => setUntil(event.target.value)} disabled={loading} /></label>
-          <label><span>Результатов</span><select value={limit} onChange={(event) => setLimit(Number(event.target.value))} disabled={loading}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
+          <label><span>Показывать за раз</span><select value={limit} onChange={(event) => setLimit(Number(event.target.value))} disabled={loading}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
         </div>
       </form>
     </section>
@@ -282,7 +263,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
 
     {posts.length > 0 && <section className="threads-results">
       <header><div><h2>Найденные посты</h2><p>{posts.length} результатов · выбрано {selectedIds.size} из 20 доступных для одного PDF</p></div><div><button type="button" className="button ghost" onClick={selectAll}><Check size={16} />Выбрать первые {Math.min(posts.length, 20)}</button><button type="button" className="button ghost" disabled={!selectedIds.size} onClick={() => { setSelectedIds(new Set()); setPrepared([]); }}><X size={16} />Снять выбор</button></div></header>
-      <div className="threads-post-grid">{posts.map((post) => {
+      <div className="threads-post-grid">{posts.slice(0, visibleCount).map((post) => {
         const selected = selectedIds.has(post.id);
         const selectionDisabled = !selected && selectedIds.size >= 20;
         return <article key={post.id} className={selected ? "selected" : ""} onClick={() => { if (!selectionDisabled) togglePost(post.id); }}>
@@ -293,7 +274,7 @@ export function ThreadsOverviewPanel({ authenticated }: { authenticated: boolean
           <footer><span>{post.topicTag ? `#${post.topicTag}` : post.hasReplies ? "Есть ответы" : "Публичный пост"}</span><a href={post.permalink} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Оригинал <ExternalLink size={14} /></a></footer>
         </article>;
       })}</div>
-      {nextCursor && <button type="button" className="button ghost threads-load-more" disabled={loadingMore} onClick={() => void runSearch(nextCursor)}>{loadingMore ? <LoaderCircle className="spin" size={17} /> : <Download size={17} />}{loadingMore ? "Загружаем…" : "Показать ещё"}</button>}
+      {visibleCount < posts.length && <button type="button" className="button ghost threads-load-more" onClick={() => setVisibleCount((current) => Math.min(current + limit, posts.length))}>Показать ещё {Math.min(limit, posts.length - visibleCount)}</button>}
     </section>}
 
     {selectedPosts.length > 0 && <section className="threads-export-bar">
