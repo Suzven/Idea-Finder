@@ -163,7 +163,7 @@ async function ensureThreadsAuthenticated(page: Page, session: ThreadsBrowserSes
   if (passwordStillVisible || currentUrl.includes("/login")) {
     const rejected = /(?:неверн|incorrect|invalid|wrong password|couldn't find|не удалось найти)/i.test(bodyText);
     throw new AppError(
-      401,
+      422,
       "THREADS_LOGIN_FAILED",
       rejected ? "Threads отклонил логин или пароль." : "Не удалось подтвердить вход в Threads.",
       rejected ? "Проверьте реквизиты в настройках." : "Повторите проверку. Если Threads прислал уведомление, подтвердите вход в приложении.",

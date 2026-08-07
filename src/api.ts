@@ -42,6 +42,10 @@ export function getLegacyClientId(): string {
   return clientId;
 }
 
+export function isSpyServiceAuthenticationFailure(status: number, code?: string): boolean {
+  return status === 401 && code === "AUTH_REQUIRED";
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -64,9 +68,6 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     );
   }
   if (!response.ok) {
-    if (response.status === 401 && url !== "/api/auth/me" && url !== "/api/auth/login") {
-      window.dispatchEvent(new Event("spyservice:unauthorized"));
-    }
     const rawBody = await response.text();
     let payload: ApiErrorPayload;
     try {
@@ -83,6 +84,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
           responsePreview: rawBody.replace(/\s+/g, " ").slice(0, 500),
         },
       };
+    }
+    if (isSpyServiceAuthenticationFailure(response.status, payload.code) && url !== "/api/auth/me" && url !== "/api/auth/login") {
+      window.dispatchEvent(new Event("spyservice:unauthorized"));
     }
     throw new ApiRequestError(
       payload.error || `HTTP ${response.status}`,
