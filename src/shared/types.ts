@@ -14,12 +14,6 @@ export interface AuthSessionResponse {
 
 export interface PrivateSettingsSummary {
   openai: { configured: boolean };
-  threads: {
-    configured: boolean;
-    oauthConfigured: boolean;
-    appId: string;
-    hasAppSecret: boolean;
-  };
   googleAds: {
     configured: boolean;
     customerId: string;
@@ -32,20 +26,12 @@ export interface PrivateSettingsSummary {
 
 export interface PrivateSettingsInput {
   openaiApiKey?: string | null;
-  threadsAccessToken?: string | null;
-  threadsAppId?: string | null;
-  threadsAppSecret?: string | null;
   googleAds?: {
     developerToken?: string | null;
     customerId?: string | null;
     loginCustomerId?: string | null;
     serviceAccountJson?: string | null;
   };
-}
-
-export interface ThreadsOAuthStartResponse {
-  authorizationUrl: string;
-  redirectUri: string;
 }
 
 export interface LegacyBrowserImport {
@@ -526,6 +512,7 @@ export interface ThreadsSearchRequest {
 }
 
 export interface ThreadsSearchResponse {
+  source: "web";
   query: string;
   posts: ThreadsPost[];
   nextCursor?: string;
@@ -536,6 +523,11 @@ export interface ThreadsSearchResponse {
     since?: string;
     until?: string;
     fallback: boolean;
+  };
+  diagnostics?: {
+    url: string;
+    collected?: number;
+    pagePreview?: string;
   };
 }
 

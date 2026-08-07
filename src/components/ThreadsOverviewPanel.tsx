@@ -1,13 +1,8 @@
-import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, Settings2, ShieldAlert, Sparkles, UserRound, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AtSign, CalendarDays, Check, CheckCircle2, Download, ExternalLink, FileDown, Hash, Image as ImageIcon, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, UserRound, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { ApiRequestError, fetchPrivateSettings, fetchThreadsConversation, searchThreadsPosts } from "../api";
+import { ApiRequestError, fetchThreadsConversation, searchThreadsPosts } from "../api";
 import type { ThreadsConversationResponse, ThreadsPost, ThreadsSearchMode, ThreadsSearchType } from "../shared/types";
-
-interface ThreadsOverviewPanelProps {
-  onOpenSettings: () => void;
-  settingsRevision: number;
-}
 
 interface PreparedThread extends ThreadsConversationResponse {
   error?: string;
@@ -32,8 +27,7 @@ function postAuthor(post: ThreadsPost) {
   </div>;
 }
 
-export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: ThreadsOverviewPanelProps) {
-  const [configured, setConfigured] = useState(false);
+export function ThreadsOverviewPanel() {
   const [query, setQuery] = useState("");
   const [searchType, setSearchType] = useState<ThreadsSearchType>("TOP");
   const [searchMode, setSearchMode] = useState<ThreadsSearchMode>("KEYWORD");
@@ -52,14 +46,6 @@ export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: Threa
   const [prepared, setPrepared] = useState<PreparedThread[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [preparationProgress, setPreparationProgress] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetchPrivateSettings()
-      .then((settings) => { if (!cancelled) setConfigured(settings.threads.configured); })
-      .catch(() => { if (!cancelled) setConfigured(false); });
-    return () => { cancelled = true; };
-  }, [settingsRevision]);
 
   const selectedPosts = useMemo(() => posts.filter((post) => selectedIds.has(post.id)), [posts, selectedIds]);
 
@@ -102,12 +88,10 @@ export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: Threa
         const ids = new Set(current.map((post) => post.id));
         return [...current, ...result.posts.filter((post) => !ids.has(post.id))];
       });
-      setConfigured(true);
     } catch (searchError) {
       const apiError = searchError instanceof ApiRequestError ? searchError : null;
       setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Threads.");
       setErrorAction(apiError?.action ?? "");
-      if (apiError?.code === "THREADS_TOKEN_REQUIRED" || apiError?.code === "THREADS_TOKEN_INVALID") setConfigured(false);
     } finally {
       loadMore ? setLoadingMore(false) : setLoading(false);
     }
@@ -172,7 +156,7 @@ export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: Threa
 
   return <div className="threads-overview-panel">
     <section className="threads-search-card">
-      <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><button type="button" className={`threads-token-state ${configured ? "ready" : "missing"}`} onClick={onOpenSettings}><i />{configured ? "Threads подключён" : "Добавить токен"}<Settings2 size={16} /></button></header>
+      <header><div><span><AtSign size={24} /></span><div><h2>Поиск сигналов в Threads</h2><p>Найдите публичные посты по тексту, выберите важные и соберите посты вместе с ветками ответов в один PDF.</p></div></div><span className="threads-token-state ready"><i />Публичный веб-поиск</span></header>
       <form onSubmit={(event) => { event.preventDefault(); void runSearch(); }}>
         <label className="threads-query-field"><span>Текст для поиска</span><div>{searchMode === "TAG" ? <Hash size={19} /> : <Search size={19} />}<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchMode === "TAG" ? "Например: productmanagement" : "Например: onboarding mobile app"} maxLength={100} disabled={loading} /><button className="button primary" disabled={loading || !query.trim()}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}{loading ? "Ищем…" : "Найти посты"}</button></div></label>
         <div className="threads-filter-grid">
@@ -185,7 +169,7 @@ export function ThreadsOverviewPanel({ onOpenSettings, settingsRevision }: Threa
       </form>
     </section>
 
-    {error && <div className="threads-error"><ShieldAlert size={21} /><div><strong>Threads не выполнил запрос</strong><p>{error}</p>{errorAction && <small>{errorAction}</small>}</div>{!configured && <button className="button ghost" onClick={onOpenSettings}>Открыть настройки</button>}</div>}
+    {error && <div className="threads-error"><ShieldAlert size={21} /><div><strong>Threads не выполнил запрос</strong><p>{error}</p>{errorAction && <small>{errorAction}</small>}</div></div>}
     {warnings.map((warning) => <div className="threads-warning" key={warning}><Sparkles size={18} />{warning}</div>)}
 
     {posts.length > 0 && <section className="threads-results">

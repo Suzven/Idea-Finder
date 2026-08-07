@@ -262,7 +262,7 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
         </button>
         <button type="button" className="ai-tool-card threads" onClick={() => setActiveSection("threads")}>
           <span className="ai-tool-card-glow" />
-          <div className="ai-tool-card-top"><i><AtSign size={30} /></i><em className="ready"><b />Официальный Threads API</em></div>
+          <div className="ai-tool-card-top"><i><AtSign size={30} /></i><em className="ready"><b />Публичный поиск · Chromium</em></div>
           <div className="ai-tool-card-copy"><small>SOCIAL SIGNALS</small><strong>Обзор Threads</strong><p>Поиск публичных постов по тексту, отбор полезных обсуждений и экспорт постов вместе с ответами в PDF.</p></div>
           <div className="ai-tool-features"><i>Поиск постов</i><i>Ветки ответов</i><i>PDF-экспорт</i></div>
           <div className="ai-tool-card-action"><b>Открыть инструмент</b><i><ArrowRight size={20} /></i></div>
@@ -356,6 +356,6 @@ export function AIAnalyticsPage({ onOpenSettings, settingsRevision }: AIAnalytic
 
       {(result.warnings.length > 0 || result.analysis.caveats.length > 0) && <div className="ai-caveats"><AlertTriangle size={20} /><div><strong>Ограничения анализа</strong><ul>{[...result.warnings, ...result.analysis.caveats].map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div></div>}
     </section>}
-    </div> : activeSection === "reviews" ? <ReviewAnalysisPanel /> : activeSection === "keywords" ? <KeywordVolumePanel onOpenSettings={onOpenSettings} settingsRevision={settingsRevision} /> : activeSection === "trends" ? <GoogleTrendsPanel /> : <ThreadsOverviewPanel onOpenSettings={onOpenSettings} settingsRevision={settingsRevision} />}</>}
+    </div> : activeSection === "reviews" ? <ReviewAnalysisPanel /> : activeSection === "keywords" ? <KeywordVolumePanel onOpenSettings={onOpenSettings} settingsRevision={settingsRevision} /> : activeSection === "trends" ? <GoogleTrendsPanel /> : <ThreadsOverviewPanel />}</>}
   </div>;
 }

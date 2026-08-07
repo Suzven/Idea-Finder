@@ -1,3 +1,4 @@
+import type { BrowserContext, Page } from "playwright";
 import { AppError } from "../errors.js";
 import type {
   ThreadsConversationResponse,
@@ -6,36 +7,29 @@ import type {
   ThreadsSearchRequest,
   ThreadsSearchResponse,
 } from "../../src/shared/types.js";
+import { getMetaBrowser } from "./metaSnapshot.js";
 
-const THREADS_API_BASE = "https://graph.threads.net/v1.0";
-const SEARCH_FIELDS = [
-  "id", "media_type", "media_url", "permalink", "username", "text", "timestamp",
-  "thumbnail_url", "has_replies", "topic_tag", "is_verified", "profile_picture_url",
-  "link_attachment_url",
-].join(",");
-const CONVERSATION_FIELDS = [
-  "id", "text", "timestamp", "media_type", "media_url", "permalink", "username",
-  "profile_picture_url", "has_replies", "is_reply", "replied_to", "thumbnail_url", "is_verified",
-].join(",");
-const MAX_CONVERSATION_PAGES = 10;
-const MAX_REPLIES = 500;
+const THREADS_WEB_ORIGIN = "https://www.threads.com";
+const SEARCH_TIMEOUT_MS = 30_000;
+const SEARCH_RESULT_TIMEOUT_MS = 15_000;
+const MAX_SCROLL_PASSES = 14;
+const MAX_CONVERSATION_REPLIES = 250;
 
-interface ThreadsApiErrorPayload {
-  error?: {
-    message?: string;
-    type?: string;
-    code?: number;
-    error_subcode?: number;
-    fbtrace_id?: string;
-  };
-}
+let activeBrowserJobs = 0;
+const browserJobWaiters: Array<() => void> = [];
 
-interface ThreadsApiPage {
-  data?: unknown[];
-  paging?: {
-    cursors?: { after?: string };
-    next?: string;
-  };
+interface ThreadsWebCard {
+  id?: unknown;
+  username?: unknown;
+  text?: unknown;
+  timestamp?: unknown;
+  permalink?: unknown;
+  mediaType?: unknown;
+  mediaUrl?: unknown;
+  thumbnailUrl?: unknown;
+  profilePictureUrl?: unknown;
+  topicTag?: unknown;
+  linkAttachmentUrl?: unknown;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -46,190 +40,284 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-export function normalizeThreadsPost(value: unknown): ThreadsPost | null {
-  const item = asRecord(value);
+function safeHttpUrl(value: unknown): string | undefined {
+  const raw = optionalString(value);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw, THREADS_WEB_ORIGIN);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function normalizeThreadsWebPost(value: unknown): ThreadsPost | null {
+  const item = asRecord(value) as ThreadsWebCard;
   const id = optionalString(item.id);
-  if (!id) return null;
+  const permalink = safeHttpUrl(item.permalink);
+  if (!id || !permalink) return null;
+  const mediaType = optionalString(item.mediaType);
+  const mediaUrl = safeHttpUrl(item.mediaUrl);
+  const thumbnailUrl = safeHttpUrl(item.thumbnailUrl);
+  const profilePictureUrl = safeHttpUrl(item.profilePictureUrl);
+  const linkAttachmentUrl = safeHttpUrl(item.linkAttachmentUrl);
   return {
     id,
     username: optionalString(item.username) ?? "threads_user",
     text: optionalString(item.text) ?? "",
     timestamp: optionalString(item.timestamp) ?? "",
-    permalink: optionalString(item.permalink) ?? `https://www.threads.net/post/${encodeURIComponent(id)}`,
-    ...(optionalString(item.media_type) ? { mediaType: optionalString(item.media_type) } : {}),
-    ...(optionalString(item.media_url) ? { mediaUrl: optionalString(item.media_url) } : {}),
-    ...(optionalString(item.thumbnail_url) ? { thumbnailUrl: optionalString(item.thumbnail_url) } : {}),
-    ...(optionalString(item.profile_picture_url) ? { profilePictureUrl: optionalString(item.profile_picture_url) } : {}),
-    ...(typeof item.is_verified === "boolean" ? { isVerified: item.is_verified } : {}),
-    ...(typeof item.has_replies === "boolean" ? { hasReplies: item.has_replies } : {}),
-    ...(optionalString(item.topic_tag) ? { topicTag: optionalString(item.topic_tag) } : {}),
-    ...(optionalString(item.link_attachment_url) ? { linkAttachmentUrl: optionalString(item.link_attachment_url) } : {}),
+    permalink,
+    ...(mediaType ? { mediaType } : {}),
+    ...(mediaUrl ? { mediaUrl } : {}),
+    ...(thumbnailUrl ? { thumbnailUrl } : {}),
+    ...(profilePictureUrl ? { profilePictureUrl } : {}),
+    ...(optionalString(item.topicTag) ? { topicTag: optionalString(item.topicTag) } : {}),
+    ...(linkAttachmentUrl ? { linkAttachmentUrl } : {}),
   };
 }
 
-export function normalizeThreadsReply(value: unknown): ThreadsReply | null {
-  const post = normalizeThreadsPost(value);
-  if (!post) return null;
-  const item = asRecord(value);
-  const repliedTo = asRecord(item.replied_to);
-  const parentId = optionalString(repliedTo.id);
-  return { ...post, ...(parentId ? { parentId } : {}), depth: 0 };
+export function decodeThreadsWebCursor(cursor?: string): number {
+  if (!cursor) return 0;
+  const match = /^web:(\d{1,6})$/.exec(cursor);
+  return match ? Number(match[1]) : 0;
 }
 
-function withReplyDepth(replies: ThreadsReply[], rootId: string): ThreadsReply[] {
-  const byId = new Map(replies.map((reply) => [reply.id, reply]));
-  const depthOf = (reply: ThreadsReply): number => {
-    let depth = 0;
-    let parentId = reply.parentId;
-    const visited = new Set<string>([reply.id]);
-    while (parentId && parentId !== rootId && byId.has(parentId) && !visited.has(parentId)) {
-      visited.add(parentId);
-      depth += 1;
-      parentId = byId.get(parentId)?.parentId;
-    }
-    return Math.min(depth, 6);
-  };
-  return replies.map((reply) => ({ ...reply, depth: depthOf(reply) }));
+function encodeThreadsWebCursor(offset: number): string {
+  return `web:${Math.max(0, Math.floor(offset))}`;
 }
 
-function threadsApiError(status: number, payload: ThreadsApiErrorPayload, fallback: string): AppError {
-  const meta = payload.error;
-  const message = meta?.message || fallback;
-  const details = {
-    httpStatus: status,
-    metaCode: meta?.code,
-    metaSubcode: meta?.error_subcode,
-    metaType: meta?.type,
-    fbtraceId: meta?.fbtrace_id,
-  };
-  if (meta?.code === 190) {
-    return new AppError(401, "THREADS_TOKEN_INVALID", "Threads Access Token недействителен или истёк.", "Откройте настройки Threads и сохраните новый токен.", details);
+async function acquireBrowserJob(): Promise<void> {
+  if (activeBrowserJobs < 1) {
+    activeBrowserJobs += 1;
+    return;
   }
-  if (status === 429 || meta?.code === 4 || meta?.code === 17 || meta?.code === 32) {
-    return new AppError(429, "THREADS_RATE_LIMIT", "Threads временно ограничил количество запросов.", "Подождите несколько минут и повторите запрос.", details);
-  }
-  if (status === 403 || meta?.code === 10 || meta?.code === 200) {
-    return new AppError(403, "THREADS_PERMISSION_MISSING", message, "Проверьте права threads_basic, threads_keyword_search и threads_read_replies у токена.", details);
-  }
-  return new AppError(502, "THREADS_API_ERROR", message, "Повторите запрос. Если ошибка сохранится, замените Threads Access Token.", details);
+  await new Promise<void>((resolve) => browserJobWaiters.push(resolve));
+  activeBrowserJobs += 1;
 }
 
-async function fetchThreadsPage(url: URL, token: string): Promise<ThreadsApiPage> {
-  let response: Response;
+function releaseBrowserJob(): void {
+  activeBrowserJobs = Math.max(0, activeBrowserJobs - 1);
+  browserJobWaiters.shift()?.();
+}
+
+async function withThreadsPage<T>(operation: (page: Page, context: BrowserContext) => Promise<T>): Promise<T> {
+  await acquireBrowserJob();
+  let context: BrowserContext | undefined;
   try {
-    response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(30_000),
+    const browser = await getMetaBrowser();
+    context = await browser.newContext({
+      locale: "ru-RU",
+      viewport: { width: 1440, height: 1100 },
+      extraHTTPHeaders: { "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8" },
     });
-  } catch (error) {
-    throw new AppError(504, "THREADS_NETWORK_ERROR", "Сервер не дождался ответа Threads API.", "Повторите запрос через несколько секунд.", {
-      cause: error instanceof Error ? error.message : String(error),
+    const page = await context.newPage();
+    return await operation(page, context);
+  } finally {
+    await context?.close().catch(() => undefined);
+    releaseBrowserJob();
+  }
+}
+
+function threadsWebError(error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Timeout|timed out/i.test(message)) {
+    return new AppError(504, "THREADS_WEB_TIMEOUT", "Публичная страница Threads не успела загрузиться.", "Повторите запрос через несколько секунд.", { cause: message });
+  }
+  return new AppError(502, "THREADS_WEB_FAILED", "Не удалось получить публичную выдачу Threads.", "Повторите запрос. Если ошибка сохранится, проверьте доступ сервера к threads.com.", { cause: message });
+}
+
+function buildSearchUrl(request: ThreadsSearchRequest): string {
+  const url = new URL("/search", THREADS_WEB_ORIGIN);
+  url.searchParams.set("q", request.query);
+  url.searchParams.set("serp_type", request.searchMode === "TAG" ? "tags" : request.searchType === "RECENT" ? "recent" : "default");
+  return url.toString();
+}
+
+async function gotoThreadsPage(page: Page, url: string): Promise<void> {
+  const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: SEARCH_TIMEOUT_MS });
+  if (response && response.status() >= 400) {
+    throw new AppError(502, "THREADS_WEB_HTTP_ERROR", `Threads вернул HTTP ${response.status()} для публичной страницы.`, "Повторите запрос позже.", {
+      url: response.url(),
+      httpStatus: response.status(),
     });
   }
-  const raw = await response.text();
-  let payload: ThreadsApiPage & ThreadsApiErrorPayload;
+}
+
+async function waitForPublicCards(page: Page): Promise<boolean> {
   try {
-    payload = JSON.parse(raw) as ThreadsApiPage & ThreadsApiErrorPayload;
+    await page.locator('a[href*="/post/"] time').first().waitFor({ state: "attached", timeout: SEARCH_RESULT_TIMEOUT_MS });
+    return true;
   } catch {
-    throw new AppError(502, "THREADS_INVALID_RESPONSE", "Threads API вернул ответ в неожиданном формате.", undefined, {
-      httpStatus: response.status,
-      responsePreview: raw.replace(/\s+/g, " ").slice(0, 500),
-    });
+    return false;
   }
-  if (!response.ok || payload.error) throw threadsApiError(response.status, payload, `Threads API вернул HTTP ${response.status}.`);
-  return payload;
 }
 
-function unixSeconds(iso?: string): string | undefined {
-  if (!iso) return undefined;
-  const milliseconds = Date.parse(iso);
-  return Number.isFinite(milliseconds) ? String(Math.floor(milliseconds / 1000)) : undefined;
-}
-
-export async function searchThreadsPosts(request: ThreadsSearchRequest, token: string): Promise<ThreadsSearchResponse> {
-  const attempts: ThreadsSearchRequest[] = [request];
-  if (!request.after && request.searchType === "TOP") attempts.push({ ...request, searchType: "RECENT" });
-  if (!request.after && (request.since || request.until)) {
-    attempts.push({ ...request, since: undefined, until: undefined });
-    if (request.searchType === "TOP") attempts.push({ ...request, searchType: "RECENT", since: undefined, until: undefined });
-  }
-
-  const uniqueAttempts = attempts.filter((attempt, index, all) => all.findIndex((candidate) =>
-    candidate.searchType === attempt.searchType
-    && candidate.searchMode === attempt.searchMode
-    && candidate.since === attempt.since
-    && candidate.until === attempt.until
-  ) === index);
-  let applied = request;
-  let payload: ThreadsApiPage = {};
-  let posts: ThreadsPost[] = [];
-  let attemptCount = 0;
-  for (const attempt of uniqueAttempts) {
-    const url = new URL(`${THREADS_API_BASE}/keyword_search`);
-    url.searchParams.set("q", attempt.query);
-    url.searchParams.set("search_type", attempt.searchType);
-    url.searchParams.set("search_mode", attempt.searchMode);
-    url.searchParams.set("limit", String(attempt.limit));
-    url.searchParams.set("fields", SEARCH_FIELDS);
-    const since = unixSeconds(attempt.since);
-    const until = unixSeconds(attempt.until);
-    if (since) url.searchParams.set("since", since);
-    if (until) url.searchParams.set("until", until);
-    if (attempt.after) url.searchParams.set("after", attempt.after);
-    payload = await fetchThreadsPage(url, token);
-    applied = attempt;
-    attemptCount += 1;
-    posts = (payload.data ?? []).map(normalizeThreadsPost).filter((post): post is ThreadsPost => Boolean(post));
-    if (posts.length) break;
-  }
-
-  const fallback = applied !== request;
-  const warnings: string[] = [];
-  if (posts.length && fallback) {
-    const changes = [
-      applied.searchType !== request.searchType ? "использована сортировка «сначала свежие»" : "",
-      (request.since || request.until) && !applied.since && !applied.until ? "снято ограничение по датам" : "",
-    ].filter(Boolean);
-    warnings.push(`По исходным фильтрам Meta вернула 0 постов. Результаты найдены автоматически: ${changes.join(", ")}.`);
-  } else if (!posts.length) {
-    warnings.push(`Threads API принял запрос, но вернул data=[] после ${attemptCount} ${attemptCount === 1 ? "попытки" : "вариантов поиска"}. Попробуйте RECENT, уберите даты или используйте более конкретную фразу.`);
-  }
-  return {
-    query: request.query,
-    posts,
-    ...(payload.paging?.cursors?.after ? { nextCursor: payload.paging.cursors.after } : {}),
-    warnings,
-    appliedFilters: {
-      searchType: applied.searchType,
-      searchMode: applied.searchMode,
-      ...(applied.since ? { since: applied.since } : {}),
-      ...(applied.until ? { until: applied.until } : {}),
-      fallback,
-    },
-  };
-}
-
-export async function fetchThreadsConversation(post: ThreadsPost, token: string): Promise<ThreadsConversationResponse> {
-  const replies: ThreadsReply[] = [];
-  let nextUrl: URL | undefined = new URL(`${THREADS_API_BASE}/${encodeURIComponent(post.id)}/conversation`);
-  nextUrl.searchParams.set("fields", CONVERSATION_FIELDS);
-  nextUrl.searchParams.set("limit", "50");
-  let pages = 0;
-  while (nextUrl && pages < MAX_CONVERSATION_PAGES && replies.length < MAX_REPLIES) {
-    const payload = await fetchThreadsPage(nextUrl, token);
-    for (const rawItem of payload.data ?? []) {
-      const reply = normalizeThreadsReply(rawItem);
-      if (reply && reply.id !== post.id && !replies.some((current) => current.id === reply.id)) replies.push(reply);
-      if (replies.length >= MAX_REPLIES) break;
+async function scrapeVisibleCards(page: Page, conversationOnly = false): Promise<ThreadsPost[]> {
+  const rawCards = await page.evaluate((onlyConversation) => {
+    const clean = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+    const ignoredText = /^(?:Перевести|Translate|See translation|Нравится|Ответить|Поделиться|Like|Reply|Share)$/i;
+    const dateOrRelativeTime = /^(?:\d+\s*(?:сек\.?|с\.?|мин\.?|ч\.?|дн\.?|нед\.?|мес\.?|г\.?|s|m|h|d|w)|\d{1,2}[./]\d{1,2}[./]\d{2,4})$/i;
+    const result: Array<Record<string, string>> = [];
+    const seen = new Set<string>();
+    const relatedMarker = onlyConversation
+      ? [...document.querySelectorAll<HTMLElement>("body *")].find((node) => node.children.length === 0 && /^(?:Связанные ветки|Related threads)$/i.test(clean(node.textContent)))
+      : undefined;
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/post/"]')].filter((link) => link.querySelector("time"));
+    for (const link of links) {
+      const permalink = new URL(link.href, location.href).toString();
+      const parsed = new URL(permalink);
+      const match = /^\/@([^/]+)\/post\/([^/?#]+)/.exec(parsed.pathname);
+      if (!match || seen.has(permalink)) continue;
+      const card = link.closest<HTMLElement>('[data-pressable-container="true"]');
+      if (!card) continue;
+      if (relatedMarker && (relatedMarker.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      seen.add(permalink);
+      const username = decodeURIComponent(match[1]);
+      const timestamp = link.querySelector("time")?.getAttribute("datetime") ?? "";
+      const textParts: string[] = [];
+      for (const node of card.querySelectorAll<HTMLElement>('[dir="auto"]')) {
+        if (node.closest("a,button,[role=button],time") || node.querySelector('[dir="auto"]')) continue;
+        const text = clean(node.innerText || node.textContent);
+        if (!text || text === username || ignoredText.test(text) || dateOrRelativeTime.test(text) || /^\d+[,.]?\d*[KMB]?$/i.test(text)) continue;
+        const withoutTranslation = text.replace(/\s*(?:Перевести|Translate|See translation)\s*$/i, "").trim();
+        if (withoutTranslation && !textParts.includes(withoutTranslation)) textParts.push(withoutTranslation);
+      }
+      const video = card.querySelector<HTMLVideoElement>("video");
+      const mediaImage = card.querySelector<HTMLImageElement>('a[href$="/media"] img, a[href*="/media?"] img');
+      const profileLink = card.querySelector<HTMLAnchorElement>(`a[href="/@${CSS.escape(username)}"], a[href$="/@${CSS.escape(username)}"]`);
+      const profileImage = profileLink?.querySelector<HTMLImageElement>("img");
+      const tagLink = card.querySelector<HTMLAnchorElement>('a[href*="serp_type=tags"]');
+      const externalLink = [...card.querySelectorAll<HTMLAnchorElement>("a[href]")].find((candidate) => {
+        try {
+          const host = new URL(candidate.href, location.href).hostname.toLowerCase();
+          return host !== "threads.com" && !host.endsWith(".threads.com") && host !== "threads.net" && !host.endsWith(".threads.net") && host !== "instagram.com" && !host.endsWith(".instagram.com");
+        } catch { return false; }
+      });
+      result.push({
+        id: match[2],
+        username,
+        text: textParts.join("\n"),
+        timestamp,
+        permalink,
+        mediaType: video ? "VIDEO" : mediaImage ? "IMAGE" : "",
+        mediaUrl: video?.currentSrc || video?.src || video?.querySelector("source")?.src || mediaImage?.currentSrc || mediaImage?.src || "",
+        thumbnailUrl: video?.poster || mediaImage?.currentSrc || mediaImage?.src || "",
+        profilePictureUrl: profileImage?.currentSrc || profileImage?.src || "",
+        topicTag: clean(tagLink?.textContent),
+        linkAttachmentUrl: externalLink?.href || "",
+      });
     }
-    pages += 1;
-    nextUrl = payload.paging?.next ? new URL(payload.paging.next) : undefined;
+    return result;
+  }, conversationOnly);
+  return rawCards.map(normalizeThreadsWebPost).filter((post): post is ThreadsPost => Boolean(post));
+}
+
+async function collectCards(page: Page, targetCount: number, conversationOnly = false): Promise<ThreadsPost[]> {
+  const collected = new Map<string, ThreadsPost>();
+  let stablePasses = 0;
+  for (let pass = 0; pass <= MAX_SCROLL_PASSES && collected.size < targetCount; pass += 1) {
+    const before = collected.size;
+    for (const post of await scrapeVisibleCards(page, conversationOnly)) collected.set(post.permalink, post);
+    stablePasses = collected.size === before ? stablePasses + 1 : 0;
+    if (stablePasses >= 3 || pass === MAX_SCROLL_PASSES || collected.size >= targetCount) break;
+    await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }));
+    await page.waitForTimeout(700);
   }
-  const truncated = Boolean(nextUrl) || replies.length >= MAX_REPLIES;
-  return {
-    post,
-    replies: withReplyDepth(replies, post.id),
-    warnings: truncated ? [`Для PDF загружены первые ${replies.length} ответов. Очень длинная ветка была ограничена.`] : [],
-    truncated,
-  };
+  return [...collected.values()];
+}
+
+function withinDateRange(post: ThreadsPost, since?: string, until?: string): boolean {
+  if (!since && !until) return true;
+  const value = Date.parse(post.timestamp);
+  if (!Number.isFinite(value)) return true;
+  if (since && value < Date.parse(since)) return false;
+  if (until && value > Date.parse(until)) return false;
+  return true;
+}
+
+export async function searchThreadsPosts(request: ThreadsSearchRequest): Promise<ThreadsSearchResponse> {
+  return withThreadsPage(async (page) => {
+    try {
+      const url = buildSearchUrl(request);
+      await gotoThreadsPage(page, url);
+      const hasCards = await waitForPublicCards(page);
+      if (!hasCards) {
+        const pageText = (await page.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 600);
+        return {
+          source: "web",
+          query: request.query,
+          posts: [],
+          warnings: ["Публичная веб-выдача Threads не нашла постов по этому запросу."],
+          appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
+          diagnostics: { url, pagePreview: pageText },
+        };
+      }
+      const offset = decodeThreadsWebCursor(request.after);
+      const allPosts = (await collectCards(page, offset + request.limit + 1))
+        .filter((post) => withinDateRange(post, request.since, request.until));
+      if (request.searchType === "RECENT") {
+        allPosts.sort((left, right) => (Date.parse(right.timestamp) || 0) - (Date.parse(left.timestamp) || 0));
+      }
+      const posts = allPosts.slice(offset, offset + request.limit);
+      const hasMore = allPosts.length > offset + request.limit;
+      const warnings = ["Данные собраны из публичной веб-выдачи Threads через Chromium."];
+      if (request.since || request.until) warnings.push("Диапазон дат применён локально к датам найденных публичных постов.");
+      if (posts.length < request.limit) warnings.push("Threads ограничил публичную выдачу; показаны все посты, доступные серверу в этой сессии.");
+      return {
+        source: "web",
+        query: request.query,
+        posts,
+        ...(hasMore ? { nextCursor: encodeThreadsWebCursor(offset + request.limit) } : {}),
+        warnings,
+        appliedFilters: { searchType: request.searchType, searchMode: request.searchMode, ...(request.since ? { since: request.since } : {}), ...(request.until ? { until: request.until } : {}), fallback: false },
+        diagnostics: { url, collected: allPosts.length },
+      };
+    } catch (error) {
+      throw threadsWebError(error);
+    }
+  });
+}
+
+function validatePostPermalink(value: string): string {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const validHost = host === "threads.com" || host.endsWith(".threads.com") || host === "threads.net" || host.endsWith(".threads.net");
+    if (!validHost || !/^\/@[^/]+\/post\/[^/?#]+/.test(url.pathname)) throw new Error("invalid permalink");
+    url.protocol = "https:";
+    return url.toString();
+  } catch {
+    throw new AppError(400, "THREADS_POST_URL_INVALID", "Некорректная публичная ссылка на пост Threads.");
+  }
+}
+
+export async function fetchThreadsConversation(post: ThreadsPost): Promise<ThreadsConversationResponse> {
+  return withThreadsPage(async (page) => {
+    try {
+      const url = validatePostPermalink(post.permalink);
+      await gotoThreadsPage(page, url);
+      const hasCards = await waitForPublicCards(page);
+      if (!hasCards) {
+        return { post, replies: [], warnings: ["Threads не отдал публичные ответы для этого поста."], truncated: false };
+      }
+      const cards = await collectCards(page, MAX_CONVERSATION_REPLIES + 1, true);
+      const replies: ThreadsReply[] = cards
+        .filter((item) => item.id !== post.id && item.permalink !== post.permalink)
+        .slice(0, MAX_CONVERSATION_REPLIES)
+        .map((item) => ({ ...item, parentId: post.id, depth: 0 }));
+      const truncated = cards.length > MAX_CONVERSATION_REPLIES;
+      return {
+        post,
+        replies,
+        warnings: [
+          "Ответы собраны с публичной страницы поста Threads через Chromium.",
+          ...(truncated ? [`Для выгрузки оставлены первые ${MAX_CONVERSATION_REPLIES} публичных ответов.`] : []),
+        ],
+        truncated,
+      };
+    } catch (error) {
+      throw threadsWebError(error);
+    }
+  });
 }
