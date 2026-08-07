@@ -1,6 +1,6 @@
-import { AtSign, BarChart3, CheckCircle2, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
+import { AtSign, BarChart3, CheckCircle2, Copy, Eye, EyeOff, KeyRound, LoaderCircle, Network, Puzzle, ShieldAlert, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchPrivateSettings, fetchReviewProxySettings, removeKeywordSurferExtension, savePrivateSettings, saveReviewProxyConfiguration, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
+import { ApiRequestError, deleteReviewProxyConfiguration, fetchKeywordSurferExtensionInfo, fetchPrivateSettings, fetchReviewProxySettings, removeKeywordSurferExtension, savePrivateSettings, saveReviewProxyConfiguration, startThreadsOAuth, testReviewProxyConfiguration, uploadKeywordSurferExtension } from "../api";
 import type { KeywordProviderSettings } from "../keywordSettings";
 import type { KeywordSurferExtensionInfo, PrivateSettingsSummary, ReviewProxyTestResult } from "../shared/types";
 
@@ -42,10 +42,12 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
   const [privateSummary, setPrivateSummary] = useState<PrivateSettingsSummary | null>(null);
   const [privateLoading, setPrivateLoading] = useState(false);
   const [privateError, setPrivateError] = useState("");
-  const [threadsToken, setThreadsToken] = useState("");
-  const [threadsVisible, setThreadsVisible] = useState(false);
+  const [threadsAppId, setThreadsAppId] = useState("");
+  const [threadsAppSecret, setThreadsAppSecret] = useState("");
+  const [threadsSecretVisible, setThreadsSecretVisible] = useState(false);
   const [threadsSaved, setThreadsSaved] = useState(false);
   const [threadsError, setThreadsError] = useState("");
+  const [threadsMessage, setThreadsMessage] = useState("");
   const [keywordSettings, setKeywordSettings] = useState<KeywordProviderSettings>({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
   const [keywordSaved, setKeywordSaved] = useState(false);
   const [keywordError, setKeywordError] = useState("");
@@ -73,10 +75,19 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setSaved(false);
     setPrivateError("");
     setVisible(false);
-    setThreadsToken("");
-    setThreadsVisible(false);
+    const oauthParams = new URLSearchParams(window.location.search);
+    const oauthStatus = oauthParams.get("threads_oauth");
+    const oauthMessage = oauthParams.get("threads_message") ?? "";
+    if (oauthStatus) {
+      setActiveTab("threads");
+      window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
+    }
+    setThreadsAppId("");
+    setThreadsAppSecret("");
+    setThreadsSecretVisible(false);
     setThreadsSaved(false);
-    setThreadsError("");
+    setThreadsError(oauthStatus === "error" ? oauthMessage || "Не удалось подключить Threads." : "");
+    setThreadsMessage(oauthStatus === "success" ? "Threads подключён через OAuth с правами поиска и чтения ответов." : "");
     setKeywordSettings({ googleAds: { developerToken: "", customerId: "", loginCustomerId: "", serviceAccountJson: "" } });
     setKeywordSaved(false);
     setKeywordError("");
@@ -110,6 +121,7 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       .then((settings) => {
         if (cancelled) return;
         setPrivateSummary(settings);
+        setThreadsAppId(settings.threads.appId);
         setKeywordSettings((current) => ({ googleAds: {
           ...current.googleAds,
           customerId: settings.googleAds.customerId,
@@ -152,18 +164,48 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     }
   };
 
-  const persistThreads = async () => {
-    if (!threadsToken.trim()) return;
+  const persistThreadsCredentials = async () => {
+    if (!threadsAppId.trim() || (!threadsAppSecret.trim() && !privateSummary?.threads.hasAppSecret)) return;
     setPrivateLoading(true);
     setThreadsError("");
+    setThreadsMessage("");
     try {
-      setPrivateSummary(await savePrivateSettings({ threadsAccessToken: threadsToken.trim() }));
-      setThreadsToken("");
+      setPrivateSummary(await savePrivateSettings({
+        threadsAppId: threadsAppId.trim(),
+        ...(threadsAppSecret.trim() ? { threadsAppSecret: threadsAppSecret.trim() } : {}),
+        threadsAccessToken: null,
+      }));
+      setThreadsAppSecret("");
       setThreadsSaved(true);
+      setThreadsMessage("Реквизиты Threads App сохранены. Теперь нажмите «Подключить Threads».");
       onSaved();
     } catch (error) {
-      setThreadsError(error instanceof Error ? error.message : "Не удалось сохранить Threads Access Token.");
+      setThreadsError(error instanceof Error ? error.message : "Не удалось сохранить реквизиты Threads App.");
     } finally {
+      setPrivateLoading(false);
+    }
+  };
+
+  const connectThreads = async () => {
+    setPrivateLoading(true);
+    setThreadsError("");
+    setThreadsMessage("");
+    try {
+      let summary = privateSummary;
+      if (threadsAppId.trim() || threadsAppSecret.trim()) {
+        summary = await savePrivateSettings({
+          ...(threadsAppId.trim() ? { threadsAppId: threadsAppId.trim() } : {}),
+          ...(threadsAppSecret.trim() ? { threadsAppSecret: threadsAppSecret.trim() } : {}),
+          threadsAccessToken: null,
+        });
+        setPrivateSummary(summary);
+        setThreadsAppSecret("");
+      }
+      if (!summary?.threads.oauthConfigured) throw new Error("Сначала укажите Threads App ID и Threads App Secret.");
+      const oauth = await startThreadsOAuth();
+      window.location.assign(oauth.authorizationUrl);
+    } catch (error) {
+      setThreadsError(error instanceof Error ? error.message : "Не удалось начать OAuth-подключение Threads.");
       setPrivateLoading(false);
     }
   };
@@ -173,8 +215,8 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
     setThreadsError("");
     try {
       setPrivateSummary(await savePrivateSettings({ threadsAccessToken: null }));
-      setThreadsToken("");
       setThreadsSaved(false);
+      setThreadsMessage("Threads-токен удалён. Реквизиты приложения сохранены для повторного подключения.");
       onSaved();
     } catch (error) {
       setThreadsError(error instanceof Error ? error.message : "Не удалось удалить Threads Access Token.");
@@ -358,22 +400,34 @@ export function ApiSettings({ open, onClose, onSaved }: ApiSettingsProps) {
       </div>}
 
       {activeTab === "threads" && <div className="api-settings-pane" role="tabpanel">
-        <div className="setting-block api-key-block">
-          <span className="setting-label">Threads User Access Token</span>
-          <p>Нужен для официального поиска публичных постов и загрузки ответов через Threads API.</p>
+        <div className="setting-block api-key-block threads-oauth-settings">
+          <span className="setting-label">Подключение Threads OAuth</span>
+          <p>Используйте Threads App ID и Threads App Secret из Meta Developers → Access the Threads API → Settings. SpyService сам запросит нужные права и сохранит долгоживущий токен.</p>
+          <label className="threads-oauth-field"><span>Threads App ID</span>
+            <div className="api-key-input"><AtSign size={18} /><input value={threadsAppId} onChange={(event) => { setThreadsAppId(event.target.value.replace(/\D/g, "")); setThreadsSaved(false); }} autoComplete="off" inputMode="numeric" placeholder="Например: 888868750548875" /></div>
+          </label>
+          <label className="threads-oauth-field"><span>Threads App Secret</span>
           <div className="api-key-input">
-            <AtSign size={18} />
-            <input type={threadsVisible ? "text" : "password"} value={threadsToken} onChange={(event) => { setThreadsToken(event.target.value); setThreadsSaved(false); }} autoComplete="off" spellCheck={false} placeholder={privateSummary?.threads.configured ? "Токен уже сохранён — введите новый для замены" : "Вставьте Threads User Access Token"} />
-            <button type="button" onClick={() => setThreadsVisible((current) => !current)} aria-label={threadsVisible ? "Скрыть токен" : "Показать токен"}>{threadsVisible ? <EyeOff size={18} /> : <Eye size={18} />}</button>
+            <KeyRound size={18} />
+            <input type={threadsSecretVisible ? "text" : "password"} value={threadsAppSecret} onChange={(event) => { setThreadsAppSecret(event.target.value); setThreadsSaved(false); }} autoComplete="new-password" spellCheck={false} placeholder={privateSummary?.threads.hasAppSecret ? "Secret уже сохранён — оставьте пустым, если не меняете" : "Вставьте Threads App Secret"} />
+            <button type="button" onClick={() => setThreadsSecretVisible((current) => !current)} aria-label={threadsSecretVisible ? "Скрыть secret" : "Показать secret"}>{threadsSecretVisible ? <EyeOff size={18} /> : <Eye size={18} />}</button>
           </div>
-          {(threadsSaved || privateSummary?.threads.configured) && <div className="api-key-saved"><CheckCircle2 size={16} />Threads-токен защищён и закреплён за вашим пользователем</div>}
+          </label>
+          <label className="threads-oauth-field"><span>Redirect Callback URL</span>
+            <div className="api-key-input threads-callback-value"><AtSign size={18} /><input readOnly value={`${window.location.origin}/api/threads/oauth/callback`} /><button type="button" onClick={() => void navigator.clipboard.writeText(`${window.location.origin}/api/threads/oauth/callback`)} aria-label="Копировать Redirect URL"><Copy size={17} /></button></div>
+          </label>
+          <small className="threads-oauth-hint">Скопируйте этот адрес в Meta Developers → Access the Threads API → Settings → Redirect Callback URLs и нажмите Save.</small>
+          {(threadsSaved || privateSummary?.threads.oauthConfigured) && <div className="api-key-saved"><CheckCircle2 size={16} />Threads App ID и Secret защищены и закреплены за вашим пользователем</div>}
+          {privateSummary?.threads.configured && <div className="api-key-saved"><CheckCircle2 size={16} />Threads подключён через сохранённый User Access Token</div>}
+          {threadsMessage && <div className="api-key-saved"><CheckCircle2 size={16} />{threadsMessage}</div>}
           {threadsError && <div className="proxy-settings-error">{threadsError}</div>}
-          <div className="api-key-actions">
-            <button className="button primary grow" disabled={privateLoading || !threadsToken.trim()} onClick={() => void persistThreads()}>Сохранить токен</button>
-            <button className="button danger-outline" disabled={privateLoading || !privateSummary?.threads.configured} onClick={() => void clearThreads()}><Trash2 size={16} />Удалить</button>
+          <div className="api-key-actions threads-oauth-actions">
+            <button className="button ghost" disabled={privateLoading || !threadsAppId.trim() || (!threadsAppSecret.trim() && !privateSummary?.threads.hasAppSecret)} onClick={() => void persistThreadsCredentials()}>Сохранить реквизиты</button>
+            <button className="button primary grow" disabled={privateLoading || (!privateSummary?.threads.oauthConfigured && (!threadsAppId.trim() || !threadsAppSecret.trim()))} onClick={() => void connectThreads()}>{privateLoading ? <LoaderCircle className="spin" size={16} /> : <AtSign size={16} />}Подключить Threads</button>
+            <button className="button danger-outline" disabled={privateLoading || !privateSummary?.threads.configured} onClick={() => void clearThreads()}><Trash2 size={16} />Отключить</button>
           </div>
         </div>
-        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>Какие права нужны</strong><p><code>threads_basic</code>, <code>threads_keyword_search</code> и <code>threads_read_replies</code>. Токен шифруется AES-256-GCM и не возвращается в браузер после сохранения.</p></div></div>
+        <div className="api-key-warning"><ShieldAlert size={22} /><div><strong>SpyService запросит права явно</strong><p><code>threads_basic</code>, <code>threads_keyword_search</code> и <code>threads_read_replies</code>. App Secret и полученный токен шифруются AES-256-GCM и не возвращаются в браузер или логи.</p></div></div>
       </div>}
 
       {activeTab === "keywords" && <div className="api-settings-pane keyword-settings-pane" role="tabpanel">

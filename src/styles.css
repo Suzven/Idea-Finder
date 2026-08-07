@@ -502,6 +502,15 @@ body.modal-open { overflow: hidden; }
 .api-settings-drawer .api-key-warning strong { font-size: 13px; }
 .api-settings-drawer .api-key-warning p { margin-top: 7px; font-size: 12px; line-height: 1.65; }
 .api-settings-drawer .api-model-note > strong { margin-top: 12px; font-size: 18px; }
+.threads-oauth-field { display: block; margin-top: 18px; }
+.threads-oauth-field > span { display: block; color: #59657b; font-size: 13px; font-weight: 800; }
+.threads-oauth-field .api-key-input { margin-top: 8px; }
+.threads-callback-value input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.threads-oauth-hint { display: block; margin-top: 9px; color: #778298; font-size: 12.5px; line-height: 1.65; }
+.threads-oauth-actions { flex-wrap: wrap; }
+.threads-oauth-actions .button { min-width: 150px; }
+.threads-oauth-settings code,
+.api-settings-drawer .api-key-warning code { padding: 2px 5px; color: #6048cc; border-radius: 5px; background: #f0edff; font: 700 11.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .api-settings-drawer .proxy-settings-loading { min-height: 90px; font-size: 13px; }
 .api-settings-drawer .proxy-settings-fields { gap: 15px; margin-top: 19px; }
 .api-settings-drawer .proxy-settings-fields label > span { margin-bottom: 8px; font-size: 12px; }

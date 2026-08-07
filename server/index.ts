@@ -17,6 +17,7 @@ import { filterAds } from "./services/filterAds.js";
 import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
 import { fetchThreadsConversation, searchThreadsPosts } from "./services/threadsOverview.js";
+import { consumeThreadsOAuthState, createThreadsAuthorization, exchangeThreadsCode } from "./services/threadsOAuth.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
@@ -295,6 +296,8 @@ app.use("/api", requireAuthentication);
 const privateSettingsSchema = z.object({
   openaiApiKey: z.string().trim().max(500).nullable().optional(),
   threadsAccessToken: z.string().trim().max(2_000).nullable().optional(),
+  threadsAppId: z.string().trim().regex(/^\d{5,40}$/, "Threads App ID должен состоять из цифр.").nullable().optional(),
+  threadsAppSecret: z.string().trim().max(500).nullable().optional(),
   googleAds: z.object({
     developerToken: z.string().trim().max(200).nullable().optional(),
     customerId: z.string().trim().max(20).nullable().optional(),
@@ -311,7 +314,12 @@ function privateSettingsSummary(settings: Awaited<ReturnType<typeof getPrivateSe
   } catch { /* invalid JSON is rejected while saving */ }
   return {
     openai: { configured: Boolean(settings.openaiApiKey) },
-    threads: { configured: Boolean(settings.threadsAccessToken) },
+    threads: {
+      configured: Boolean(settings.threadsAccessToken),
+      oauthConfigured: Boolean(settings.threadsAppId && settings.threadsAppSecret),
+      appId: settings.threadsAppId ?? "",
+      hasAppSecret: Boolean(settings.threadsAppSecret),
+    },
     googleAds: {
       configured: Boolean(settings.googleAds?.developerToken && settings.googleAds.customerId && settings.googleAds.serviceAccountJson),
       customerId: settings.googleAds?.customerId ?? "",
@@ -346,6 +354,8 @@ app.put("/api/settings/private", async (request, response, next) => {
     await savePrivateSettings(userId, {
       ...(parsed.openaiApiKey !== undefined ? { openaiApiKey: parsed.openaiApiKey } : {}),
       ...(parsed.threadsAccessToken !== undefined ? { threadsAccessToken: parsed.threadsAccessToken } : {}),
+      ...(parsed.threadsAppId !== undefined ? { threadsAppId: parsed.threadsAppId } : {}),
+      ...(parsed.threadsAppSecret !== undefined ? { threadsAppSecret: parsed.threadsAppSecret } : {}),
       ...(parsed.googleAds ? { googleAds: {
         ...(parsed.googleAds.developerToken !== undefined ? { developerToken: parsed.googleAds.developerToken } : {}),
         ...(parsed.googleAds.customerId !== undefined ? { customerId: parsed.googleAds.customerId?.replace(/\D/g, "") ?? null } : {}),
@@ -356,6 +366,59 @@ app.put("/api/settings/private", async (request, response, next) => {
     response.json(privateSettingsSummary(await getPrivateSettingsCredentials(userId)));
   } catch (error) {
     next(error);
+  }
+});
+
+function publicOrigin(request: express.Request): string {
+  const forwardedProtocol = String(request.header("x-forwarded-proto") ?? "").split(",")[0]?.trim();
+  const requestedProtocol = forwardedProtocol || request.protocol || "https";
+  const protocol = requestedProtocol === "http" ? "http" : "https";
+  const host = request.header("x-forwarded-host")?.split(",")[0]?.trim() || request.header("host");
+  if (!host || !/^[a-z0-9.:[\]-]+$/i.test(host)) throw new AppError(400, "PUBLIC_HOST_INVALID", "Не удалось определить публичный адрес приложения.");
+  return `${protocol}://${host}`;
+}
+
+function threadsOAuthResultUrl(status: "success" | "error", message?: string): string {
+  const params = new URLSearchParams({ threads_oauth: status });
+  if (message) params.set("threads_message", message.slice(0, 500));
+  return `/?${params.toString()}`;
+}
+
+app.post("/api/threads/oauth/start", async (request, response, next) => {
+  try {
+    const user = getAuthenticatedUser(request);
+    const settings = await getPrivateSettingsCredentials(user.id);
+    if (!settings.threadsAppId || !settings.threadsAppSecret) {
+      throw new AppError(400, "THREADS_OAUTH_APP_REQUIRED", "Сначала сохраните Threads App ID и Threads App Secret.");
+    }
+    const redirectUri = new URL("/api/threads/oauth/callback", publicOrigin(request)).toString();
+    const oauth = createThreadsAuthorization(user.id, settings.threadsAppId, redirectUri);
+    response.json({ authorizationUrl: oauth.authorizationUrl, redirectUri });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/threads/oauth/callback", async (request, response) => {
+  try {
+    const user = getAuthenticatedUser(request);
+    const state = z.string().trim().min(20).max(200).parse(request.query.state);
+    const oauthState = consumeThreadsOAuthState(state, user.id);
+    if (request.query.error) {
+      const description = typeof request.query.error_description === "string" ? request.query.error_description : "Пользователь отменил подключение Threads.";
+      return response.redirect(303, threadsOAuthResultUrl("error", description));
+    }
+    const code = z.string().trim().min(10).max(4_000).parse(request.query.code);
+    const settings = await getPrivateSettingsCredentials(user.id);
+    if (!settings.threadsAppId || !settings.threadsAppSecret) {
+      throw new AppError(400, "THREADS_OAUTH_APP_REQUIRED", "Реквизиты Threads App были удалены во время подключения.");
+    }
+    const token = await exchangeThreadsCode(code, oauthState.redirectUri, settings.threadsAppId, settings.threadsAppSecret);
+    await savePrivateSettings(user.id, { threadsAccessToken: token });
+    return response.redirect(303, threadsOAuthResultUrl("success"));
+  } catch (error) {
+    const message = error instanceof AppError ? `${error.message}${error.action ? ` ${error.action}` : ""}` : "Не удалось завершить OAuth-подключение Threads.";
+    return response.redirect(303, threadsOAuthResultUrl("error", message));
   }
 });
 

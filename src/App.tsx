@@ -47,6 +47,13 @@ function WorkspaceApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
   const loaderRef = useRef<HTMLDivElement>(null);
   const loadRequestRef = useRef(0);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("threads_oauth")) return;
+    setApiSettingsOpen(true);
+    setSettingsRevision((value) => value + 1);
+  }, []);
+
   const loadCollections = useCallback(async () => {
     setCollectionsLoading(true);
     try {
