@@ -322,32 +322,94 @@ async function gotoRedditPage(page: Page, url: string, log?: RedditLogger): Prom
   });
 }
 
-async function scrapeRedditWebPosts(page: Page): Promise<RedditPost[]> {
-  const raw = await page.evaluate(() => {
+interface RedditWebPostBatch {
+  posts: RedditPost[];
+  candidateCards: number;
+  commentLinks: number;
+  uniqueLinks: number;
+  rawRecords: number;
+}
+
+async function scrapeRedditWebPosts(page: Page): Promise<RedditWebPostBatch> {
+  const batch = await page.evaluate(() => {
     const clean = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
     const count = (value: string | null | undefined) => {
       const candidate = clean(value).toLowerCase().replace(/\s+/g, "").replace(",", ".");
-      const match = /(-?[\d.]+)\s*([kmb])?/.exec(candidate);
+      const match = /(-?[\d.]+)\s*(тыс\.?|млн\.?|млрд\.?|[kmb])?/.exec(candidate);
       if (!match) return 0;
-      const multiplier = match[2] === "k" ? 1_000 : match[2] === "m" ? 1_000_000 : match[2] === "b" ? 1_000_000_000 : 1;
+      const suffix = match[2] ?? "";
+      const multiplier = suffix === "k" || suffix.startsWith("тыс")
+        ? 1_000
+        : suffix === "m" || suffix.startsWith("млн")
+          ? 1_000_000
+          : suffix === "b" || suffix.startsWith("млрд")
+            ? 1_000_000_000
+            : 1;
       return Math.round(Number(match[1]) * multiplier) || 0;
+    };
+    const trackingContext = (element: Element, postId: string) => {
+      const nodes = [
+        ...(element.matches("[data-faceplate-tracking-context]") ? [element] : []),
+        ...element.querySelectorAll("[data-faceplate-tracking-context]"),
+      ];
+      for (const node of nodes) {
+        try {
+          const parsed = JSON.parse(node.getAttribute("data-faceplate-tracking-context") ?? "{}") as {
+            post?: { id?: string; title?: string };
+            profile?: { name?: string };
+            subreddit?: { name?: string };
+          };
+          if (!parsed.post?.id || parsed.post.id.replace(/^t3_/, "") === postId) return parsed;
+        } catch {
+          // Reddit can briefly expose a partial attribute while hydrating the result.
+        }
+      }
+      return undefined;
     };
     const result: Array<Record<string, string | number | boolean>> = [];
     const seen = new Set<string>();
-    const candidates = [...document.querySelectorAll<HTMLElement>('shreddit-post, .thing.link, article, [data-testid="post-container"]')];
-    for (const card of candidates) {
-      const permalinkNode = card.querySelector<HTMLAnchorElement>('a[href*="/comments/"]');
-      const permalink = card.getAttribute("permalink") || card.dataset.permalink || permalinkNode?.href || "";
-      if (!permalink || seen.has(permalink)) continue;
-      seen.add(permalink);
-      const titleNode = card.querySelector<HTMLElement>('a[slot="title"], a.title, h1, h2, h3');
+    const legacyCards = [...document.querySelectorAll<HTMLElement>('shreddit-post, .thing.link, article, [data-testid="post-container"]')];
+    const modernCards = [...document.querySelectorAll<HTMLElement>('[data-testid="search-sdui-post"], [data-testid="search-crosspost-unit"]')];
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/comments/"]')];
+    const sources: Array<{ card: HTMLElement; link: HTMLAnchorElement }> = [];
+
+    for (const link of links) {
+      const card = link.closest<HTMLElement>('[data-testid="search-sdui-post"], [data-testid="search-crosspost-unit"], shreddit-post, .thing.link, article, [data-testid="post-container"]');
+      if (card) sources.push({ card, link });
+    }
+    for (const card of legacyCards) {
+      const link = card.querySelector<HTMLAnchorElement>('a[href*="/comments/"]');
+      if (link) sources.push({ card, link });
+    }
+
+    for (const { card, link: permalinkNode } of sources) {
+      const permalink = card.getAttribute("permalink") || card.dataset.permalink || permalinkNode.href || "";
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(permalink, location.href);
+      } catch {
+        continue;
+      }
+      const pathMatch = /\/(?:r\/([^/]+)|user\/([^/]+))\/comments\/([^/?#]+)(?:\/([^/?#]+))?/i.exec(parsedUrl.pathname);
+      if (!pathMatch) continue;
+      const postId = pathMatch[3];
+      if (seen.has(postId)) continue;
+      seen.add(postId);
+      const context = trackingContext(card, postId);
+      const titleCandidates = [...card.querySelectorAll<HTMLElement>('a[data-testid="post-title-text"], a[data-testid="post-title"], a[slot="title"], a.title, h1, h2, h3')];
+      const titleNode = titleCandidates.find((node) => {
+        if (!(node instanceof HTMLAnchorElement)) return false;
+        try { return new URL(node.href, location.href).pathname === parsedUrl.pathname; } catch { return false; }
+      }) ?? (permalinkNode.matches('[data-testid="post-title"], [data-testid="post-title-text"]') ? permalinkNode : titleCandidates[0]);
       const bodyNode = card.querySelector<HTMLElement>('[slot="text-body"], [slot="post-text"], .usertext-body .md, [data-testid="post-content"] p');
       const authorNode = card.querySelector<HTMLAnchorElement>('a[href*="/user/"], a[href*="/u/"]');
-      const subredditNode = card.querySelector<HTMLAnchorElement>('a[href*="/r/"]');
+      const subredditNode = card.querySelector<HTMLAnchorElement>('a[href^="/r/"]:not([href*="/comments/"])');
       const timeNode = card.querySelector<HTMLTimeElement>("time");
-      const imageNode = card.querySelector<HTMLImageElement>('img[slot="thumbnail"], img[alt="Post image"], img.preview, img.thumbnail');
-      const commentsText = card.getAttribute("comment-count") || card.dataset.commentsCount || [...card.querySelectorAll<HTMLElement>("a,span")].map((node) => clean(node.textContent)).find((value) => /comments?|комментар/i.test(value)) || "";
-      const scoreText = card.getAttribute("score") || card.dataset.score || card.querySelector<HTMLElement>('[slot="vote-button"], .score, [data-testid="post-vote-count"]')?.textContent || "";
+      const imageNode = card.querySelector<HTMLElement>('faceplate-img[data-testid="search_post_thumbnail"], img[data-testid="search_post_thumbnail"], img[slot="thumbnail"], img[alt="Post image"], img.preview, img.thumbnail');
+      const counterRow = card.querySelector<HTMLElement>('[data-testid="search-counter-row"]');
+      const counterParts = [...(counterRow?.querySelectorAll<HTMLElement>("span") ?? [])].map((node) => clean(node.textContent));
+      const commentsText = card.getAttribute("comment-count") || card.dataset.commentsCount || counterParts.find((value) => /comments?|комментар/i.test(value)) || "";
+      const scoreText = card.getAttribute("score") || card.dataset.score || counterParts.find((value) => /votes?|upvotes?|голос/i.test(value)) || card.querySelector<HTMLElement>('[slot="vote-button"], .score, [data-testid="post-vote-count"]')?.textContent || "";
       const destinationNode = [...card.querySelectorAll<HTMLAnchorElement>("a[href]")].find((link) => {
         try {
           const parsed = new URL(link.href, location.href);
@@ -355,23 +417,35 @@ async function scrapeRedditWebPosts(page: Page): Promise<RedditPost[]> {
         } catch { return false; }
       });
       result.push({
-        id: card.getAttribute("id") || card.dataset.fullname || "",
-        title: card.getAttribute("post-title") || clean(titleNode?.textContent),
+        id: postId || card.getAttribute("data-thingid") || card.getAttribute("id") || card.dataset.fullname || "",
+        title: card.getAttribute("post-title") || clean(titleNode?.getAttribute("aria-label")) || clean(titleNode?.textContent) || context?.post?.title || decodeURIComponent((pathMatch[4] ?? "").replaceAll("_", " ")),
         text: clean(bodyNode?.innerText || bodyNode?.textContent),
-        author: card.getAttribute("author") || card.dataset.author || clean(authorNode?.textContent),
-        subreddit: card.getAttribute("subreddit-prefixed-name") || card.dataset.subredditPrefixedName || card.dataset.subreddit || clean(subredditNode?.textContent),
+        author: card.getAttribute("author") || card.dataset.author || context?.profile?.name || clean(authorNode?.textContent),
+        subreddit: card.getAttribute("subreddit-prefixed-name") || card.dataset.subredditPrefixedName || card.dataset.subreddit || context?.subreddit?.name || pathMatch[1] || clean(subredditNode?.textContent),
         timestamp: card.getAttribute("created-timestamp") || card.dataset.timestamp || timeNode?.dateTime || "",
-        permalink,
+        permalink: parsedUrl.toString(),
         destinationUrl: card.getAttribute("content-href") || card.dataset.url || destinationNode?.href || "",
-        thumbnailUrl: card.getAttribute("thumbnail") || imageNode?.currentSrc || imageNode?.src || "",
+        thumbnailUrl: card.getAttribute("thumbnail") || imageNode?.getAttribute("src") || "",
         score: count(scoreText),
         commentCount: count(commentsText),
         isNsfw: card.getAttribute("over-18") === "true" || card.classList.contains("over18"),
       });
     }
-    return result;
+    return {
+      records: result,
+      candidateCards: new Set([...legacyCards, ...modernCards]).size,
+      commentLinks: links.length,
+      uniqueLinks: seen.size,
+    };
   });
-  return raw.map(normalizeRedditWebPost).filter((post): post is RedditPost => Boolean(post));
+  const posts = batch.records.map(normalizeRedditWebPost).filter((post): post is RedditPost => Boolean(post));
+  return {
+    posts,
+    candidateCards: batch.candidateCards,
+    commentLinks: batch.commentLinks,
+    uniqueLinks: batch.uniqueLinks,
+    rawRecords: batch.records.length,
+  };
 }
 
 async function searchRedditWithBrowser(
@@ -389,11 +463,17 @@ async function searchRedditWithBrowser(
     let stagnantRounds = 0;
     for (let round = 0; round < 24 && posts.size < request.limit && stagnantRounds < 3; round += 1) {
       const before = posts.size;
-      for (const post of await scrapeRedditWebPosts(page)) posts.set(post.id, post);
+      const batch = await scrapeRedditWebPosts(page);
+      for (const post of batch.posts) posts.set(post.id, post);
       log?.("chromium_scroll", "info", `Прочитана порция веб-выдачи Reddit №${round + 1}.`, {
         found: posts.size,
         requested: request.limit,
         stagnantRounds,
+        candidateCards: batch.candidateCards,
+        commentLinks: batch.commentLinks,
+        uniqueLinks: batch.uniqueLinks,
+        rawRecords: batch.rawRecords,
+        normalizedPosts: batch.posts.length,
       });
       stagnantRounds = posts.size === before ? stagnantRounds + 1 : 0;
       if (posts.size >= request.limit || stagnantRounds >= 3) break;
