@@ -330,6 +330,15 @@ interface RedditWebPostBatch {
   rawRecords: number;
 }
 
+interface RedditSearchScrollState {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  candidateCards: number;
+  commentLinks: number;
+  uniquePostLinks: number;
+}
+
 async function scrapeRedditWebPosts(page: Page): Promise<RedditWebPostBatch> {
   const batch = await page.evaluate(() => {
     const clean = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
@@ -448,6 +457,57 @@ async function scrapeRedditWebPosts(page: Page): Promise<RedditWebPostBatch> {
   };
 }
 
+async function readRedditSearchScrollState(page: Page): Promise<RedditSearchScrollState> {
+  return page.evaluate(() => {
+    const root = document.scrollingElement ?? document.documentElement;
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/comments/"]')];
+    const uniquePostLinks = new Set<string>();
+    for (const link of links) {
+      try {
+        const pathname = new URL(link.href, location.href).pathname;
+        const postId = /\/(?:r\/[^/]+|user\/[^/]+)\/comments\/([^/?#]+)/i.exec(pathname)?.[1];
+        if (postId) uniquePostLinks.add(postId);
+      } catch {
+        // Ignore links that are briefly incomplete while Reddit hydrates the feed.
+      }
+    }
+    return {
+      scrollTop: root.scrollTop,
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+      candidateCards: document.querySelectorAll('[data-testid="search-sdui-post"], [data-testid="search-crosspost-unit"], shreddit-post, .thing.link, article, [data-testid="post-container"]').length,
+      commentLinks: links.length,
+      uniquePostLinks: uniquePostLinks.size,
+    };
+  });
+}
+
+async function scrollRedditSearchToNextBatch(
+  page: Page,
+  before: RedditSearchScrollState,
+): Promise<{ changed: boolean; state: RedditSearchScrollState; waitedMs: number }> {
+  await page.evaluate(() => {
+    const root = document.scrollingElement ?? document.documentElement;
+    // Reddit appends the next virtualized batch only after the real page scroll reaches
+    // the current bottom. The new DOM becomes taller afterwards, so this must be repeated.
+    window.scrollTo({ top: root.scrollHeight, behavior: "instant" });
+  });
+
+  const pollIntervalMs = 400;
+  const timeoutMs = 8_000;
+  let waitedMs = 0;
+  let state = await readRedditSearchScrollState(page);
+  while (waitedMs < timeoutMs) {
+    if (state.uniquePostLinks > before.uniquePostLinks || state.candidateCards > before.candidateCards) {
+      return { changed: true, state, waitedMs };
+    }
+    await page.waitForTimeout(pollIntervalMs);
+    waitedMs += pollIntervalMs;
+    state = await readRedditSearchScrollState(page);
+  }
+  return { changed: false, state, waitedMs };
+}
+
 async function searchRedditWithBrowser(
   request: RedditSearchRequest,
   log?: RedditLogger,
@@ -461,7 +521,8 @@ async function searchRedditWithBrowser(
     await gotoRedditPage(page, url.toString(), log);
     const posts = new Map<string, RedditPost>();
     let stagnantRounds = 0;
-    for (let round = 0; round < 24 && posts.size < request.limit && stagnantRounds < 3; round += 1) {
+    const maxRounds = Math.max(24, Math.ceil(request.limit / 5) * 4);
+    for (let round = 0; round < maxRounds && posts.size < request.limit && stagnantRounds < 3; round += 1) {
       const before = posts.size;
       const batch = await scrapeRedditWebPosts(page);
       for (const post of batch.posts) posts.set(post.id, post);
@@ -477,8 +538,20 @@ async function searchRedditWithBrowser(
       });
       stagnantRounds = posts.size === before ? stagnantRounds + 1 : 0;
       if (posts.size >= request.limit || stagnantRounds >= 3) break;
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await page.waitForTimeout(1_400);
+      const beforeScroll = await readRedditSearchScrollState(page);
+      const scroll = await scrollRedditSearchToNextBatch(page, beforeScroll);
+      log?.("chromium_scroll_wait", scroll.changed ? "success" : "info", scroll.changed
+        ? `Reddit подгрузил следующую порцию карточек после прокрутки №${round + 1}.`
+        : `После прокрутки №${round + 1} новые карточки Reddit не появились за ${scroll.waitedMs / 1_000} с.`, {
+        waitedMs: scroll.waitedMs,
+        scrollTop: `${beforeScroll.scrollTop} -> ${scroll.state.scrollTop}`,
+        scrollHeight: `${beforeScroll.scrollHeight} -> ${scroll.state.scrollHeight}`,
+        candidateCards: `${beforeScroll.candidateCards} -> ${scroll.state.candidateCards}`,
+        commentLinks: `${beforeScroll.commentLinks} -> ${scroll.state.commentLinks}`,
+        uniquePostLinks: `${beforeScroll.uniquePostLinks} -> ${scroll.state.uniquePostLinks}`,
+        collected: posts.size,
+        requested: request.limit,
+      });
     }
     log?.("chromium_complete", "success", "Chromium завершил сбор постов Reddit.", { received: posts.size });
     return [...posts.values()].slice(0, request.limit);
