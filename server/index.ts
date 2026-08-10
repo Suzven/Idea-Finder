@@ -580,10 +580,11 @@ app.post("/api/reddit/search", (request, response, next) => {
       job.status = "running";
       job.updatedAt = Date.now();
       try {
+        const proxySettings = await getReviewProxyCredentials(clientId);
         job.result = await searchRedditPosts(redditRequest, (logs) => {
           job.logs = logs;
           job.updatedAt = Date.now();
-        });
+        }, proxySettings);
         job.logs = job.result.logs;
         job.status = "completed";
       } catch (error) {
@@ -618,9 +619,10 @@ app.get("/api/reddit/search/jobs/:jobId", (request, response, next) => {
 
 app.post("/api/reddit/conversation", async (request, response, next) => {
   try {
-    getAuthenticatedUser(request);
+    const clientId = getClientId(request);
     const parsed = redditConversationSchema.parse(request.body);
-    response.json(await fetchRedditConversation(parsed.post as RedditPost, parsed.maxDepth));
+    const proxySettings = await getReviewProxyCredentials(clientId);
+    response.json(await fetchRedditConversation(parsed.post as RedditPost, parsed.maxDepth, proxySettings));
   } catch (error) {
     next(error);
   }

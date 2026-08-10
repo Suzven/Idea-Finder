@@ -783,7 +783,7 @@ const adapters: Record<ReviewSource, ReviewAdapter> = {
   },
 };
 
-async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo; close: () => Promise<void> }> {
+export async function createContext(proxySettings?: ReviewProxyCredentials): Promise<{ context: BrowserContext; browser: ReviewBrowserInfo; close: () => Promise<void> }> {
   const browser = await getMetaBrowser();
   const rawVersion = browser.version();
   const version = rawVersion.match(/\d+(?:\.\d+){1,3}/)?.[0] ?? rawVersion;

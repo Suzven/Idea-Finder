@@ -8,7 +8,7 @@ import type {
   RedditSearchRequest,
   RedditSearchResponse,
 } from "../../src/shared/types.js";
-import { getMetaBrowser } from "./metaSnapshot.js";
+import { createContext, type ReviewProxyCredentials } from "./reviewAnalysis.js";
 
 const REDDIT_ORIGINS = ["https://www.reddit.com", "https://old.reddit.com"];
 const REQUEST_TIMEOUT_MS = 25_000;
@@ -264,20 +264,28 @@ export function normalizeRedditWebComment(value: unknown): RedditComment | null 
   };
 }
 
-async function withRedditPage<T>(operation: (page: Page) => Promise<T>): Promise<T> {
-  const browser = await getMetaBrowser();
+async function withRedditPage<T>(
+  operation: (page: Page) => Promise<T>,
+  proxySettings?: ReviewProxyCredentials,
+  log?: RedditLogger,
+): Promise<T> {
   let context: BrowserContext | undefined;
+  let closeContext: (() => Promise<void>) | undefined;
   try {
-    context = await browser.newContext({
-      locale: "en-US",
-      viewport: { width: 1_440, height: 1_100 },
-      userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
+    const created = await createContext(proxySettings);
+    context = created.context;
+    closeContext = created.close;
+    log?.("proxy_context", "success", proxySettings?.server
+      ? "Chromium Reddit запущен через сохранённую прокси отзывов."
+      : "Chromium Reddit запущен с IP сервера.", {
+      proxyEnabled: Boolean(proxySettings?.server),
+      ...(created.browser.proxy ? { proxy: created.browser.proxy } : {}),
     });
     const page = await context.newPage();
     return await operation(page);
   } finally {
-    await context?.close().catch(() => undefined);
+    if (closeContext) await closeContext().catch(() => undefined);
+    else await context?.close().catch(() => undefined);
   }
 }
 
@@ -366,7 +374,11 @@ async function scrapeRedditWebPosts(page: Page): Promise<RedditPost[]> {
   return raw.map(normalizeRedditWebPost).filter((post): post is RedditPost => Boolean(post));
 }
 
-async function searchRedditWithBrowser(request: RedditSearchRequest, log?: RedditLogger): Promise<RedditPost[]> {
+async function searchRedditWithBrowser(
+  request: RedditSearchRequest,
+  log?: RedditLogger,
+  proxySettings?: ReviewProxyCredentials,
+): Promise<RedditPost[]> {
   return withRedditPage(async (page) => {
     const url = new URL("/search/", "https://www.reddit.com");
     url.searchParams.set("q", request.query);
@@ -390,7 +402,7 @@ async function searchRedditWithBrowser(request: RedditSearchRequest, log?: Reddi
     }
     log?.("chromium_complete", "success", "Chromium завершил сбор постов Reddit.", { received: posts.size });
     return [...posts.values()].slice(0, request.limit);
-  });
+  }, proxySettings, log);
 }
 
 async function scrapeRedditWebComments(page: Page, maxDepth: number): Promise<RedditComment[]> {
@@ -439,7 +451,12 @@ async function scrapeRedditWebComments(page: Page, maxDepth: number): Promise<Re
   return raw.map(normalizeRedditWebComment).filter((comment): comment is RedditComment => Boolean(comment));
 }
 
-async function fetchRedditConversationWithBrowser(selectedPost: RedditPost, maxDepth: number, log?: RedditLogger): Promise<RedditConversationResponse> {
+async function fetchRedditConversationWithBrowser(
+  selectedPost: RedditPost,
+  maxDepth: number,
+  log?: RedditLogger,
+  proxySettings?: ReviewProxyCredentials,
+): Promise<RedditConversationResponse> {
   return withRedditPage(async (page) => {
     await gotoRedditPage(page, selectedPost.permalink, log);
     const comments = new Map<string, RedditComment>();
@@ -465,7 +482,7 @@ async function fetchRedditConversationWithBrowser(selectedPost: RedditPost, maxD
       truncated: values.length >= MAX_COMMENTS_PER_POST,
       logs: [],
     };
-  });
+  }, proxySettings, log);
 }
 
 function sourceUnavailable(jsonError: unknown, browserError: unknown, logs: RedditLogEntry[]): AppError {
@@ -473,7 +490,7 @@ function sourceUnavailable(jsonError: unknown, browserError: unknown, logs: Redd
     502,
     "REDDIT_SOURCE_UNAVAILABLE",
     "Reddit не отдал публичные данные серверу.",
-    "Reddit мог включить проверку браузера для IP VPS. Повторите запрос позже или используйте другой серверный IP.",
+    "Reddit мог заблокировать текущий IP VPS или сохранённой прокси. Проверьте прокси в Настройках либо повторите запрос позже.",
     {
       attempts: [
         `JSON: ${errorMessage(jsonError)}`,
@@ -487,6 +504,7 @@ function sourceUnavailable(jsonError: unknown, browserError: unknown, logs: Redd
 export async function searchRedditPosts(
   request: RedditSearchRequest,
   onProgress?: (logs: RedditLogEntry[]) => void,
+  proxySettings?: ReviewProxyCredentials,
 ): Promise<RedditSearchResponse> {
   const diagnostics = createRedditDiagnostics(onProgress);
   const { logs, log } = diagnostics;
@@ -507,6 +525,24 @@ export async function searchRedditPosts(
     limit: request.limit,
     sort: "new",
   });
+  if (proxySettings?.server) {
+    source = "chromium";
+    log("proxy", "info", "Для Reddit используется сохранённая прокси из раздела отзывов; прямой запрос с IP VPS пропущен.");
+    try {
+      posts = await searchRedditWithBrowser(request, log, proxySettings);
+      log("complete", "success", "Поиск Reddit через прокси завершён.", { source, received: posts.length });
+      return {
+        source,
+        query: request.query,
+        posts,
+        warnings: posts.length ? [] : ["Reddit не нашёл публичных постов по этому запросу."],
+        logs,
+      };
+    } catch (browserError) {
+      log("fallback", "error", "Reddit не отдал выдачу Chromium через сохранённую прокси.", { reason: errorMessage(browserError) });
+      throw sourceUnavailable(new Error("Прямой запрос пропущен: включена прокси."), browserError, logs);
+    }
+  }
   try {
     log("reddit_json", "started", "Запрашиваем структурированную выдачу Reddit.", { endpoints: REDDIT_ORIGINS.length });
     const data = await redditJson(`/search.json?${params.toString()}`);
@@ -550,6 +586,7 @@ export async function searchRedditPosts(
 export async function fetchRedditConversation(
   selectedPost: RedditPost,
   maxDepth: number,
+  proxySettings?: ReviewProxyCredentials,
 ): Promise<RedditConversationResponse> {
   const diagnostics = createRedditDiagnostics();
   const { logs, log } = diagnostics;
@@ -566,6 +603,17 @@ export async function fetchRedditConversation(
     maxDepth,
     expectedComments: selectedPost.commentCount,
   });
+  if (proxySettings?.server) {
+    log("proxy", "info", "Комментарии Reddit собираются через сохранённую прокси отзывов; прямой запрос с IP VPS пропущен.");
+    try {
+      const browserResult = await fetchRedditConversationWithBrowser(selectedPost, maxDepth, log, proxySettings);
+      log("complete", "success", "Сбор комментариев Reddit через прокси завершён.", { received: browserResult.comments.length });
+      return { ...browserResult, logs };
+    } catch (browserError) {
+      log("fallback", "error", "Reddit не отдал комментарии Chromium через сохранённую прокси.", { reason: errorMessage(browserError) });
+      throw sourceUnavailable(new Error("Прямой запрос пропущен: включена прокси."), browserError, logs);
+    }
+  }
   try {
     log("reddit_json", "started", "Запрашиваем дерево комментариев Reddit.", { postId: selectedPost.id });
     const data = await redditJson(`/comments/${encodeURIComponent(selectedPost.id)}.json?${params.toString()}`);
