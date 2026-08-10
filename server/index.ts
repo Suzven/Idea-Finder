@@ -18,12 +18,13 @@ import { collectKeywordVolume } from "./services/keywordVolume.js";
 import { collectGoogleTrends } from "./services/googleTrends.js";
 import { fetchThreadsConversation, fetchThreadsPostViewCounts, initializeThreadsSession, searchThreadsPosts } from "./services/threadsOverview.js";
 import type { ThreadsBrowserSession } from "./services/threadsOverview.js";
+import { fetchRedditConversation, searchRedditPosts } from "./services/redditOverview.js";
 import { adoptLegacyKeywordSurferExtension, deleteKeywordSurferExtension, getKeywordSurferExtensionInfo, installKeywordSurferExtension } from "./services/keywordSurfer.js";
 import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSnapshot.js";
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsPost } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, RedditPost, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsPost } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -407,6 +408,32 @@ const threadsViewCountsSchema = z.object({
   posts: z.array(threadsPostSchema).min(1).max(8),
 });
 
+const redditSearchSchema = z.object({
+  query: z.string().trim().min(1).max(512),
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  sort: z.enum(["relevance", "new", "top", "comments"]).default("relevance"),
+});
+
+const redditPostSchema = z.object({
+  id: z.string().trim().min(1).max(20),
+  title: z.string().max(1_000),
+  text: z.string().max(50_000).default(""),
+  author: z.string().max(200),
+  subreddit: z.string().max(200),
+  timestamp: z.string().max(100).default(""),
+  permalink: z.string().url().max(2_000),
+  destinationUrl: z.string().url().max(4_000).optional(),
+  thumbnailUrl: z.string().url().max(4_000).optional(),
+  score: z.number().int().default(0),
+  commentCount: z.number().int().nonnegative().default(0),
+  isNsfw: z.boolean().optional(),
+});
+
+const redditConversationSchema = z.object({
+  post: redditPostSchema,
+  maxDepth: z.coerce.number().int().min(1).max(50).default(4),
+});
+
 async function threadsBrowserSession(userId: string): Promise<ThreadsBrowserSession | undefined> {
   const stored = await getPrivateSettingsCredentials(userId);
   const username = stored.threads?.username?.trim();
@@ -464,6 +491,25 @@ app.post("/api/threads/views", async (request, response, next) => {
     const parsed = threadsViewCountsSchema.parse(request.body);
     const session = await threadsBrowserSession(getAuthenticatedUser(request).id);
     response.json(await fetchThreadsPostViewCounts(parsed.posts as ThreadsPost[], session));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/reddit/search", async (request, response, next) => {
+  try {
+    getAuthenticatedUser(request);
+    response.json(await searchRedditPosts(redditSearchSchema.parse(request.body)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/reddit/conversation", async (request, response, next) => {
+  try {
+    getAuthenticatedUser(request);
+    const parsed = redditConversationSchema.parse(request.body);
+    response.json(await fetchRedditConversation(parsed.post as RedditPost, parsed.maxDepth));
   } catch (error) {
     next(error);
   }

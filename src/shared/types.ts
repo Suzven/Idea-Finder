@@ -583,6 +583,54 @@ export interface ThreadsConversationResponse {
   truncated: boolean;
 }
 
+export type RedditSearchSort = "relevance" | "new" | "top" | "comments";
+
+export interface RedditPost {
+  id: string;
+  title: string;
+  text: string;
+  author: string;
+  subreddit: string;
+  timestamp: string;
+  permalink: string;
+  destinationUrl?: string;
+  thumbnailUrl?: string;
+  score: number;
+  commentCount: number;
+  isNsfw?: boolean;
+}
+
+export interface RedditComment {
+  id: string;
+  author: string;
+  text: string;
+  timestamp: string;
+  permalink?: string;
+  parentId?: string;
+  score: number;
+  depth: number;
+}
+
+export interface RedditSearchRequest {
+  query: string;
+  limit: number;
+  sort?: RedditSearchSort;
+}
+
+export interface RedditSearchResponse {
+  source: "reddit-json" | "chromium";
+  query: string;
+  posts: RedditPost[];
+  warnings: string[];
+}
+
+export interface RedditConversationResponse {
+  post: RedditPost;
+  comments: RedditComment[];
+  warnings: string[];
+  truncated: boolean;
+}
+
 export type IntegrationLogStatus = "started" | "success" | "error";
 
 export interface IntegrationLogSummary {

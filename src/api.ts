@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse, ThreadsViewCountsResponse } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, RedditConversationResponse, RedditPost, RedditSearchRequest, RedditSearchResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse, ThreadsViewCountsResponse } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -148,6 +148,20 @@ export async function fetchThreadsViewCounts(posts: ThreadsPost[]): Promise<Thre
   return request<ThreadsViewCountsResponse>("/api/threads/views", {
     method: "POST",
     body: JSON.stringify({ posts }),
+  });
+}
+
+export async function searchRedditPosts(payload: RedditSearchRequest): Promise<RedditSearchResponse> {
+  return request<RedditSearchResponse>("/api/reddit/search", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchRedditConversation(post: RedditPost, maxDepth: number): Promise<RedditConversationResponse> {
+  return request<RedditConversationResponse>("/api/reddit/conversation", {
+    method: "POST",
+    body: JSON.stringify({ post, maxDepth }),
   });
 }
 
