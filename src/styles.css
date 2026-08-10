@@ -1697,6 +1697,26 @@ body.modal-open { overflow: hidden; }
 .reddit-error small { display: block; margin-top: 5px; color: #9b5962; font-size: 12px; }
 .reddit-warning { align-items: center; color: #805f23; border-color: #eadab2; background: #fffaf0; font-size: 13px; }
 .reddit-warning svg { color: #c58a30; }
+.reddit-debug-log { overflow: hidden; border: 1px solid #dfe3ea; border-radius: 15px; background: #fff; box-shadow: 0 12px 30px rgba(39,46,65,.05); }
+.reddit-debug-log > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 17px; cursor: pointer; list-style: none; color: #4b566b; font-size: 13px; font-weight: 850; }
+.reddit-debug-log > summary::-webkit-details-marker { display: none; }
+.reddit-debug-log > summary span { display: inline-flex; align-items: center; gap: 8px; }
+.reddit-debug-log > summary svg { color: #ed4c15; }
+.reddit-debug-log > summary small { color: #8c95a6; font-size: 12px; font-weight: 750; }
+.reddit-debug-log > ol { display: grid; gap: 9px; max-height: 520px; overflow: auto; margin: 0; padding: 14px; border-top: 1px solid #e8ebf0; background: #f7f8fa; list-style: none; }
+.reddit-debug-log li { display: grid; grid-template-columns: 70px minmax(0,1fr); gap: 12px; padding: 12px 13px; border: 1px solid #e1e5eb; border-left: 4px solid #8a94a7; border-radius: 10px; background: #fff; }
+.reddit-debug-log li.started { border-left-color: #ed4c15; }
+.reddit-debug-log li.success { border-left-color: #2aa574; }
+.reddit-debug-log li.error { border-left-color: #d7525f; background: #fffafb; }
+.reddit-debug-log li > time { color: #8b94a5; font: 750 11px/1.5 "SFMono-Regular",Consolas,monospace; }
+.reddit-debug-log li > div { min-width: 0; }
+.reddit-debug-log li strong { color: #354055; font-size: 12.5px; }
+.reddit-debug-log li p { margin: 4px 0 0; color: #687388; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.reddit-debug-log dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; margin: 10px 0 0; }
+.reddit-debug-log dl div { display: grid; min-width: 0; gap: 3px; padding: 8px; border-radius: 8px; background: #f3f5f8; }
+.reddit-debug-log dt { color: #929aaa; font-size: 10px; }
+.reddit-debug-log dd { overflow: auto; margin: 0; color: #465166; font: 700 11px/1.45 "SFMono-Regular",Consolas,monospace; overflow-wrap: anywhere; }
+.reddit-report-comments .reddit-debug-log { margin-bottom: 13px; box-shadow: none; }
 .reddit-results > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px; border-bottom: 1px solid #e8ebf0; }
 .reddit-results > header p { margin: 5px 0 0; color: #818a9c; font-size: 13px; }
 .reddit-results > header > div:last-child { display: flex; gap: 8px; }
@@ -1772,6 +1792,7 @@ body.modal-open { overflow: hidden; }
   .reddit-export-bar .button { justify-content: center; width: 100%; }
   .reddit-report-post, .reddit-report-comments { padding: 18px; }
   .reddit-report-comments > article { margin-left: 0; }
+  .reddit-debug-log dl { grid-template-columns: 1fr; }
 }
 
 @media print {
@@ -1780,6 +1801,7 @@ body.modal-open { overflow: hidden; }
   html.printing-reddit #reddit-pdf-report * { visibility: visible !important; }
   html.printing-reddit #reddit-pdf-report { position: absolute; inset: 0 auto auto 0; display: block !important; width: 100% !important; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
   html.printing-reddit #reddit-pdf-report > header .button { display: none !important; }
+  html.printing-reddit .reddit-debug-log { display: none !important; }
   html.printing-reddit .reddit-report-thread { display: block; break-before: page; border: 0; }
   html.printing-reddit .reddit-report-thread:first-child { break-before: auto; }
   html.printing-reddit .reddit-report-post { break-inside: avoid; border: 0 0 1px 0; }

@@ -3,6 +3,7 @@ import { AppError } from "../errors.js";
 import type {
   RedditComment,
   RedditConversationResponse,
+  RedditLogEntry,
   RedditPost,
   RedditSearchRequest,
   RedditSearchResponse,
@@ -16,6 +17,34 @@ const USER_AGENT = process.env.SPYSERVICE_REDDIT_USER_AGENT?.trim()
   || "SpyService/1.0 (public Reddit research; +https://ideafinder.mvppanel.store)";
 
 type UnknownRecord = Record<string, unknown>;
+type RedditLogger = (
+  stage: string,
+  status: RedditLogEntry["status"],
+  message: string,
+  details?: RedditLogEntry["details"],
+) => void;
+
+function createRedditDiagnostics(): { logs: RedditLogEntry[]; log: RedditLogger } {
+  const startedAt = Date.now();
+  const logs: RedditLogEntry[] = [];
+  return {
+    logs,
+    log(stage, status, message, details) {
+      logs.push({
+        at: new Date().toISOString(),
+        stage,
+        status,
+        message,
+        elapsedMs: Date.now() - startedAt,
+        ...(details ? { details } : {}),
+      });
+    },
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 function record(value: unknown): UnknownRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : undefined;
@@ -150,7 +179,8 @@ function parseJson(textValue: string): unknown {
   try {
     return JSON.parse(clean);
   } catch {
-    throw new Error("Reddit вернул страницу вместо JSON.");
+    const preview = clean.replace(/\s+/g, " ").slice(0, 700);
+    throw new Error(`Reddit вернул страницу вместо JSON. Фрагмент ответа: ${preview || "пустой ответ"}`);
   }
 }
 
@@ -248,7 +278,8 @@ async function withRedditPage<T>(operation: (page: Page) => Promise<T>): Promise
   }
 }
 
-async function gotoRedditPage(page: Page, url: string): Promise<void> {
+async function gotoRedditPage(page: Page, url: string, log?: RedditLogger): Promise<void> {
+  log?.("chromium_navigation", "started", "Открываем публичную страницу Reddit в Chromium.", { url });
   const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT_MS });
   await page.waitForTimeout(1_500);
   const state = await page.evaluate(() => ({
@@ -256,11 +287,28 @@ async function gotoRedditPage(page: Page, url: string): Promise<void> {
     text: (document.body?.innerText ?? "").replace(/\s+/g, " ").slice(0, 700),
   }));
   if (/prove your humanity|recaptcha|security check|you've been blocked/i.test(`${state.title} ${state.text}`)) {
+    log?.("chromium_navigation", "error", "Reddit показал проверку браузера.", {
+      httpStatus: response?.status() ?? 0,
+      finalUrl: page.url(),
+      title: state.title,
+      pagePreview: state.text,
+    });
     throw new Error("Reddit запросил проверку браузера для IP сервера.");
   }
   if (response && response.status() >= 400) {
+    log?.("chromium_navigation", "error", `Reddit вернул HTTP ${response.status()}.`, {
+      httpStatus: response.status(),
+      finalUrl: page.url(),
+      title: state.title,
+      pagePreview: state.text,
+    });
     throw new Error(`HTTP ${response.status()}: ${state.text.slice(0, 220)}`);
   }
+  log?.("chromium_navigation", "success", "Страница Reddit открыта.", {
+    httpStatus: response?.status() ?? 0,
+    finalUrl: page.url(),
+    title: state.title,
+  });
 }
 
 async function scrapeRedditWebPosts(page: Page): Promise<RedditPost[]> {
@@ -315,23 +363,29 @@ async function scrapeRedditWebPosts(page: Page): Promise<RedditPost[]> {
   return raw.map(normalizeRedditWebPost).filter((post): post is RedditPost => Boolean(post));
 }
 
-async function searchRedditWithBrowser(request: RedditSearchRequest): Promise<RedditPost[]> {
+async function searchRedditWithBrowser(request: RedditSearchRequest, log?: RedditLogger): Promise<RedditPost[]> {
   return withRedditPage(async (page) => {
     const url = new URL("/search/", "https://www.reddit.com");
     url.searchParams.set("q", request.query);
     url.searchParams.set("type", "posts");
     url.searchParams.set("sort", "new");
-    await gotoRedditPage(page, url.toString());
+    await gotoRedditPage(page, url.toString(), log);
     const posts = new Map<string, RedditPost>();
     let stagnantRounds = 0;
     for (let round = 0; round < 24 && posts.size < request.limit && stagnantRounds < 3; round += 1) {
       const before = posts.size;
       for (const post of await scrapeRedditWebPosts(page)) posts.set(post.id, post);
+      log?.("chromium_scroll", "info", `Прочитана порция веб-выдачи Reddit №${round + 1}.`, {
+        found: posts.size,
+        requested: request.limit,
+        stagnantRounds,
+      });
       stagnantRounds = posts.size === before ? stagnantRounds + 1 : 0;
       if (posts.size >= request.limit || stagnantRounds >= 3) break;
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       await page.waitForTimeout(1_400);
     }
+    log?.("chromium_complete", "success", "Chromium завершил сбор постов Reddit.", { received: posts.size });
     return [...posts.values()].slice(0, request.limit);
   });
 }
@@ -382,30 +436,36 @@ async function scrapeRedditWebComments(page: Page, maxDepth: number): Promise<Re
   return raw.map(normalizeRedditWebComment).filter((comment): comment is RedditComment => Boolean(comment));
 }
 
-async function fetchRedditConversationWithBrowser(selectedPost: RedditPost, maxDepth: number): Promise<RedditConversationResponse> {
+async function fetchRedditConversationWithBrowser(selectedPost: RedditPost, maxDepth: number, log?: RedditLogger): Promise<RedditConversationResponse> {
   return withRedditPage(async (page) => {
-    await gotoRedditPage(page, selectedPost.permalink);
+    await gotoRedditPage(page, selectedPost.permalink, log);
     const comments = new Map<string, RedditComment>();
     let stagnantRounds = 0;
     for (let round = 0; round < 12 && comments.size < MAX_COMMENTS_PER_POST && stagnantRounds < 3; round += 1) {
       const before = comments.size;
       for (const comment of await scrapeRedditWebComments(page, maxDepth)) comments.set(comment.id, comment);
+      log?.("chromium_comments", "info", `Прочитана порция комментариев №${round + 1}.`, {
+        received: comments.size,
+        maxDepth,
+      });
       stagnantRounds = comments.size === before ? stagnantRounds + 1 : 0;
       if (stagnantRounds >= 3) break;
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       await page.waitForTimeout(1_200);
     }
     const values = [...comments.values()].slice(0, MAX_COMMENTS_PER_POST);
+    log?.("chromium_complete", "success", "Chromium завершил сбор комментариев.", { received: values.length, maxDepth });
     return {
       post: selectedPost,
       comments: values,
       warnings: values.length >= MAX_COMMENTS_PER_POST ? ["В отчёт вошли первые 1000 загруженных комментариев."] : [],
       truncated: values.length >= MAX_COMMENTS_PER_POST,
+      logs: [],
     };
   });
 }
 
-function sourceUnavailable(jsonError: unknown, browserError: unknown): AppError {
+function sourceUnavailable(jsonError: unknown, browserError: unknown, logs: RedditLogEntry[]): AppError {
   return new AppError(
     502,
     "REDDIT_SOURCE_UNAVAILABLE",
@@ -413,14 +473,17 @@ function sourceUnavailable(jsonError: unknown, browserError: unknown): AppError 
     "Reddit мог включить проверку браузера для IP VPS. Повторите запрос позже или используйте другой серверный IP.",
     {
       attempts: [
-        `JSON: ${jsonError instanceof Error ? jsonError.message : String(jsonError)}`,
-        `Chromium: ${browserError instanceof Error ? browserError.message : String(browserError)}`,
+        `JSON: ${errorMessage(jsonError)}`,
+        `Chromium: ${errorMessage(browserError)}`,
       ],
+      logs,
     },
   );
 }
 
 export async function searchRedditPosts(request: RedditSearchRequest): Promise<RedditSearchResponse> {
+  const diagnostics = createRedditDiagnostics();
+  const { logs, log } = diagnostics;
   const params = new URLSearchParams({
     q: request.query,
     type: "link",
@@ -433,34 +496,48 @@ export async function searchRedditPosts(request: RedditSearchRequest): Promise<R
   let posts: RedditPost[] = [];
   let source: RedditSearchResponse["source"] = "reddit-json";
   let jsonError: unknown;
+  log("request", "started", "Запускаем поиск новых постов Reddit.", {
+    query: request.query,
+    limit: request.limit,
+    sort: "new",
+  });
   try {
+    log("reddit_json", "started", "Запрашиваем структурированную выдачу Reddit.", { endpoints: REDDIT_ORIGINS.length });
     const data = await redditJson(`/search.json?${params.toString()}`);
     posts = listingChildren(data).map(normalizeRedditPost).filter((post): post is RedditPost => Boolean(post)).slice(0, request.limit);
+    log("reddit_json", "success", "Структурированная выдача Reddit обработана.", { received: posts.length });
     if (!posts.length) {
+      log("fallback", "info", "JSON-выдача пуста — проверяем публичную страницу через Chromium.");
       try {
-        const browserPosts = await searchRedditWithBrowser(request);
+        const browserPosts = await searchRedditWithBrowser(request, log);
         if (browserPosts.length) {
           posts = browserPosts;
           source = "chromium";
         }
-      } catch {
+      } catch (browserError) {
+        log("fallback", "error", "Chromium не смог подтвердить пустую выдачу Reddit.", { reason: errorMessage(browserError) });
         // An empty structured result is still valid. A blocked HTML fallback must not turn it into a server error.
       }
     }
   } catch (error) {
     jsonError = error;
+    log("reddit_json", "error", "Структурированная выдача Reddit недоступна или вернула HTML вместо JSON.", { reason: errorMessage(error) });
     source = "chromium";
     try {
-      posts = await searchRedditWithBrowser(request);
+      log("fallback", "started", "Переключаем поиск на Chromium.");
+      posts = await searchRedditWithBrowser(request, log);
     } catch (browserError) {
-      throw sourceUnavailable(jsonError, browserError);
+      log("fallback", "error", "Chromium также не смог получить выдачу Reddit.", { reason: errorMessage(browserError) });
+      throw sourceUnavailable(jsonError, browserError, logs);
     }
   }
+  log("complete", "success", "Поиск Reddit завершён.", { source, received: posts.length });
   return {
     source,
     query: request.query,
     posts,
     warnings: posts.length ? [] : ["Reddit не нашёл публичных постов по этому запросу."],
+    logs,
   };
 }
 
@@ -468,6 +545,8 @@ export async function fetchRedditConversation(
   selectedPost: RedditPost,
   maxDepth: number,
 ): Promise<RedditConversationResponse> {
+  const diagnostics = createRedditDiagnostics();
+  const { logs, log } = diagnostics;
   const params = new URLSearchParams({
     raw_json: "1",
     limit: "500",
@@ -476,28 +555,45 @@ export async function fetchRedditConversation(
     showmore: "true",
   });
   let jsonError: unknown;
+  log("request", "started", "Запускаем сбор комментариев к выбранному посту.", {
+    postId: selectedPost.id,
+    maxDepth,
+    expectedComments: selectedPost.commentCount,
+  });
   try {
+    log("reddit_json", "started", "Запрашиваем дерево комментариев Reddit.", { postId: selectedPost.id });
     const data = await redditJson(`/comments/${encodeURIComponent(selectedPost.id)}.json?${params.toString()}`);
     const listings = Array.isArray(data) ? data : [];
     const post = normalizeRedditPost(listingChildren(listings[0])[0]) ?? selectedPost;
     const flattened = flattenRedditComments(listingChildren(listings[1]), maxDepth);
     const warnings: string[] = [];
     if (flattened.truncated) warnings.push("Reddit оставил часть большой ветки за блоками «ещё ответы» или лимитом выдачи.");
+    log("reddit_json", "success", "Дерево комментариев Reddit обработано.", {
+      received: flattened.comments.length,
+      truncated: flattened.truncated,
+    });
     if (!flattened.comments.length && selectedPost.commentCount > 0) {
+      log("fallback", "info", "JSON не вернул ожидаемые комментарии — проверяем страницу через Chromium.");
       try {
-        const browserResult = await fetchRedditConversationWithBrowser(selectedPost, maxDepth);
-        if (browserResult.comments.length) return browserResult;
-      } catch {
+        const browserResult = await fetchRedditConversationWithBrowser(selectedPost, maxDepth, log);
+        if (browserResult.comments.length) return { ...browserResult, logs };
+      } catch (browserError) {
+        log("fallback", "error", "Chromium не смог получить отсутствующие комментарии.", { reason: errorMessage(browserError) });
         warnings.push("Reddit сообщил о комментариях, но не отдал их публичному серверному запросу.");
       }
     }
-    return { post, comments: flattened.comments, warnings, truncated: flattened.truncated };
+    log("complete", "success", "Сбор комментариев завершён.", { received: flattened.comments.length });
+    return { post, comments: flattened.comments, warnings, truncated: flattened.truncated, logs };
   } catch (error) {
     jsonError = error;
+    log("reddit_json", "error", "Структурированное дерево комментариев недоступно.", { reason: errorMessage(error) });
   }
   try {
-    return await fetchRedditConversationWithBrowser(selectedPost, maxDepth);
+    log("fallback", "started", "Переключаем сбор комментариев на Chromium.");
+    const browserResult = await fetchRedditConversationWithBrowser(selectedPost, maxDepth, log);
+    return { ...browserResult, logs };
   } catch (browserError) {
-    throw sourceUnavailable(jsonError, browserError);
+    log("fallback", "error", "Chromium также не смог получить комментарии Reddit.", { reason: errorMessage(browserError) });
+    throw sourceUnavailable(jsonError, browserError, logs);
   }
 }

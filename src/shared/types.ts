@@ -617,11 +617,21 @@ export interface RedditSearchRequest {
   sort?: RedditSearchSort;
 }
 
+export interface RedditLogEntry {
+  at: string;
+  stage: string;
+  status: "info" | "started" | "success" | "error";
+  message: string;
+  elapsedMs: number;
+  details?: Record<string, string | number | boolean>;
+}
+
 export interface RedditSearchResponse {
   source: "reddit-json" | "chromium";
   query: string;
   posts: RedditPost[];
   warnings: string[];
+  logs: RedditLogEntry[];
 }
 
 export interface RedditConversationResponse {
@@ -629,6 +639,7 @@ export interface RedditConversationResponse {
   comments: RedditComment[];
   warnings: string[];
   truncated: boolean;
+  logs: RedditLogEntry[];
 }
 
 export type IntegrationLogStatus = "started" | "success" | "error";

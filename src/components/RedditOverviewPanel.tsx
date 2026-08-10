@@ -1,16 +1,52 @@
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { CalendarDays, Check, ExternalLink, FileDown, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, ThumbsUp, X } from "lucide-react";
+import { Activity, CalendarDays, Check, ExternalLink, FileDown, LoaderCircle, MessageCircle, Search, ShieldAlert, Sparkles, ThumbsUp, X } from "lucide-react";
 import { ApiRequestError, fetchRedditConversation, searchRedditPosts } from "../api";
-import type { RedditComment, RedditPost, RedditSearchResponse } from "../shared/types";
+import type { RedditComment, RedditLogEntry, RedditPost, RedditSearchResponse } from "../shared/types";
 
 interface PreparedRedditPost {
   post: RedditPost;
   comments: RedditComment[];
   warnings: string[];
   truncated: boolean;
+  logs: RedditLogEntry[];
   error?: string;
   action?: string;
+}
+
+function logsFromError(error: unknown): RedditLogEntry[] {
+  if (!(error instanceof ApiRequestError)) return [];
+  if (Array.isArray(error.details?.logs)) {
+    const serverLogs = error.details.logs.filter((entry): entry is RedditLogEntry => {
+      if (!entry || typeof entry !== "object") return false;
+      const candidate = entry as Partial<RedditLogEntry>;
+      return typeof candidate.stage === "string" && typeof candidate.message === "string" && typeof candidate.elapsedMs === "number";
+    });
+    if (serverLogs.length) return serverLogs;
+  }
+  const details = Object.fromEntries(Object.entries(error.details ?? {}).map(([key, value]) => [
+    key,
+    typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : JSON.stringify(value),
+  ])) as RedditLogEntry["details"];
+  return [{
+    at: new Date().toISOString(),
+    stage: error.code,
+    status: "error",
+    message: error.message,
+    elapsedMs: 0,
+    details: { httpStatus: error.status, ...(error.traceId ? { traceId: error.traceId } : {}), ...details },
+  }];
+}
+
+function RedditDiagnostics({ logs, title, open = false }: { logs: RedditLogEntry[]; title: string; open?: boolean }) {
+  if (!logs.length) return null;
+  return <details className="reddit-debug-log" open={open}>
+    <summary><span><Activity size={17} />{title}</span><small>{logs.length} событий</small></summary>
+    <ol>{logs.map((entry, index) => <li className={entry.status} key={`${entry.at}-${entry.stage}-${index}`}>
+      <time>+{(entry.elapsedMs / 1_000).toFixed(1)} с</time>
+      <div><strong>{entry.stage}</strong><p>{entry.message}</p>{entry.details && <dl>{Object.entries(entry.details).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>)}</dl>}</div>
+    </li>)}</ol>
+  </details>;
 }
 
 function formatDate(value: string): string {
@@ -53,6 +89,7 @@ export function RedditOverviewPanel() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [source, setSource] = useState<RedditSearchResponse["source"]>();
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [searchLogs, setSearchLogs] = useState<RedditLogEntry[]>([]);
   const [error, setError] = useState("");
   const [errorAction, setErrorAction] = useState("");
   const [prepared, setPrepared] = useState<PreparedRedditPost[]>([]);
@@ -69,6 +106,7 @@ export function RedditOverviewPanel() {
     setErrorAction("");
     setPosts([]);
     setWarnings([]);
+    setSearchLogs([]);
     setSelectedIds(new Set());
     setPrepared([]);
     try {
@@ -76,10 +114,12 @@ export function RedditOverviewPanel() {
       setPosts(result.posts);
       setWarnings(result.warnings);
       setSource(result.source);
+      setSearchLogs(result.logs);
     } catch (searchError) {
       const apiError = searchError instanceof ApiRequestError ? searchError : null;
       setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск в Reddit.");
       setErrorAction(apiError?.action ?? "");
+      setSearchLogs(logsFromError(searchError));
     } finally {
       setLoading(false);
     }
@@ -111,6 +151,7 @@ export function RedditOverviewPanel() {
           comments: [],
           warnings: [],
           truncated: false,
+          logs: logsFromError(conversationError),
           error: conversationError instanceof Error ? conversationError.message : "Комментарии к посту получить не удалось.",
           action: apiError?.action,
         });
@@ -151,6 +192,7 @@ export function RedditOverviewPanel() {
 
     {error && <div className="reddit-error"><ShieldAlert size={21} /><div><strong>Reddit не выполнил запрос</strong><p>{error}</p>{errorAction && <small>{errorAction}</small>}</div></div>}
     {warnings.map((warning) => <div className="reddit-warning" key={warning}><Sparkles size={18} />{warning}</div>)}
+    <RedditDiagnostics logs={searchLogs} title="Лог поиска Reddit" open={Boolean(error)} />
 
     {posts.length > 0 && <section className="reddit-results">
       <header><div><h2>Найденные посты</h2><p>{posts.length} результатов · выбрано {selectedIds.size}</p></div><div><button type="button" className="button ghost" onClick={() => { setSelectedIds(new Set(posts.map((post) => post.id))); setPrepared([]); }}><Check size={16} />Выбрать все</button><button type="button" className="button ghost" disabled={!selectedIds.size} onClick={() => { setSelectedIds(new Set()); setPrepared([]); }}><X size={16} />Снять выбор</button></div></header>
@@ -182,6 +224,7 @@ export function RedditOverviewPanel() {
         <section className="reddit-report-comments"><header><MessageCircle size={18} /><strong>Комментарии</strong><span>{item.comments.length}</span></header>
           {item.error && <div className="reddit-comment-error"><ShieldAlert size={18} /><div><strong>Комментарии недоступны</strong><p>{item.error}</p>{item.action && <small>{item.action}</small>}</div></div>}
           {item.warnings.map((warning) => <div className="reddit-comment-warning" key={warning}>{warning}</div>)}
+          <RedditDiagnostics logs={item.logs} title="Лог сбора комментариев" open={Boolean(item.error)} />
           {!item.error && item.comments.length === 0 && <p className="reddit-no-comments">В публичной выдаче Reddit нет комментариев к этому посту.</p>}
           {item.comments.map((comment) => <article key={comment.id} style={{ "--comment-depth": Math.min(comment.depth, 8) } as CSSProperties}><RedditIdentity author={comment.author} timestamp={comment.timestamp} /><p>{comment.text || "Комментарий без текста"}</p><footer><span><ThumbsUp size={13} />{formatCount(comment.score)}</span>{comment.permalink && <a href={comment.permalink} target="_blank" rel="noreferrer">Оригинал <ExternalLink size={12} /></a>}</footer></article>)}
         </section>
