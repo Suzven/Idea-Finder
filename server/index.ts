@@ -24,7 +24,7 @@ import { getMetaMedia, registerMetaAd, streamMetaMedia } from "./services/metaSn
 import { analyzeCollection } from "./services/aiAnalysis.js";
 import { cancelReviewChallenge, captureReviewChallengeFrame, clickReviewChallenge, scrollReviewChallenge } from "./services/reviewChallenge.js";
 import { searchCompanyReviews, testReviewProxyConnection } from "./services/reviewAnalysis.js";
-import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, RedditPost, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsPost } from "../src/shared/types.js";
+import type { AdFilters, AdSource, AdsResponse, AIAnalysisJobError, AIAnalysisJobResponse, AIAnalysisResponse, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, PrivateSettingsSummary, RedditLogEntry, RedditPost, RedditSearchJobResponse, RedditSearchRequest, RedditSearchResponse, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsPost } from "../src/shared/types.js";
 
 const app = express();
 if (config.trustProxy) app.set("trust proxy", 1);
@@ -82,11 +82,25 @@ interface StoredGoogleTrendsJob {
 }
 
 const googleTrendsJobs = new Map<string, StoredGoogleTrendsJob>();
+interface StoredRedditSearchJob {
+  jobId: string;
+  clientId: string;
+  request: RedditSearchRequest;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  logs: RedditLogEntry[];
+  result?: RedditSearchResponse;
+  error?: AIAnalysisJobError;
+}
+
+const redditSearchJobs = new Map<string, StoredRedditSearchJob>();
 const AI_JOB_TTL_MS = 30 * 60_000;
 const MAX_ACTIVE_AI_JOBS = 2;
 const MAX_ACTIVE_REVIEW_JOBS = 2;
 const MAX_ACTIVE_PROXY_TEST_JOBS = 2;
 const MAX_ACTIVE_GOOGLE_TRENDS_JOBS = 2;
+const MAX_ACTIVE_REDDIT_SEARCH_JOBS = 2;
 const REVIEW_SOURCE_LABELS: Record<ReviewSource, string> = {
   trustpilot: "Trustpilot",
   capterra: "Capterra",
@@ -209,6 +223,26 @@ function publicGoogleTrendsJob(job: StoredGoogleTrendsJob): GoogleTrendsJobRespo
     ...(job.progress ? { progress: job.progress } : {}),
     ...(job.result ? { result: job.result } : {}),
     ...(job.error ? { error: job.error } : {}),
+  };
+}
+
+function publicRedditSearchJob(job: StoredRedditSearchJob): RedditSearchJobResponse {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    logs: job.logs,
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  };
+}
+
+function redditBackgroundJobError(error: unknown, traceId: string): AIAnalysisJobError {
+  if (error instanceof AppError) return backgroundJobError(error, traceId);
+  return {
+    message: error instanceof Error ? error.message : "Неизвестная ошибка поиска Reddit.",
+    code: "REDDIT_SEARCH_FAILED",
+    httpStatus: 502,
+    traceId,
   };
 }
 
@@ -496,10 +530,87 @@ app.post("/api/threads/views", async (request, response, next) => {
   }
 });
 
-app.post("/api/reddit/search", async (request, response, next) => {
+app.post("/api/reddit/search", (request, response, next) => {
   try {
-    getAuthenticatedUser(request);
-    response.json(await searchRedditPosts(redditSearchSchema.parse(request.body)));
+    const clientId = getClientId(request);
+    const parsed = redditSearchSchema.parse(request.body);
+    const redditRequest: RedditSearchRequest = {
+      query: parsed.query,
+      limit: parsed.limit,
+      sort: "new",
+    };
+    const existing = [...redditSearchJobs.values()].find((job) =>
+      job.clientId === clientId
+      && job.request.query === redditRequest.query
+      && job.request.limit === redditRequest.limit
+      && (job.status === "queued" || job.status === "running"));
+    if (existing) {
+      response.status(202).json(publicRedditSearchJob(existing));
+      return;
+    }
+    const userHasActiveJob = [...redditSearchJobs.values()].some((job) =>
+      job.clientId === clientId && (job.status === "queued" || job.status === "running"));
+    if (userHasActiveJob) {
+      throw new AppError(409, "REDDIT_SEARCH_BUSY", "Предыдущий поиск Reddit ещё выполняется.", "Дождитесь завершения текущего поиска и повторите запрос.");
+    }
+    const activeCount = [...redditSearchJobs.values()].filter((job) => job.status === "queued" || job.status === "running").length;
+    if (activeCount >= MAX_ACTIVE_REDDIT_SEARCH_JOBS) {
+      throw new AppError(429, "REDDIT_SEARCH_SERVER_BUSY", "Сервер уже выполняет несколько поисков Reddit.", "Повторите запрос немного позже.");
+    }
+    const now = Date.now();
+    const job: StoredRedditSearchJob = {
+      jobId: randomUUID(),
+      clientId,
+      request: redditRequest,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+      logs: [{
+        at: new Date(now).toISOString(),
+        stage: "queued",
+        status: "info",
+        message: "Поиск Reddit поставлен в фоновую очередь.",
+        elapsedMs: 0,
+      }],
+    };
+    redditSearchJobs.set(job.jobId, job);
+    response.status(202).json(publicRedditSearchJob(job));
+
+    void (async () => {
+      job.status = "running";
+      job.updatedAt = Date.now();
+      try {
+        job.result = await searchRedditPosts(redditRequest, (logs) => {
+          job.logs = logs;
+          job.updatedAt = Date.now();
+        });
+        job.logs = job.result.logs;
+        job.status = "completed";
+      } catch (error) {
+        job.status = "failed";
+        job.error = redditBackgroundJobError(error, job.jobId);
+        const errorLogs = error instanceof AppError && Array.isArray(error.details?.logs)
+          ? error.details.logs as RedditLogEntry[]
+          : [];
+        if (errorLogs.length) job.logs = errorLogs;
+        console.error(`[${job.jobId}] Reddit search background job failed`, error);
+      } finally {
+        job.updatedAt = Date.now();
+      }
+    })();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/reddit/search/jobs/:jobId", (request, response, next) => {
+  try {
+    const jobId = z.string().uuid().parse(request.params.jobId);
+    const job = redditSearchJobs.get(jobId);
+    if (!job || job.clientId !== getClientId(request)) {
+      throw new AppError(404, "REDDIT_SEARCH_JOB_NOT_FOUND", "Задача поиска Reddit не найдена или уже удалена.");
+    }
+    response.json(publicRedditSearchJob(job));
   } catch (error) {
     next(error);
   }
@@ -1282,6 +1393,9 @@ const aiJobCleanupTimer = setInterval(() => {
   }
   for (const [jobId, job] of googleTrendsJobs) {
     if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") googleTrendsJobs.delete(jobId);
+  }
+  for (const [jobId, job] of redditSearchJobs) {
+    if (job.updatedAt < cutoff && job.status !== "queued" && job.status !== "running") redditSearchJobs.delete(jobId);
   }
 }, 5 * 60_000);
 aiJobCleanupTimer.unref();

@@ -634,6 +634,14 @@ export interface RedditSearchResponse {
   logs: RedditLogEntry[];
 }
 
+export interface RedditSearchJobResponse {
+  jobId: string;
+  status: AIAnalysisJobState;
+  logs: RedditLogEntry[];
+  result?: RedditSearchResponse;
+  error?: AIAnalysisJobError;
+}
+
 export interface RedditConversationResponse {
   post: RedditPost;
   comments: RedditComment[];

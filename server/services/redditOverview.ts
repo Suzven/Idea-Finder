@@ -24,7 +24,9 @@ type RedditLogger = (
   details?: RedditLogEntry["details"],
 ) => void;
 
-function createRedditDiagnostics(): { logs: RedditLogEntry[]; log: RedditLogger } {
+function createRedditDiagnostics(
+  onProgress?: (logs: RedditLogEntry[]) => void,
+): { logs: RedditLogEntry[]; log: RedditLogger } {
   const startedAt = Date.now();
   const logs: RedditLogEntry[] = [];
   return {
@@ -38,6 +40,7 @@ function createRedditDiagnostics(): { logs: RedditLogEntry[]; log: RedditLogger 
         elapsedMs: Date.now() - startedAt,
         ...(details ? { details } : {}),
       });
+      onProgress?.([...logs]);
     },
   };
 }
@@ -481,8 +484,11 @@ function sourceUnavailable(jsonError: unknown, browserError: unknown, logs: Redd
   );
 }
 
-export async function searchRedditPosts(request: RedditSearchRequest): Promise<RedditSearchResponse> {
-  const diagnostics = createRedditDiagnostics();
+export async function searchRedditPosts(
+  request: RedditSearchRequest,
+  onProgress?: (logs: RedditLogEntry[]) => void,
+): Promise<RedditSearchResponse> {
+  const diagnostics = createRedditDiagnostics(onProgress);
   const { logs, log } = diagnostics;
   const params = new URLSearchParams({
     q: request.query,

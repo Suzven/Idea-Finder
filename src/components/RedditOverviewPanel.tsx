@@ -110,7 +110,10 @@ export function RedditOverviewPanel() {
     setSelectedIds(new Set());
     setPrepared([]);
     try {
-      const result = await searchRedditPosts({ query: cleanQuery, limit: postLimit, sort: "new" });
+      const result = await searchRedditPosts(
+        { query: cleanQuery, limit: postLimit, sort: "new" },
+        (logs) => setSearchLogs(logs),
+      );
       setPosts(result.posts);
       setWarnings(result.warnings);
       setSource(result.source);
@@ -192,7 +195,7 @@ export function RedditOverviewPanel() {
 
     {error && <div className="reddit-error"><ShieldAlert size={21} /><div><strong>Reddit не выполнил запрос</strong><p>{error}</p>{errorAction && <small>{errorAction}</small>}</div></div>}
     {warnings.map((warning) => <div className="reddit-warning" key={warning}><Sparkles size={18} />{warning}</div>)}
-    <RedditDiagnostics logs={searchLogs} title="Лог поиска Reddit" open={Boolean(error)} />
+    <RedditDiagnostics logs={searchLogs} title="Лог поиска Reddit" open={Boolean(error) || loading} />
 
     {posts.length > 0 && <section className="reddit-results">
       <header><div><h2>Найденные посты</h2><p>{posts.length} результатов · выбрано {selectedIds.size}</p></div><div><button type="button" className="button ghost" onClick={() => { setSelectedIds(new Set(posts.map((post) => post.id))); setPrepared([]); }}><Check size={16} />Выбрать все</button><button type="button" className="button ghost" disabled={!selectedIds.size} onClick={() => { setSelectedIds(new Set()); setPrepared([]); }}><X size={16} />Снять выбор</button></div></header>

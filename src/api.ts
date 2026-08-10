@@ -1,4 +1,4 @@
-import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, RedditConversationResponse, RedditPost, RedditSearchRequest, RedditSearchResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse, ThreadsViewCountsResponse } from "./shared/types";
+import type { AdCreative, AdFilters, AdSource, AdsResponse, AIAnalysisJobResponse, AIAnalysisReport, AIAnalysisReportSummary, AIAnalysisResponse, AICreativeNoteItem, AuthSessionResponse, CreativeCollection, GoogleTrendsJobResponse, GoogleTrendsProgress, GoogleTrendsReport, GoogleTrendsRequest, IntegrationLogDetail, IntegrationLogsResponse, IntegrationLogStatus, KeywordSurferExtensionInfo, KeywordVolumeRequest, KeywordVolumeResponse, LegacyBrowserImport, PrivateSettingsInput, PrivateSettingsSummary, RedditConversationResponse, RedditLogEntry, RedditPost, RedditSearchJobResponse, RedditSearchRequest, RedditSearchResponse, ReviewProxySettings, ReviewProxySettingsInput, ReviewProxyTestJobResponse, ReviewProxyTestResult, ReviewSearchJobResponse, ReviewSearchResponse, ReviewSource, ReviewSourceProgress, ThreadsConversationResponse, ThreadsPost, ThreadsSearchRequest, ThreadsSearchResponse, ThreadsSessionResponse, ThreadsViewCountsResponse } from "./shared/types";
 
 export interface ResolvedAdMedia {
   mediaType: "image" | "video";
@@ -151,11 +151,40 @@ export async function fetchThreadsViewCounts(posts: ThreadsPost[]): Promise<Thre
   });
 }
 
-export async function searchRedditPosts(payload: RedditSearchRequest): Promise<RedditSearchResponse> {
-  return request<RedditSearchResponse>("/api/reddit/search", {
+export async function searchRedditPosts(
+  payload: RedditSearchRequest,
+  onProgress?: (logs: RedditLogEntry[]) => void,
+): Promise<RedditSearchResponse> {
+  const started = await request<RedditSearchJobResponse>("/api/reddit/search", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  onProgress?.(started.logs);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 8 * 60_000) {
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+    const job = await request<RedditSearchJobResponse>(`/api/reddit/search/jobs/${encodeURIComponent(started.jobId)}`);
+    onProgress?.(job.logs);
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed" && job.error) {
+      throw new ApiRequestError(
+        job.error.message,
+        job.error.httpStatus,
+        job.error.code,
+        job.error.action,
+        job.error.traceId,
+        { ...job.error.details, logs: job.logs },
+      );
+    }
+  }
+  throw new ApiRequestError(
+    "Поиск Reddit выполняется слишком долго.",
+    504,
+    "REDDIT_SEARCH_TIMEOUT",
+    "Повторите запрос позже: фоновая задача на сервере могла продолжить выполнение.",
+    started.jobId,
+    { logs: [] },
+  );
 }
 
 export async function fetchRedditConversation(post: RedditPost, maxDepth: number): Promise<RedditConversationResponse> {
