@@ -18,12 +18,30 @@ function formatDate(value: string): string {
   return Number.isNaN(parsed.getTime()) ? "Дата не указана" : parsed.toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" });
 }
 
+function formatRelativeDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Дата не указана";
+  const seconds = Math.round((parsed.getTime() - Date.now()) / 1_000);
+  const formatter = new Intl.RelativeTimeFormat("ru", { numeric: "auto" });
+  const ranges: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["year", 31_536_000],
+    ["month", 2_592_000],
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+  ];
+  for (const [unit, size] of ranges) {
+    if (Math.abs(seconds) >= size) return formatter.format(Math.round(seconds / size), unit);
+  }
+  return "только что";
+}
+
 function formatCount(value: number): string {
   return new Intl.NumberFormat("ru-RU", { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }
 
-function RedditIdentity({ author, subreddit, timestamp }: { author: string; subreddit?: string; timestamp: string }) {
-  return <div className="reddit-identity"><span aria-hidden="true">👤</span><div><strong>u/{author}</strong><small>{subreddit ? `${subreddit} · ` : ""}{formatDate(timestamp)}</small></div></div>;
+function RedditIdentity({ author, subreddit, timestamp, relative = false }: { author: string; subreddit?: string; timestamp: string; relative?: boolean }) {
+  return <div className="reddit-identity"><span aria-hidden="true">👤</span><div><strong>u/{author}</strong><small title={relative ? formatDate(timestamp) : undefined}>{subreddit ? `${subreddit} · ` : ""}{relative ? formatRelativeDate(timestamp) : formatDate(timestamp)}</small></div></div>;
 }
 
 export function RedditOverviewPanel() {
@@ -141,7 +159,7 @@ export function RedditOverviewPanel() {
         const selected = selectedIds.has(post.id);
         return <article key={post.id} className={selected ? "selected" : ""} onClick={() => togglePost(post.id)}>
           <button type="button" className="reddit-post-check" aria-label={selected ? "Снять выбор" : "Выбрать пост"}>{selected ? <Check size={16} /> : null}</button>
-          <RedditIdentity author={post.author} subreddit={post.subreddit} timestamp={post.timestamp} />
+          <RedditIdentity author={post.author} subreddit={post.subreddit} timestamp={post.timestamp} relative />
           <h3>{post.title}</h3>
           {post.text && <p>{post.text}</p>}
           {post.thumbnailUrl && <img className="reddit-post-thumb" src={post.thumbnailUrl} alt="" loading="lazy" />}
@@ -160,7 +178,7 @@ export function RedditOverviewPanel() {
     {prepared.length > 0 && <section className="reddit-pdf-report" id="reddit-pdf-report">
       <header><div><span className="reddit-mark">r/</span><span><small>REDDIT SIGNAL REPORT</small><h2>{query}</h2><p>{prepared.length} постов · {prepared.reduce((sum, item) => sum + item.comments.length, 0)} комментариев · глубина до {maxDepth} · {new Date().toLocaleString("ru-RU")}</p></span></div><button className="button primary" disabled={preparing} onClick={() => void exportPdf()}><FileDown size={17} />Выгрузить PDF</button></header>
       <div className="reddit-report-items">{prepared.map((item, postIndex) => <article className="reddit-report-thread" key={item.post.id}>
-        <div className="reddit-report-post"><b>{String(postIndex + 1).padStart(2, "0")}</b><RedditIdentity author={item.post.author} subreddit={item.post.subreddit} timestamp={item.post.timestamp} /><h3>{item.post.title}</h3>{item.post.text && <p>{item.post.text}</p>}<footer><div><span><ThumbsUp size={14} />{formatCount(item.post.score)}</span><span><MessageCircle size={14} />{formatCount(item.post.commentCount)}</span></div><a href={item.post.permalink} target="_blank" rel="noreferrer">Открыть пост <ExternalLink size={13} /></a></footer></div>
+        <div className="reddit-report-post"><b>{String(postIndex + 1).padStart(2, "0")}</b><RedditIdentity author={item.post.author} subreddit={item.post.subreddit} timestamp={item.post.timestamp} relative /><h3>{item.post.title}</h3>{item.post.text && <p>{item.post.text}</p>}<footer><div><span><ThumbsUp size={14} />{formatCount(item.post.score)}</span><span><MessageCircle size={14} />{formatCount(item.post.commentCount)}</span></div><a href={item.post.permalink} target="_blank" rel="noreferrer">Открыть пост <ExternalLink size={13} /></a></footer></div>
         <section className="reddit-report-comments"><header><MessageCircle size={18} /><strong>Комментарии</strong><span>{item.comments.length}</span></header>
           {item.error && <div className="reddit-comment-error"><ShieldAlert size={18} /><div><strong>Комментарии недоступны</strong><p>{item.error}</p>{item.action && <small>{item.action}</small>}</div></div>}
           {item.warnings.map((warning) => <div className="reddit-comment-warning" key={warning}>{warning}</div>)}

@@ -411,7 +411,7 @@ const threadsViewCountsSchema = z.object({
 const redditSearchSchema = z.object({
   query: z.string().trim().min(1).max(512),
   limit: z.coerce.number().int().min(1).max(100).default(10),
-  sort: z.enum(["relevance", "new", "top", "comments"]).default("relevance"),
+  sort: z.enum(["relevance", "new", "top", "comments"]).default("new"),
 });
 
 const redditPostSchema = z.object({

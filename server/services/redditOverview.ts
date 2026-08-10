@@ -320,7 +320,7 @@ async function searchRedditWithBrowser(request: RedditSearchRequest): Promise<Re
     const url = new URL("/search/", "https://www.reddit.com");
     url.searchParams.set("q", request.query);
     url.searchParams.set("type", "posts");
-    url.searchParams.set("sort", request.sort ?? "relevance");
+    url.searchParams.set("sort", "new");
     await gotoRedditPage(page, url.toString());
     const posts = new Map<string, RedditPost>();
     let stagnantRounds = 0;
@@ -424,7 +424,7 @@ export async function searchRedditPosts(request: RedditSearchRequest): Promise<R
   const params = new URLSearchParams({
     q: request.query,
     type: "link",
-    sort: request.sort ?? "relevance",
+    sort: "new",
     t: "all",
     limit: String(request.limit),
     raw_json: "1",
